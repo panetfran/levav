@@ -1074,6 +1074,17 @@ windowStale = true;
 renderWindow(false, true);
 scrollChatBottom();
 }
+// FIX 2026-09-15 #478（TASKS #131① 真缺陷定性；#480 已让位给并行会话的 tabbar 掉出 .phone 回归）：权威读库成功必须保证 LS 快照存在。
+// v3.9 修复3「读库成功写快照」被 OOM 批的 !hasLocal 快路径打掉——冷启动/切联系人（最常见
+// 形态）changed 恒 false，快照永不落 LS＝切走再切回遇 IDB 事务挂起（一加/OPPO/真我/荣耀/
+// 小米 Edge 实测挂起族）时记录失去唯一兜底副本、整窗不可见（verify-chat-switch-idb-hang
+// 3 断言红的根因）。写快照与 changed 解耦：changed 路径维持原同步强写行为零变化；
+// 未变更路径延迟一拍补写，不在启动关键路径追加同步 stringify 负担。
+if (!changed) {
+setTimeout(function () {
+try { if (window.activePrefix() === myPrefix) writeLsSnapshot(msgs, myPrefix, true); } catch (e) {}
+}, 0);
+}
 // v3.26.x OOM：旧大数据字符串存量（升级前写入的 chat-msgs 单键字符串）后台一次性
 // 转数组直存——此后每次读库免整包 JSON.parse（消除数百 MB 解析尖峰与秒级主线程阻塞）。
 // 放在 if(changed) 之外：无本地改动（changed=false）的常见大数据场景也要迁移。
@@ -3109,28 +3120,51 @@ av.style.cursor = 'pointer';
 av.title = T('对 TA 拍一拍');
 // FIX 2026-09-14 #G1 点联系人头像打不开拍一拍（多机型同报、含内嵌浏览器；要求零机型分支防复发）：
 // 纯 click 监听在部分内核/内嵌浏览器上不可靠——点按期消息区 DOM 重渲把目标拆走、滚动回弹期按位漂移、
-// 长按候选判定吞 click 等都会让合成 click 丢失。改「pointerdown 布点 + pointerup 轻点判定 + click 兜底」
-// 三保险（#152 继续按钮 pointerdown 方案同款思路，零机型分支）：触屏滑动起点落在头像上不算点
-// （位移<=12px 且 <=450ms 才开拍一拍，滚动历史不误伤），鼠标与无 PointerEvent 老内核仍走 click。
-let pokeTap = null;
-let pokeTapGuard = 0;
+// 长按候选判定吞 click 等都会让合成 click 丢失。改「touch 布点 + pointer 布点 + click 兜底」五保险
+// （#152 继续按钮 pointerdown 方案同款思路，零机型分支）：
+//   ① touchstart/touchend 路——无 PointerEvent 的旧内核/内嵌 WebView（国产浏览器壳、旧 WebView）只派发
+//      touch 事件，pointer 监听永不触发，click 又是被吞的重灾区，touch 路是这类内核唯一可靠入口；
+//   ② pointerdown/pointerup 路——现代内核轻点判定（位移<=12px 且 <=450ms，滚动历史不误伤）；
+//   ③ click 兜底——鼠标与以上两路均失效的场景最后防线。
+// 三路共用 pokeTapGuard 防重入：任一路打开面板后，其余路在 800ms 内直接让位，杜绝双开/刚开即关。
+let pokeTapT = null;    // touch 路布点
+let pokeTapP = null;    // pointer 路布点
+let pokeTapGuard = 0;   // 三路共用防重入
+av.addEventListener('touchstart', (e) => {
+if (Date.now() < pokeTapGuard) return; // 已由其他路开过，让位
+const t = e.changedTouches && e.changedTouches[0];
+if (!t) return;
+pokeTapT = { x: t.clientX, y: t.clientY, t: Date.now(), id: t.identifier };
+}, { passive: true });
+av.addEventListener('touchend', (e) => {
+const t = e.changedTouches && e.changedTouches[0];
+if (!pokeTapT || !t || t.identifier !== pokeTapT.id || Date.now() < pokeTapGuard) return;
+const dt = Date.now() - pokeTapT.t;
+const dx = t.clientX - pokeTapT.x;
+const dy = t.clientY - pokeTapT.y;
+pokeTapT = null;
+if (dx * dx + dy * dy > 144 || dt > 450) return; // 滑动/按住不算点（与 pointer 路同口径，文本异形护哨兵唯一）
+pokeTapGuard = Date.now() + 800;
+openPokeCard();
+}, { passive: true });
+av.addEventListener('touchcancel', () => { pokeTapT = null; }, { passive: true });
 av.addEventListener('pointerdown', (e) => {
-if (e.pointerType === 'mouse') return;
-pokeTap = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId };
+if (e.pointerType === 'mouse' || Date.now() < pokeTapGuard) return;
+pokeTapP = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId };
 });
 av.addEventListener('pointerup', (e) => {
-if (!pokeTap || e.pointerId !== pokeTap.id || e.pointerType === 'mouse') return;
-const dx = e.clientX - pokeTap.x;
-const dy = e.clientY - pokeTap.y;
-const dt = Date.now() - pokeTap.t;
-pokeTap = null;
+if (!pokeTapP || e.pointerId !== pokeTapP.id || e.pointerType === 'mouse' || Date.now() < pokeTapGuard) return;
+const dx = e.clientX - pokeTapP.x;
+const dy = e.clientY - pokeTapP.y;
+const dt = Date.now() - pokeTapP.t;
+pokeTapP = null;
 if (dt > 450 || dx * dx + dy * dy > 144) return; // 滑动/按住不算点，滚动照常
 pokeTapGuard = Date.now() + 800;
 openPokeCard();
 });
-av.addEventListener('pointercancel', () => { pokeTap = null; });
+av.addEventListener('pointercancel', () => { pokeTapP = null; });
 av.addEventListener('click', (e) => {
-// pointerup 已开过：吞掉补发 click，防 document 层「点外关闭」把面板刚开即关
+// touch/pointer 已开过：吞掉补发 click，防 document 层「点外关闭」把面板刚开即关
 if (Date.now() < pokeTapGuard) { e.preventDefault(); e.stopPropagation(); return; }
 e.stopPropagation();
 openPokeCard();
@@ -7572,12 +7606,16 @@ openMsgActionsAt(ctxR.item, ctxR.b);
 }
 }
 });
+let msgTapStart = null; // FIX 2026-09-14 #480 轻点布点——气泡 touch 直驱开菜单入口（click 被吞族内核唯一可靠路）
+let msgAnyTap = null;   // FIX 2026-09-14 #480 全局轻点布点——点外关闭菜单的 touch 路
 body.addEventListener('touchstart', (e) => {
 const r = msgActionEligible(e.target);
-if (!r) return;
-msgHoldEl = r.item;
 const mt0 = e.touches && e.touches[0];
 if (mt0) { msgHoldX = mt0.clientX; msgHoldY = mt0.clientY; }
+msgAnyTap = { x: msgHoldX, y: msgHoldY, t: Date.now() };
+if (!r) { msgTapStart = null; return; }
+msgTapStart = { x: msgHoldX, y: msgHoldY, t: Date.now(), item: r.item, b: r.b };
+msgHoldEl = r.item;
 msgHoldTimer = setTimeout(() => {
 msgHoldTimer = null;
 msgHoldFired = true;
@@ -7594,10 +7632,27 @@ if (msgHoldTimer && e.touches && e.touches[0]) {
 const mt = e.touches[0];
 const mdx = mt.clientX - msgHoldX;
 const mdy = mt.clientY - msgHoldY;
-if (mdx * mdx + mdy * mdy > 144) endMsgHold();
+if (mdx * mdx + mdy * mdy > 144) { endMsgHold(); msgTapStart = null; msgAnyTap = null; }
 }
 }, { passive: true });   // 手指滑动=滚动，取消长按（超过 12px 才算滑动）
-body.addEventListener('touchend', endMsgHold);
+body.addEventListener('touchend', (e) => {
+endMsgHold();
+// FIX 2026-09-14 #480 轻点 touch 直驱（「合成 click 被吞」族内核——Via/夸克等 WebView 壳，与 #G1
+// 拍一拍同族——轻点气泡后内核 click 永不触发＝菜单打不开＝「无法引用消息」）。滑动或按住不算轻点，
+// 与长按定时器路互斥（长按仍由 500ms 定时器开）；引擎若正常补发 click，由 msgSuppressClickUntil 吞掉防重入。
+const mt = e.changedTouches && e.changedTouches[0];
+if (!msgAnyTap || !mt) { msgTapStart = null; return; }
+if (Date.now() - msgAnyTap.t > 450 || (mt.clientX - msgAnyTap.x) * (mt.clientX - msgAnyTap.x) + (mt.clientY - msgAnyTap.y) * (mt.clientY - msgAnyTap.y) > 144) { msgTapStart = null; msgAnyTap = null; return; } // 滑动/长按不算轻点
+const ts = msgTapStart; msgTapStart = null; msgAnyTap = null;
+msgSuppressClickUntil = Date.now() + 800; // 吞引擎补发 click，防刚开即关/防重入
+if (ts) {
+if (msgActions && !msgActions.hidden && activeMsgEl === ts.item) return; // 该气泡菜单已开，不重开
+openMsgActionsAt(ts.item, ts.b);
+return;
+}
+// 轻点在气泡/菜单之外：touch 直驱关菜单（click 被吞内核的对称关闭路）
+if (msgActions && !msgActions.hidden && !msgActions.contains(e.target) && !e.target.closest('.msg-bubble') && !e.target.closest('.msg-quote')) closeMsgActions();
+});
 body.addEventListener('touchcancel', endMsgHold);
 body.addEventListener('click', (e) => {
 if (msgSuppressClickUntil && Date.now() < msgSuppressClickUntil) { e.preventDefault(); e.stopPropagation(); return; }
@@ -7614,9 +7669,11 @@ if (msgActions && !msgActions.hidden && !msgActions.contains(e.target)) closeMsg
 });
 }
 if (msgActions) {
-msgActions.addEventListener('click', (e) => {
-const btn = e.target.closest('.ma-btn');
-if (!btn) return;
+// FIX 2026-09-14 #480 菜单按钮 touch 直驱——【引用】按钮原来只有 click 一条路，click 被吞族内核
+// 上菜单开了点引用没反应＝「无法引用」。动作体提为 maRunAction，touchend 直驱执行 + maClickGuard
+// 吞引擎补发 click 防双跑（桌面/鼠标仍走 click，行为不变）。
+let maClickGuard = 0;
+function maRunAction(btn) {
 const act = btn.dataset.act;
 // FIX 2026-09-13 #407：按身份快照重定位（msgs 重排+DOM 未重渲窗口期 data-idx 会串条）
 const _act = resolveActiveMsg();
@@ -7716,6 +7773,18 @@ toast('已删除该消息');
 }
 closeMsgActions();
 }
+}
+msgActions.addEventListener('click', (e) => {
+const btn = e.target.closest('.ma-btn');
+if (!btn) return;
+if (Date.now() < maClickGuard) return; // #480 touchend 已直驱执行，吞补发 click 防双跑
+maRunAction(btn);
+});
+msgActions.addEventListener('touchend', (e) => {
+const btn = e.target.closest('.ma-btn');
+if (!btn || btn.hidden) return;
+maClickGuard = Date.now() + 600; // 吞引擎补发 click 防双跑
+maRunAction(btn); // touch 直驱执行——不依赖内核从 touch 合成 click
 });
 }
 function toast(msg) {
