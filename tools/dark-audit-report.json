@@ -1,0 +1,1457 @@
+[
+ {
+  "step": "01-app-chat",
+  "visible": "",
+  "issues": []
+ },
+ {
+  "step": "02-app-home",
+  "visible": "page-home",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-home>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "03-app-mail",
+  "visible": "page-mail",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-mail>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "04-app-feed",
+  "visible": "page-feed",
+  "issues": []
+ },
+ {
+  "step": "05-app-calendar",
+  "visible": "page-calendar",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#cal-grid>span.cal-cell.today.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cal-mood-ico",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "06-app-memory",
+  "visible": "page-memory",
+  "issues": []
+ },
+ {
+  "step": "07-app-divination",
+  "visible": "page-divine",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#div-modes>button.div-mode.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#div-counts>button.div-mode.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#div-draw",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "08-app-note",
+  "visible": "",
+  "issues": []
+ },
+ {
+  "step": "09-app-music",
+  "visible": "page-music",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-music>div.sm-float-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#page-music>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#music-lib-filter>button.mlf-chip.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "10-app-stats",
+  "visible": "page-stats",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-stats>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "11-app-interact",
+  "visible": "page-interact",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-interact>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "12-app-checkin",
+  "visible": "page-checkin",
+  "issues": []
+ },
+ {
+  "step": "13-app-period",
+  "visible": "page-period",
+  "issues": []
+ },
+ {
+  "step": "14-app-accounting",
+  "visible": "page-accounting",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#acc-view-tabs>button.acc-view-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-type-tabs>button.acc-type-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-cat-grid>button.acc-cat.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-save",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-filter-tabs>button.acc-filter-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "15-app-garden",
+  "visible": "page-garden",
+  "issues": []
+ },
+ {
+  "step": "16-app-tongpin",
+  "visible": "page-tongpin",
+  "issues": []
+ },
+ {
+  "step": "17-app-shenshou",
+  "visible": "page-shenshou",
+  "issues": []
+ },
+ {
+  "step": "18-app-water",
+  "visible": "page-water",
+  "issues": []
+ },
+ {
+  "step": "19-app-eat",
+  "visible": "page-eat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#eat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "20-app-pomo",
+  "visible": "page-pomodoro",
+  "issues": []
+ },
+ {
+  "step": "21-app-piggy",
+  "visible": "page-piggy",
+  "issues": []
+ },
+ {
+  "step": "22-app-memo",
+  "visible": "page-memo",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#memo-add-btn",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "23-app-market",
+  "visible": "page-market",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#market-cats>button.market-cat>div.market-cat-ico",
+    "level": "high",
+    "detail": "rgb(252, 228, 236)"
+   },
+   {
+    "type": "low-contrast",
+    "sel": "#market-cats>button.market-cat>div.market-cat-ico",
+    "level": "high",
+    "detail": "fg=rgb(255, 255, 255) bg=rgb(252,228,236) ratio=1.2"
+   },
+   {
+    "type": "grayish-bg",
+    "sel": "#market-cats>button.market-cat>div.market-cat-ico",
+    "level": "mid",
+    "detail": "rgb(255, 249, 196)"
+   }
+  ]
+ },
+ {
+  "step": "24-app-giftbox",
+  "visible": "page-giftbox",
+  "issues": []
+ },
+ {
+  "step": "25-app-group-chat",
+  "visible": "page-group-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#gc-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "26-setting",
+  "visible": "page-setting",
+  "issues": []
+ },
+ {
+  "step": "27-about",
+  "visible": "page-about",
+  "issues": []
+ },
+ {
+  "step": "28-license",
+  "visible": "page-license",
+  "issues": []
+ },
+ {
+  "step": "29-reply-settings",
+  "visible": "page-reply-settings",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-reply-settings>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#reply-save-btn",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "30-call-settings",
+  "visible": "page-call-settings",
+  "issues": []
+ },
+ {
+  "step": "31-sfx-settings",
+  "visible": "page-sfx-settings",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#sfx-ring-presets>button.sfx-preset.on",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#sfx-in-presets>button.sfx-preset.on",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#sfx-out-presets>button.sfx-preset.on",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "32-chatcard",
+  "visible": "page-chatcard",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-chatcard>div.card-tabs.cc-top-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-custom-cards-public>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-custom-cards>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-checkin-cards-mine>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-quote-cards-mine>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-ta-ask-mine>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-ta-choose-mine>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-ta-curious-mine>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-ta-roast-mine>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#li-ta-checkin-mine>div.av",
+    "level": "high",
+    "detail": "rgba(255, 255, 255, 0.92)"
+   }
+  ]
+ },
+ {
+  "step": "33-custom-cards",
+  "visible": "page-custom-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#cc-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cc-groups-bar>span.cc-g-chip.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "34-default-cards",
+  "visible": "page-default-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-default-cards>div.dc-toggle.glass>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#dc-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "35-mood-cards",
+  "visible": "page-mood-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-mood-cards>div.dc-toggle.glass>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#mc-groups-bar>span.cc-g-chip.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#mc-list>div.cc-item.glass>label.toggle.ccard-toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "36-reply-cards",
+  "visible": "page-reply-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-reply-cards>div.dc-toggle.glass>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#rc-groups-bar>span.cc-g-chip.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#rc-list>div.cc-item.glass>label.toggle.ccard-toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "37-quote-cards",
+  "visible": "page-quote-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#cq-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cq-sys-panel>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cq-sys-list>div.tc-qrow>label.toggle.ccard-toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "38-checkin-cards",
+  "visible": "page-checkin-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#page-checkin-cards>div.gs-scroll>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#ck-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cck-sys-list>div.tc-qrow>label.toggle.ccard-toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "39-ta-ask",
+  "visible": "page-ta-ask",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#ta-ask-now",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#ta-ask-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "40-ta-choose",
+  "visible": "page-ta-choose",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#tc-now",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#tc-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "41-ta-curious",
+  "visible": "page-ta-curious",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#tcu-now",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#tcu-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "42-ta-roast",
+  "visible": "page-ta-roast",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#tr-now",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#tr-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "43-ta-checkin",
+  "visible": "page-ta-checkin",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#ckq-now",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#ckq-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "44-fav",
+  "visible": "page-fav",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#fav-tab-mine",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "45-fav-settings",
+  "visible": "page-fav-settings",
+  "issues": []
+ },
+ {
+  "step": "46-memory",
+  "visible": "page-memory",
+  "issues": []
+ },
+ {
+  "step": "47-stats",
+  "visible": "page-stats",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-stats>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "48-interact",
+  "visible": "page-interact",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-interact>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "49-accounting",
+  "visible": "page-accounting",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#acc-view-tabs>button.acc-view-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-type-tabs>button.acc-type-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-cat-grid>button.acc-cat.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-save",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#acc-filter-tabs>button.acc-filter-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "50-garden",
+  "visible": "page-garden",
+  "issues": []
+ },
+ {
+  "step": "51-divine",
+  "visible": "page-divine",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#div-modes>button.div-mode.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#div-counts>button.div-mode.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#div-draw",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "52-music",
+  "visible": "page-music",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-music>div.sm-float-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#page-music>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#music-lib-filter>button.mlf-chip.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "53-calendar",
+  "visible": "page-calendar",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#cal-grid>span.cal-cell.today.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cal-mood-ico",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "54-period",
+  "visible": "page-period",
+  "issues": []
+ },
+ {
+  "step": "55-home",
+  "visible": "page-home",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-home>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "56-mail",
+  "visible": "page-mail",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-mail>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.mail-item>div.mail-item-body>div.mail-item-title>span.mail-tag.new",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "57-mail-write",
+  "visible": "page-mail-write",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#mail-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "58-mail-reply",
+  "visible": "page-mail-reply",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#mail-reply-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "59-feed",
+  "visible": "page-feed",
+  "issues": []
+ },
+ {
+  "step": "60-feed-all",
+  "visible": "page-feed-all",
+  "issues": []
+ },
+ {
+  "step": "61-feed-friends",
+  "visible": "page-feed-friends",
+  "issues": []
+ },
+ {
+  "step": "62-checkin",
+  "visible": "page-checkin",
+  "issues": []
+ },
+ {
+  "step": "63-chat-settings",
+  "visible": "page-chat-settings",
+  "issues": []
+ },
+ {
+  "step": "64-group-chat",
+  "visible": "page-group-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#gc-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "65-chat",
+  "visible": "page-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "66-nav-theme",
+  "visible": "page-theme",
+  "issues": []
+ },
+ {
+  "step": "67-nav-reply-settings",
+  "visible": "page-reply-settings",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#page-reply-settings>div.fav-tabs>button.fav-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "div.set-group.glass>div.gs-row>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#reply-save-btn",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "68-nav-call-settings",
+  "visible": "page-call-settings",
+  "issues": []
+ },
+ {
+  "step": "69-nav-sfx-settings",
+  "visible": "page-sfx-settings",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#sfx-ring-presets>button.sfx-preset.on",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#sfx-in-presets>button.sfx-preset.on",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#sfx-out-presets>button.sfx-preset.on",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "70-nav-about",
+  "visible": "page-about",
+  "issues": []
+ },
+ {
+  "step": "71-nav-license",
+  "visible": "page-license",
+  "issues": []
+ },
+ {
+  "step": "72-nav-contacts-manage",
+  "visible": "page-setting",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#contact-manager>div>button",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "73-base-chat",
+  "visible": "page-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "74-float-emoji-panel",
+  "visible": "page-chat +#emoji-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#emoji-panel>div.emoji-head>div.emoji-tabs>button.emoji-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "75-float-chat-more-panel",
+  "visible": "page-chat +#chat-more-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#more-tab-fun",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "76-float-chat-search",
+  "visible": "page-chat +#chat-search",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#chat-search-go",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "77-float-msg-actions",
+  "visible": "page-chat +#msg-actions",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "78-panel-chat-gift-panel",
+  "visible": "page-chat +#chat-gift-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "79-panel-chat-call-panel",
+  "visible": "page-chat +#chat-call-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#call-panel-dial",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "80-panel-chat-decision-panel",
+  "visible": "page-chat +#chat-decision-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "81-panel-chat-divine-panel",
+  "visible": "page-chat +#chat-divine-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#chat-divine-body>div.div-modes-wrap>span.div-mode.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#chat-divine-body>div.div-counts-wrap>span.div-mode.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#div-chat-draw",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "82-panel-chat-rps-panel",
+  "visible": "page-chat +#chat-rps-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "83-panel-chat-snake-panel",
+  "visible": "page-chat +#chat-snake-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#snake-canvas",
+    "level": "high",
+    "detail": "rgb(246, 246, 248)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#snake-start",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "84-panel-chat-pong-panel",
+  "visible": "page-chat +#chat-pong-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "85-panel-ck-panel",
+  "visible": "page-chat +#ck-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "86-panel-loc-panel",
+  "visible": "page-chat +#loc-panel",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "87-panel-qa-mask",
+  "visible": "page-chat +#qa-mask",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "88-panel-tc-mask",
+  "visible": "page-chat +#tc-mask",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "89-panel-poke-card",
+  "visible": "page-chat +#poke-card",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "90-panel-avlib-card",
+  "visible": "page-chat +#avlib-card",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#avlib-tab-a",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#avlib-pane-a>div.avlib-toggle>label.toggle>span.tk",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#avlib-upload",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "91-modal-sample",
+  "visible": " +#modal-mask",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#modal-ok",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "92-feed-comment",
+  "visible": "page-feed +#feed-comment-panel",
+  "issues": []
+ },
+ {
+  "step": "93-gc-settings",
+  "visible": "page-group-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#gc-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "94-contact-manager",
+  "visible": "",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#contact-manager>div>button",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "95-chat-rp-panel",
+  "visible": "page-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#chat-rp-panel>div.poke-card-scroll>div.rp-side-row>button.rp-side.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "low-contrast",
+    "sel": "#rp-qixi-tag",
+    "level": "mid",
+    "detail": "fg=rgb(255, 255, 255) bg=rgb(170,170,170) ratio=2.32"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#rp-send-btn",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "96-batch-panel",
+  "visible": "page-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#batch-text-add",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#batch-send-all",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "97-img-view-mask",
+  "visible": "page-chat",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#chat-send",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "98-cc-mg-mask",
+  "visible": "page-custom-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#cc-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cc-groups-bar>span.cc-g-chip.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "99-cc-export-mask",
+  "visible": "page-custom-cards",
+  "issues": [
+   {
+    "type": "light-bg",
+    "sel": "#cc-tabs>button.cc-tab.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   },
+   {
+    "type": "light-bg",
+    "sel": "#cc-groups-bar>span.cc-g-chip.sel",
+    "level": "high",
+    "detail": "rgb(240, 240, 240)"
+   }
+  ]
+ },
+ {
+  "step": "100-desk-lib",
+  "visible": "",
+  "issues": []
+ },
+ {
+  "step": "101-period-daypop",
+  "visible": "page-period",
+  "issues": []
+ }
+]
