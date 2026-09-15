@@ -6,6 +6,7 @@
 //  C 入库 API：ccAppendCards 写入当前作用域 cc-groups 的 mjfree 分类（去重）——沙盒模拟
 //  D 接线：build.mjs jsFiles / 哨兵 / chat.js tag / reply-settings DEFAULTS / template 控件
 //  E 词典页自建词条行已移除（dc-dict-add / d2-dict-add 不在模板中）
+//  I #513 默认打开：DEFAULTS 抽真实默认值 → 默认配置即触发造句、混合模式生效；存量 0→1 迁移接线
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { join, dirname } from 'node:path';
@@ -199,13 +200,13 @@ for (let i = 0; i < 60; i++) {
   if (a.length > b.length) mixGrow++;
 }
 ok(mixN >= 50 && mixCut >= 4 && mixGrow >= 4, 'H7 混合模式三手法随机齐现（60 掷 ' + mixN + '：截断 ' + mixCut + '/加长 ' + mixGrow + '）');
-// H8 关闭混合（缺省）= 固定撤回式 → 60 掷绝不出现「加长类」（style1 只有 recall/comma/space）
+// H8 关闭混合（mjf-mix=0）= 固定撤回式 → 60 掷绝不出现「加长类」（style1 只有 recall/comma/space）
 let fixGrow = 0;
 for (let i = 0; i < 60; i++) {
-  const r = pick({ 'mjf-en': 1, 'mjf-prob': 100 });
+  const r = pick({ 'mjf-en': 1, 'mjf-prob': 100, 'mjf-mix': 0 });
   if (r && cleanTxt(r.text).length > cleanTxt(r.src).length) fixGrow++;
 }
-ok(fixGrow === 0, 'H8 混合关闭（缺省 style=1）→ 不出现加长类变形（60 掷 0）');
+ok(fixGrow === 0, 'H8 混合关闭（mjf-mix=0，style=1）→ 不出现加长类变形（60 掷 0）');
 
 // —— D 接线（源码级）——
 const chat = readFileSync(join(root, 'src/js/chat.js'), 'utf8');
@@ -216,15 +217,73 @@ const cc = readFileSync(join(root, 'src/js/chatcard.js'), 'utf8');
 ok(bm.includes("'quote-spell.js', 'dream-free.js',"), 'D1 build.mjs jsFiles 已登记 dream-free.js');
 ok(cc.includes("const CC_FUNC_KEYS = ['fish', 'eat', 'period', 'water', 'garden', 'sync', 'reach', 'cjian', 'room', 'piggy', 'drift', 'interact', 'music',\n    'mjfree'];"), 'D2 chatcard.js CC_FUNC_KEYS 含 mjfree（进管理页/不进聊天池）');
 ok(chat.includes("tag: '梦角自由造句'") && chat.includes('window.dreamFreePick && window.dreamFreePick(c)'), 'D3 chat.js replyOnce 接入+tag');
-ok(rs.includes("'mjf-en': 0, 'mjf-prob': 20,") && rs.includes("'mjf-style': 1,"), 'D4 reply-settings DEFAULTS（mjf 三键）');
+ok(rs.includes("'mjf-en': 1, 'mjf-prob': 20,") && rs.includes("'mjf-style': 1,"), 'D4 reply-settings DEFAULTS（mjf 三键，mjf-en 默认开）');
 ok(tpl.includes('id="mjf-en"') && tpl.includes('data-k="mjf-prob"') && tpl.includes('data-k="mjf-style"'), 'D5 template 回复设置「梦角自由造句」组（开关+概率+手法三选一）');
 // #413 语料来源三选+权重接线（DEFAULTS 六键 / template 三开关+三 stepper）
 ok(rs.includes("'mjf-src-cc': 1, 'mjf-src-def': 1, 'mjf-src-dict': 1,") && rs.includes("'mjf-w-cc': 50, 'mjf-w-def': 25, 'mjf-w-dict': 25,"), 'H5 reply-settings DEFAULTS 六个语料来源键（默认全开+权重 50/25/25）');
 ok(tpl.includes('id="mjf-src-cc"') && tpl.includes('id="mjf-src-def"') && tpl.includes('id="mjf-src-dict"') && tpl.includes('data-k="mjf-w-cc"') && tpl.includes('data-k="mjf-w-def"') && tpl.includes('data-k="mjf-w-dict"'), 'H6 template 语料来源三开关+三权重控件在位');
-ok(rs.includes("'mjf-mix': 0,") && tpl.includes('id="mjf-mix"'), 'H9 #414 混合模式接线（DEFAULTS 默认关+template 开关）');
-ok(tpl.includes('id="rc-en"') && tpl.includes('id="qs-noLimit"') && rs.includes('"rc-en": 1'.replace(/"/g, String.fromCharCode(39))) && rs.includes('"qs-noLimit": 1'.replace(/"/g, String.fromCharCode(39))), 'D5c #351 撤回补发总开关+逐卡不受限开关（template+DEFAULTS 默认开）');
+ok(rs.includes("'mjf-mix': 1,") && tpl.includes('id="mjf-mix"'), 'H9 #414 混合模式接线（DEFAULTS 默认开+template 开关）');
+// ⚠️ 过期期望校准（2026-09-15）：原断言 `'qs-noLimit': 1` 沿用旧默认，v3.42.x #443 已把
+// 「逐卡连发不受条数限制」默认翻成 0（并配 migrateQsNoLimitOld 收口存量）——此断言长期假红，
+// 真回归会混在里面。按 #443 口径改为「rc-en 默认开 + qs-noLimit 默认关」。
+ok(tpl.includes('id="rc-en"') && tpl.includes('id="qs-noLimit"') && rs.includes("'rc-en': 1") && rs.includes("'qs-noLimit': 0"), 'D5c #351/#443 撤回补发总开关（默认开）+逐卡不受限开关（默认关）');
 ok(rs.includes('梦角自由造句开启失败') && rs.includes('梦角自由造句已开启') && rs.includes('mjf-probe'), 'D5b #324 开关切换 toast 提示（成功/失败）+存储探针在位');
 ok(tpl.includes('data-type="mjfree"'), 'D6 template 字卡库「梦角自由造句」tab');
+
+// —— I #513 默认打开（用户点名「梦角自由造句和梦角自由造句的混合模式需要默认打开」）——
+// 从 src 的 DEFAULTS 里抽真实默认值（不手填），再用它构造 cfg 打行为断言——只翻注释/只改
+// 文案都会红；顺带覆盖「默认值是否真的能触发造句」这条端到端结论。
+const defNum = k => { const m = rs.match(new RegExp("'" + k + "':\\s*(\\d+)")); return m ? Number(m[1]) : NaN; };
+ok(defNum('mjf-en') === 1, 'I1 DEFAULTS mjf-en=1（装上即开，不再是初版「默认关」）', String(defNum('mjf-en')));
+ok(defNum('mjf-mix') === 1, 'I2 DEFAULTS mjf-mix=1（默认混合三手法）', String(defNum('mjf-mix')));
+const defCfg = { 'mjf-en': defNum('mjf-en'), 'mjf-prob': 100, 'mjf-mix': defNum('mjf-mix'), 'mjf-style': defNum('mjf-style') };
+let defN = 0;
+for (let i = 0; i < 30; i++) if (pick(defCfg)) defN++;
+ok(defN >= 25, 'I3 默认配置（DEFAULTS 原值，仅概率提到 100）即触发造句（30 掷 ' + defN + '）');
+let defGrow = 0;
+for (let i = 0; i < 60; i++) { const r = pick(defCfg); if (r && cleanTxt(r.text).length > cleanTxt(r.src).length) defGrow++; }
+ok(defGrow >= 4, 'I4 默认配置下混合模式生效：出现「加长类」变形（60 掷 ' + defGrow + '）');
+// 存量迁移：标记式一次性（标记=1 早退，防「值等旧默认即改写」式反复纠正用户的手动关闭）
+ok(rs.includes("s.set('reply-mjf-on-migrated', '1');") && rs.includes("String(s.get('reply-mjf-on-migrated')) === '1'") && rs.includes("['mjf-en', 'mjf-mix'].forEach"), 'I5 存量 0→1 一次性迁移接线（标记键早退 + 两键同批）');
+ok(tpl.includes('#513 起默认开') && !tpl.includes('自由选择开关（默认关）'), 'I6 设置页说明文案随默认值更新（不再写「默认关」）');
+
+// —— J #513a 语料口径校对（用户点名「语料＝自定义字卡的公用+专属 ＋ 系统预设的默认聊天字卡 ＋ 词典」）——
+// J1 默认聊天字卡源＝「默认聊天字卡」页四分类（main/kaomoji/emoji/touch），不只主字卡：
+//    临时给沙盒补 kaomoji/emoji/touch 分组（跑完还原，不影响上面的 H 组断言）
+const origGroups = w.getDefaultCardGroups;
+w.getDefaultCardGroups = (cat) => (cat === 'touch' ? [['默认拍一拍', ['默认拍一拍轻轻拍了拍你', '默认拍一拍摸了摸你的头']]]
+  : cat === 'kaomoji' ? [['开心', ['(￣▽￣)', '(*´▽`*)']]]
+  : cat === 'emoji' ? [['表情', ['🙂', '😊']]]
+  : origGroups(cat));
+const DEF_ONLY = { 'mjf-en': 1, 'mjf-prob': 100, 'mjf-src-cc': 0, 'mjf-src-dict': 0 };
+let jTouch = 0, jBadSrc = null;
+for (let i = 0; i < 40; i++) {
+  const r = pick(DEF_ONLY);
+  if (!r) continue;
+  if (String(r.src).indexOf('默认拍一拍') === 0) jTouch++;
+  if (/[（(]|🙂|😊/.test(String(r.src))) jBadSrc = r.src;
+}
+ok(jTouch >= 5, 'J1 默认聊天字卡源覆盖四分类（拍一拍字卡可作源句，40 掷 ' + jTouch + '）');
+ok(jBadSrc === null, 'J1b 颜文字/emoji 不作源句（汉字不足 4，天然被过滤）', jBadSrc);
+// J2 分类开关 dc-cat-*（window.defaultCardCat）关掉的分类不作源
+w.defaultCardCat = (k) => k !== 'touch';
+let j2Touch = 0;
+for (let i = 0; i < 40; i++) { const r = pick(DEF_ONLY); if (r && String(r.src).indexOf('默认拍一拍') === 0) j2Touch++; }
+ok(j2Touch === 0, 'J2 关掉【拍一拍】分类后不再作源（分类开关生效，40 掷 0）');
+delete w.defaultCardCat;
+w.getDefaultCardGroups = origGroups;
+// J3 词典逐张关闭（#513a 补的过滤，口径对齐词典拼字）：关掉的语录不作源，其余照常
+w.isDefaultCardOff = (cat, t) => cat === 'dict' && t === '今天也要好好爱自己';
+let j3Off = 0, j3On = 0;
+for (let i = 0; i < 60; i++) {
+  const r = pick({ 'mjf-en': 1, 'mjf-prob': 100, 'mjf-src-cc': 0, 'mjf-src-def': 0, 'mjf-src-dict': 1 });
+  if (!r) continue;
+  if (r.src === '今天也要好好爱自己') j3Off++;
+  if (r.src === '晚安，好梦') j3On++;
+}
+ok(j3Off === 0 && j3On > 0, 'J3 词典逐张关闭生效（关掉的语录不作源，其余照常，60 掷：关 0/未关 ' + j3On + '）');
+delete w.isDefaultCardOff;
+w.getDefaultCardGroups = origGroups;
 
 // —— E 词典页自建词条行移除 ——
 ok(!tpl.includes('id="dc-dict-add"') && !tpl.includes('id="d2-dict-add"'), 'E1 词典页两处「存为语录/词/删自建」行已移除');
