@@ -794,6 +794,18 @@
           '<span class="cc-play-bars"><i></i><i></i><i></i></span></button>';
       }
     }
+    // FIX 2026-09-15 #493 媒体池令牌卡按图渲染——#377 大库内存瘦身把超大贴纸/图片卡体换成
+    // @@m:hash 令牌后，本函数只有 data:/http(s) 分支认识图片，令牌卡掉进末行文字分支
+    // ＝字卡库网格直出「@@m:hex32」乱码/空白块（聊天气泡与表情面板各自有令牌路径故正常，
+    // 多机型同报）。令牌即图片载荷：data-src 照写令牌，懒加载补 src 后由 media-pool
+    // 文档观察器（media-pool.js resolveImg）解回真图；池里确认缺失的令牌按 #387 同口径
+    // 显示文字占位，不发白块。
+    if (typeof c === 'string' && c.indexOf('@@m:') === 0 && window.mochiMediaIsToken && window.mochiMediaIsToken(c)) {
+      if (window.mochiMediaTokenMissing && window.mochiMediaTokenMissing(c)) {
+        return '<div class="cc-txt"><div class="t" style="color:var(--muted)">[图片丢失]</div></div>';
+      }
+      return '<div class="cc-ico cc-imgbox"><img class="cc-img" data-src="' + esc(c) + '" alt="图片" decoding="async"></div>';
+    }
     // v3.11.x：链接导入的字卡存原始 http(s) 链接（图床不允许跨域转存时的回退形态），
     // 缩略图同样按图片渲染；懒加载 observer 只做 data-src→src 拷贝，对链接天然兼容
     if (typeof c === 'string' && (c.indexOf('data:') === 0 || /^https?:\/\//i.test(c))) {
@@ -1068,6 +1080,82 @@
     return nodes;
   }
 
+  // ===== FIX 2026-09-15 #509 图片字卡节点回收池（跨 render 存活，已解码 img 零重解码）=====
+  // 用户报障（红米 K80 Chrome，明说其他设备型号也有）：聊天里「表情包页面」每次打开图片都闪
+  // 一下重新加载。无头 390×844 实证根因（零机型分支）：#508 的移植只在「当次 render 的 DOM 内」
+  // 收集旧 img，但真实进页路径连着跑两次 render——openCcPage 先按 cur='text' 渲一遍（list.innerHTML=''
+  // 清空），再点「表情包」tab 渲第二遍；第二次要用的 img 已在第一次清空时离开 DOM＝收集不到＝
+  // 整格新建（实证 12/12 重建）。rebuildGroupAfterRemove（删一张卡重建整个分组）同样无移植。
+  // 收口：节点按「内容指纹」回收进本模块池（上限 IMG_POOL_MAX 个 + 3 分钟空闲整池释放），
+  // render/局部重建建卡时优先从池里取回同一张图的已解码节点；池空才新建（新旧行为天然等价，
+  // 池只是复用已解码节点，不改任何排版/数据/事件绑定——事件始终绑在新卡外层 div 上）。
+  const IMG_POOL_MAX = 150;
+  const ccImgPool = new Map();   // sigKey -> [img,...]
+  let ccImgPoolN = 0;
+  let ccPoolT = null;
+  // 内容指纹：djb2 短键（长度+哈希）——长 dataURL 直接当 Map 键会让每次查找都重算长串哈希
+  function ccImgKey(c) {
+    const s = String(c || '');
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return s.length + ':' + h;
+  }
+  function ccPoolRelease() { if (ccPoolT) { clearTimeout(ccPoolT); ccPoolT = null; } ccImgPool.clear(); ccImgPoolN = 0; }
+  function ccPoolSchedule() {
+    if (ccPoolT) clearTimeout(ccPoolT);
+    ccPoolT = setTimeout(ccPoolRelease, 180000); // 闲置 3 分钟整池释放（不长期占着已解码位图）
+  }
+  function ccPoolPush(k, im) {
+    if (!k || !im || !im.nodeType) return;
+    let a = ccImgPool.get(k);
+    if (!a) { a = []; ccImgPool.set(k, a); }
+    a.push(im);
+    ccImgPoolN++;
+    ccPoolSchedule();
+    while (ccImgPoolN > IMG_POOL_MAX) {
+      const first = ccImgPool.keys().next();
+      if (first.done) break;
+      const kk = first.value;
+      const aa = ccImgPool.get(kk);
+      ccImgPool.delete(kk);
+      ccImgPoolN -= (aa ? aa.length : 1);
+      if (ccImgPoolN < 0) ccImgPoolN = 0;
+    }
+  }
+  function ccPoolTake(k) {
+    const a = ccImgPool.get(k);
+    if (!a || !a.length) return null;
+    const im = a.shift();
+    ccImgPoolN = Math.max(0, ccImgPoolN - 1);
+    if (!a.length) ccImgPool.delete(k);
+    ccPoolSchedule();
+    return im;
+  }
+  // 清空/移除一段 DOM 前，把其中带指纹的图片节点回收进池（懒加载未补 src 的也收，
+  // 保住它已排的 src 状态，避免重建后又从零开始解密）
+  function ccPoolHarvest(rootEl) {
+    if (!rootEl || !rootEl.querySelectorAll) return;
+    try {
+      rootEl.querySelectorAll('.cc-item[data-cc-sig]').forEach(d => {
+        const im = d.querySelector('img.cc-img');
+        if (!im || !(im.getAttribute('src') || im.dataset.src)) return;
+        ccPoolPush(d.dataset.ccSig, im);
+      });
+    } catch (e) {}
+  }
+  // 建卡时取节点：命中则原位替换掉刚生成的空 img（img 嵌在 .cc-imgbox 内层，取其真实父节点）
+  // 只对「图片类内容」生效（dataURL / 媒体池令牌 / http(s) 链接字卡），文字卡不碰
+  function ccPoolAdopt(el, c) {
+    if (typeof c !== 'string') return;
+    const isImg = c.indexOf('data:') === 0 || c.indexOf('@@m:') === 0 || /^https?:\/\//i.test(c);
+    if (!isImg) return;
+    const _ni = el.querySelector('img.cc-img');
+    if (!_ni || !_ni.parentNode) return; // 当前不是 img 形态（如令牌缺失走文字占位）→ 不取也不动
+    const _oi = ccPoolTake(ccImgKey(c));
+    if (!_oi) return;
+    _ni.parentNode.replaceChild(_oi, _ni);
+  }
+
   // v3.6.x：删除后重建某个分组在列表中的卡片区（含未观察 img 的解绑），
   // 其余分组 DOM 保持不动——删除一张卡不再整页重建；
   // 分组仍在但被删空时保留 header（显示 0 张），与原来整页渲染的行为一致
@@ -1076,6 +1164,7 @@
     if (curGroup && curGroup !== gname) return;
     groupBlockNodes(gname).forEach(el => {
       if (imgObserver) el.querySelectorAll('img[data-src]').forEach(im => { try { imgObserver.unobserve(im); } catch (e) {} });
+      ccPoolHarvest(el); // FIX #509：移除前回收该分组已解码的图片节点
       el.remove();
     });
     const grps = groups[cur] || [];
@@ -1102,11 +1191,20 @@
       d.dataset.g = gname;
       d.dataset.idx = i;
       d.innerHTML = cardItemHtml(c);
+      if (typeof c === 'string') d.dataset.ccSig = ccImgKey(c); // FIX #508：局部重建的卡同样带指纹（#509 改短键）
+      ccPoolAdopt(d, c); // FIX #509：同内容图从池里取回已解码 img（删一张卡不再让整组图片重载）
       attachCardData(d, c);
       if (manageMode && selected.has(gname + '\u0001' + i)) d.classList.add('sel');
       d.addEventListener('click', () => {
         if (manageMode) { toggleSelect(d, gname, i); return; }
         // v3.11.x：图片/表情字卡（含链接导入的 http(s) 字卡）点击查看大图
+        // FIX 2026-09-15 #493 令牌卡同样查看大图（sync 命中热缓存直解，miss 则 viewImage
+        // 落 src=令牌由 media-pool 观察器异步解图）；不补则令牌卡点开的是文字编辑弹窗
+        if (typeof c === 'string' && c.indexOf('@@m:') === 0 && window.mochiMediaIsToken && window.mochiMediaIsToken(c)) {
+          const v = window.mochiMediaExpand ? window.mochiMediaExpand(c) : null;
+          viewImage(v || c);
+          return;
+        }
         if (typeof c === 'string' && (c.indexOf('data:') === 0 || /^https?:\/\//i.test(c))) { viewImage(c); return; }
         openEditCard(gname, i);
       });
@@ -1285,8 +1383,18 @@
         .filter(([g, arr]) => arr.length || g.indexOf(q) >= 0);
     }
     updateCountsOnly();
+    // FIX #508（红米 K80 Chrome 等多机型报「表情包页操作后图片闪一下重新加载」，与头像互动
+    // 点选换头像同族）：整格重渲把已解码的 img 全部丢弃重建＋懒加载重新赋 src＝可视区内图片
+    // 全部重新解码闪烁。收口：按内容指纹（建卡时写进 data-cc-sig）复用旧 img 节点——已解码的
+    // 直接续用（零重解码），未进视口的（data-src 未消费）也保住不再重新排队；点击/拖拽/懒加载
+    // 观察都绑在新卡节点上，行为与原全量重建完全一致。真正内容变化的卡天然无指纹命中＝照旧新建。
+    // FIX #509（承接 #508）：原实现在本次 list DOM 内现场收集旧节点——但真实进页路径是
+    // 「openCcPage 先按 cur='text' 渲一遍（清空 list）→ 用户点『表情包』tab 再渲第二遍」，
+    // 第二次要用的节点在第一次清空时就已离开 DOM＝抓不到＝整格新建（无头实证 12/12 重建）。
+    // 改为回收进模块级池（ccPoolHarvest 收 / ccPoolAdopt 取），跨 render 存活，正好补上这一段。
     // v3.6.x：清空前先解除旧图片懒加载观察，避免 observer 引用累积
     if (imgObserver) list.querySelectorAll('img[data-src]').forEach(im => { try { imgObserver.unobserve(im); } catch (e) {} });
+    ccPoolHarvest(list);
     list.innerHTML = '';
     if (!shown.length) {
       const emptyTxt = cur === 'sticker' ? '暂无表情包 · 点击右上角批量导入上传图片'
@@ -1318,11 +1426,21 @@
         el.dataset.g = it.gname;
         el.dataset.idx = it.i;
         el.innerHTML = cardItemHtml(it.c);
+        if (typeof it.c === 'string') {
+          el.dataset.ccSig = ccImgKey(it.c); // FIX #508/#509：内容短指纹，供复用判定
+          ccPoolAdopt(el, it.c);             // FIX #509：从池取回同内容的已解码 img（取不到则保持新建）
+        }
         attachCardData(el, it.c);
         if (manageMode && selected.has(it.gname + '\u0001' + it.i)) el.classList.add('sel');
         el.addEventListener('click', () => {
           if (manageMode) { toggleSelect(el, it.gname, it.i); return; }
           // 图片/表情字卡（含链接导入的 http(s) 字卡）：点击查看大图
+          // FIX 2026-09-15 #493 令牌卡同上——查看大图而非文字编辑（分块渲染路径）
+          if (typeof it.c === 'string' && it.c.indexOf('@@m:') === 0 && window.mochiMediaIsToken && window.mochiMediaIsToken(it.c)) {
+            const v = window.mochiMediaExpand ? window.mochiMediaExpand(it.c) : null;
+            viewImage(v || it.c);
+            return;
+          }
           if (typeof it.c === 'string' && (it.c.indexOf('data:') === 0 || /^https?:\/\//i.test(it.c))) {
             viewImage(it.c);
             return;
@@ -1358,6 +1476,7 @@
       tabsWrap.querySelectorAll('.cc-tab').forEach(t => t.classList.remove('sel'));
       tab.classList.add('sel');
       cur = tab.dataset.type;
+      syncLinkImportVis();
       q = '';
       curGroup = '';
       // 清空两个搜索框
@@ -1879,6 +1998,63 @@
   }
 
   // ================= 导出数据（v3.7.x：弹窗选择分类 + 分组后导出 json） =================
+  // FIX 2026-09-15 #506：导出自包含——媒体池令牌 @@m:hash 还原成真实 dataURL 再落文件。
+  // 背景：#387 修复前的版本曾把令牌化后的内存缓存整包写回库键（写回泄漏），旧备份导入
+  // 也会把令牌带进库——sticker/image 混有令牌卡时，导出直读原始键＝文件里是 @@m:hex
+  // 而不是图片数据（用户反馈「导出数据不包括表情包和图片的全部数据」），换设备/池被清
+  // 后永久坏图。导出前按池键批量取回还原；池里已缺失的保持原样并计数提示。
+  function ccExportExpandTokens(obj) {
+    const hashes = {};
+    let hasTok = false;
+    (function collect(o) {
+      if (typeof o === 'string') {
+        if (o.indexOf('@@m:') >= 0) {
+          hasTok = true;
+          const re = /@@m:([0-9a-f]{32})/g; let m;
+          while ((m = re.exec(o))) hashes[m[1]] = null;
+        }
+        return;
+      }
+      if (Array.isArray(o)) { for (let i = 0; i < o.length; i++) collect(o[i]); return; }
+      if (o && typeof o === 'object') { Object.keys(o).forEach(k => collect(o[k])); }
+    })(obj);
+    if (!hasTok || !window.mochiMediaResolve) return Promise.resolve({ ok: 0, miss: 0 });
+    const list = Object.keys(hashes);
+    function pull(i) {
+      if (i >= list.length) return Promise.resolve();
+      const batch = list.slice(i, i + 16);
+      return Promise.all(batch.map(h => window.mochiMediaResolve('@@m:' + h))).then(rs => {
+        batch.forEach((h, j) => { if (typeof rs[j] === 'string' && rs[j]) hashes[h] = rs[j]; });
+        return pull(i + 16);
+      });
+    }
+    return pull(0).then(() => {
+      let ok = 0, miss = 0;
+      (function replace(o) {
+        if (Array.isArray(o)) {
+          for (let i = 0; i < o.length; i++) {
+            const c = o[i];
+            if (typeof c !== 'string') { replace(c); continue; }
+            if (c.indexOf('@@m:') < 0) continue;
+            if (window.mochiMediaIsToken && window.mochiMediaIsToken(c)) {
+              const v = hashes[c.slice(4)];
+              if (v) { o[i] = v; ok++; } else miss++;
+            } else {
+              o[i] = c.replace(/@@m:([0-9a-f]{32})/g, (m0, h) => hashes[h] || m0);
+            }
+          }
+        } else if (o && typeof o === 'object') {
+          Object.keys(o).forEach(k => {
+            const c = o[k];
+            if (typeof c !== 'string') { replace(c); return; }
+            if (c.indexOf('@@m:') < 0) return;
+            o[k] = c.replace(/@@m:([0-9a-f]{32})/g, (m0, h) => hashes[h] || m0);
+          });
+        }
+      })(obj);
+      return { ok: ok, miss: miss };
+    });
+  }
   const ccExport = document.getElementById('cc-export');
   if (ccExport) {
     // 7 大分类 key + 显示名（与分类 tab 一致）
@@ -1990,16 +2166,21 @@
                 if (st.grps[gname]) out[key].push([gname, Array.isArray(cs) ? cs.slice() : []]);
               });
             });
-            const data = JSON.stringify(out, null, 2);
-            const blob = new Blob([data], { type: 'application/json' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'mochi字卡库数据.json';
-            document.body.appendChild(a);
-            a.click();
-            setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 300);
-            ceCloseFn();
-            toast('已导出所选字卡');
+            // #506：先还原媒体池令牌再落文件（导出文件必须自包含）
+            ccExportExpandTokens(out).then(exp => {
+              const data = JSON.stringify(out, null, 2);
+              const blob = new Blob([data], { type: 'application/json' });
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = 'mochi字卡库数据.json';
+              document.body.appendChild(a);
+              a.click();
+              setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 300);
+              ceCloseFn();
+              toast('已导出所选字卡' +
+                (exp.ok ? '（' + exp.ok + ' 张图片已从媒体池还原进文件）' : '') +
+                (exp.miss ? '；' + exp.miss + ' 张图片数据缺失无法还原' : ''));
+            });
           } catch (e) { toast('导出失败'); }
         });
       }
@@ -2523,14 +2704,20 @@
           nItems += Array.isArray(data.quote.list) ? data.quote.list.length : 0;
           CC_FULL_TA_LIBS.forEach(([name]) => { nTa += Array.isArray(data[name].questions) ? data[name].questions.length : 0; });
           const out = { app: CC_FULL_MARK, v: 1, time: Date.now(), data: data };
-          const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = 'mochi自定义字卡全量.json';
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 300);
-          toast('已导出全量字卡：聊天字卡 ' + (ccFullCardCount(data.ccPub) + ccFullCardCount(data.ccOwn)) + ' 张 · 寻踪/情话 ' + nItems + ' 条 · TA 题库 ' + nTa + ' 题');
+          // #506：cc 双作用域同样先还原媒体池令牌再落文件
+          Promise.all([ccExportExpandTokens(data.ccPub), ccExportExpandTokens(data.ccOwn)]).then(rs => {
+            const okN = rs[0].ok + rs[1].ok, missN = rs[0].miss + rs[1].miss;
+            const blob = new Blob([JSON.stringify(out)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'mochi自定义字卡全量.json';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 300);
+            toast('已导出全量字卡：聊天字卡 ' + (ccFullCardCount(data.ccPub) + ccFullCardCount(data.ccOwn)) + ' 张 · 寻踪/情话 ' + nItems + ' 条 · TA 题库 ' + nTa + ' 题' +
+              (okN ? ' · ' + okN + ' 张图片已从媒体池还原进文件' : '') +
+              (missN ? '；' + missN + ' 张图片数据缺失无法还原' : ''));
+          });
         } catch (e) { toast('导出失败：' + ((e && e.message) || '内部错误')); }
       };
       // 导出前也走权威取回链：挂起在 IDB 的大键先拉回 store 再读（与列表页角标同一防线）
@@ -2766,6 +2953,8 @@
           let done = 0;
           let skipped = 0;
           let notAudio = 0;
+          let gifSaved = 0;  // 动图直存（跳过压缩）计数
+          let cmpSaved = 0;  // 静态图压缩成功计数
           // v3.6.x：上传大小限制——语音不压缩直接存 dataURL（字符串膨胀约 33%），
           // 超大音频会撑爆手机内存/IDB；图片虽有 260px 压缩兜底，原图读取也占峰值内存。
           // 语音限 10MB、图片限 20MB，超出跳过并提示
@@ -2819,6 +3008,7 @@
                     toast('GIF「' + ((f && f.name) || '动图') + '」超过 380KB，已跳过');
                     return;
                   }
+                  gifSaved++;
                   process(reader.result); return;
                 }
                 // v3.7.x：原 260px 在 3x 高清屏被放大 2~3 倍导致模糊。
@@ -2827,6 +3017,7 @@
                 compressImage(reader.result, isImg ? 720 : 480, isImg ? 'image/jpeg' : 'image/png', isImg ? 0.85 : undefined).then((data) => {
                   // v3.6.x：压缩失败/图片过大返回 null——不存原图（防 iOS 解码崩溃），跳过并提示
                   if (!data) { skipped++; done++; if (done === files.length) finishUpload(done - skipped, skipped); return; }
+                  cmpSaved++;
                   process(data);
                 });
               }
@@ -2840,6 +3031,8 @@
             render();
             const msgs = [];
             if (ok > 0) msgs.push('已上传 ' + ok + ' 个' + (cur === 'voice' ? '音频' : '图片'));
+            if (gifSaved > 0) msgs.push('动图无法压缩，「' + gifSaved + '」个按原图存入');
+            if (cmpSaved > 0) msgs.push('已自动压缩 ' + cmpSaved + ' 个静态图');
             if (skip > 0) msgs.push('跳过 ' + skip + ' 个超大文件（' + (cur === 'voice' ? '音频>10MB' : '图片>20MB') + '）');
             if (skipNotAudio > 0) msgs.push('跳过 ' + skipNotAudio + ' 个视频/非音频（语音分类只支持音频）');
             if (!msgs.length) msgs.push('没有可上传的文件');
@@ -2905,11 +3098,14 @@
           toast('已导入 ' + imported + ' 条字卡' + (dup ? '，自动去重 ' + dup + ' 条' : '') + (newGroups ? '，新建 ' + newGroups + ' 个分组' : ''));
         }, {
           // FIX 2026-09-07 #255：批量导入弹窗放大——默认 .modal 宽 272px 多行框太小
-          //（用户报障「打开的页面太小了」），走 opts.big 宽版（420px/94vw + 52vh 上限）
-          // 并把原生 textarea 提到 8 行（iOS 不做 ce-box 转换，rows 决定实际高度）
+          //（用户报障「打开的页面太小了」），走 opts.big 宽版（420px/94vw + 52vh 上限）。
+          // textareaRows 同时决定两端初始高度：iOS 原生 textarea 直接按 rows 显示行数；
+          // 安卓被 mobile-adapt 转 .ce-box 后读 rows 算 min-height（rows*1.5*16）。初始就
+          // 给足 14 行方便一次粘贴/录入多条字卡，超过 52vh 上限后框内滚动（.modal-textarea
+          // 既有 overflow-y:auto）——用户反馈「批量导入输入框太小只有 3 行，要加长可滑动」
           big: true,
           textarea: true,
-          textareaRows: 8,
+          textareaRows: 14,
           textareaPlaceholder: '【日常】\n你今天真好看\n我想你了',
           txtImport: true,
           // v3.6.x：传入当前分类的现有分组——openModal 的「目标分组」下拉只在
@@ -2919,6 +3115,16 @@
         });
       }
     });
+  }
+
+  // FIX 2026-09-15 #508：链接导入按钮只属于【表情包】【图片】两个媒体分类——按钮常驻
+  // 工具栏导致其余大分类 tab（主字卡/颜文字/emoji/拍一拍/语音/功能分类）也显示，
+  // 点了只吃 toast 拦截（用户反馈）。切分类/进页时按当前分类显隐；弹窗前的分类守卫
+  // 保留作兜底。
+  function syncLinkImportVis() {
+    const b = document.getElementById('cc-import-link');
+    if (!b) return;
+    b.style.display = (cur === 'sticker' || cur === 'image') ? '' : 'none';
   }
 
   // ================= 链接导入图片（v3.11.x，单链接/批量链接通用） =================
@@ -3688,8 +3894,11 @@
       const ok = document.getElementById('csn-ok');
       const cl = document.getElementById('csn-close');
       if (ex) ex.addEventListener('click', function () {
-        try {
-          const data = JSON.stringify(mergeWithPublic(loadGroups()), null, 2);
+        // #506：引导备份同样先还原媒体池令牌再落文件
+        const payload = mergeWithPublic(loadGroups());
+        ccExportExpandTokens(payload).then(function (exp) {
+          try {
+            const data = JSON.stringify(payload, null, 2);
           const blob = new Blob([data], { type: 'application/json' });
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
@@ -3697,9 +3906,10 @@
           document.body.appendChild(a);
           a.click();
           setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 300);
-          toast('字卡备份已导出');
-        } catch (e) { toast('导出失败'); }
-        finish();
+          toast('字卡备份已导出' + (exp.miss ? '；' + exp.miss + ' 张图片数据缺失无法还原' : ''));
+          } catch (e) { toast('导出失败'); }
+          finish();
+        });
       });
       if (ok) ok.addEventListener('click', finish);
       if (cl) cl.addEventListener('click', finish);
@@ -3808,6 +4018,7 @@
       t.classList.toggle('sel', t.dataset.type === cur);
       t.hidden = ccFuncOnly ? (!isFunc || isMjfree) : (isFunc && !isMjfree);
     });
+    syncLinkImportVis();
     document.querySelectorAll('.page').forEach(p => p.hidden = true);
     const ccPage = document.getElementById('page-custom-cards');
     if (ccPage) ccPage.hidden = false;
@@ -3896,7 +4107,7 @@
       const open = window.cardLockOpen();
       el.textContent = open
         ? '当前状态：系统预设字卡已解锁（二级验证已通过），联系人回复与各功能可正常取用。'
-        : '当前状态：系统预设字卡已全部锁定（防未成年人保护，不是 bug），联系人回复与各功能均取不到系统预设字卡。不输密码也能正常使用，密码只管两件事：解锁系统预设字卡、跳过开屏的 2 个问答；如已成年，请回开屏公告区点「输入密码解锁」输入二级验证密码，解锁后刷新生效。注意：锁定时若自定义字卡（含 mj 字卡）一张都没添加，回复会只能重复发兜底内容（如「嗯嗯」），先在自定义字卡里添加几张即可。';
+        : '当前状态：系统预设字卡已全部锁定（防未成年人保护，不是 bug），联系人回复与各功能均取不到系统预设字卡。不输密码也能正常使用，密码只管两件事：解锁系统预设字卡、跳过开屏的 2 个问答。注意（#499 豁免说明）：聊天情绪字卡、TA 的心情、聊天回应字卡这三大互动链不受锁定影响，未解锁也照常使用；受影响的只有默认聊天字卡、词典（含词典拼字）等系统预设池。锁定时若自定义字卡（含 mj 字卡）一张都没添加，回复会更单薄（情绪/回应字卡仍在，但少了系统预设内容），建议先在自定义字卡里添加几张；如已成年，请回开屏公告区点「输入密码解锁」输入二级验证密码，解锁后刷新生效。';
     }
     render();
     document.addEventListener('mochi-cardlock-open', render);

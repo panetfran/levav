@@ -30,18 +30,27 @@
     // 旧默认已随「保存设置」全量写盘的存量由 migrateQsNoLimitOld 按标记键一次性收口，
     // 此后用户手动再打开的 '1' 不再被迁移（标记式而非值式，原因见迁移函数注释）
     'qs-en': 1, 'qs-prob': 25, 'qs-cc': 1, 'qs-one': 1, 'qs-multi': 1, 'qs-noLimit': 0,
-    // v3.28.x #317：梦角自由造句——mjf-en 总开关（默认关=用户点名「可自由选择开关」）、
-    // mjf-prob 触发概率（%）：梦角说话按概率「截断某几个字重新造句」，新句自动存进
-    // 自定义聊天字卡新分类「梦角自由造句」（dream-free.js，chat.js replyOnce 消费）
-    'mjf-en': 0, 'mjf-prob': 20, 'mjf-style': 1,
+    // v3.28.x #317：梦角自由造句——mjf-prob 触发概率（%）：梦角说话按概率「截断某几个字
+    // 重新造句」，新句自动存进自定义聊天字卡新分类「梦角自由造句」（dream-free.js，
+    // chat.js replyOnce 消费）
+    // v3.26.x #513：mjf-en 总开关默认 0→1（用户点名「梦角自由造句…需要默认打开」）——
+    // 原 #317 的默认关是「可自由选择开关」的初版取舍，本轮翻案：装上即生效。旧默认 '0'
+    // 会随「保存设置」按钮全量写盘，仅翻 DEFAULTS 对已写盘设备不生效，故由 migrateMjfOn
+    // 按标记键 reply-mjf-on-migrated 一次性把存量的 '0' 收成 '1'（标记式而非值式，
+    // 原因见该函数注释）
+    // FIX 2026-09-15 #513 梦角自由造句总开关默认 0→1（用户点名「需要默认打开」）+ 存量 '0' 收口
+    'mjf-en': 1, 'mjf-prob': 20, 'mjf-style': 1,
     // v3.41.x #413：梦角自由造句语料来源三选（默认全开=可用全部字卡）+ 各源权重（%）——
     // mjf-src-cc 自定义聊天字卡（原唯一语料）/ mjf-src-def 默认聊天字卡 / mjf-src-dict 词典；
     // 权重按归一化抽源（默认 50/25/25），权重 0 或开关关=该源不参与；三源全关=不触发
     'mjf-src-cc': 1, 'mjf-src-def': 1, 'mjf-src-dict': 1,
     'mjf-w-cc': 50, 'mjf-w-def': 25, 'mjf-w-dict': 25,
-    // v3.41.x #414：mjf-mix 混合模式（默认关）——开启后每次造句在 0 语气词式/1 撤回式/
+    // v3.41.x #414：mjf-mix 混合模式——开启后每次造句在 0 语气词式/1 撤回式/
     // 2 换字卡内容式三种手法里随机掷一个再出招，不再固定 mjf-style 单一风格
-    'mjf-mix': 0,
+    // v3.26.x #513：默认 0→1（与 mjf-en 同批：用户点名「梦角自由造句的混合模式…需要默认
+    // 打开」），存量 '0' 同由 migrateMjfOn 一次性收成 '1'
+    // FIX 2026-09-15 #513 混合模式默认 0→1（同批：用户点名「混合模式需要默认打开」）
+    'mjf-mix': 1,
     // v3.33.x #364：mjf-pub 造句存公用库概率（%，默认 80）——多桌面联系人时新句按此概率
     // 进公用库、其余进专属库；仅 1 个联系人时固定进专属库（不受此项影响），dream-free.js 消费
     'mjf-pub': 80,
@@ -119,6 +128,10 @@
     // v3.7.x：让对方继续说——cs-normal(0=理解回复快速回1条, 1=按正常回复时间设置)；
     // cs-trigger-name(顶部昵称触发) / cs-trigger-bar(底部聊天栏按钮触发)，两个独立开关可同时开
     'cs-normal': 0, 'cs-trigger-name': 1, 'cs-trigger-bar': 0,
+    // v3.26.x：桌面摸鱼小组件数值累计总开关（默认开）——fish-en 摸鱼值 / work-en 工作值。
+    // 闸门加在 personalize.js 的 addFish/addWork 入口：关闭后所有加分来源（60 秒自动累计、
+    // 点击摸鱼按钮、番茄钟补偿摸鱼、抓包奖励翻倍）都不再写入，已有数值保留只停止增长
+    'fish-en': 1, 'work-en': 1,
     // v3.9.x：群聊回复设置（群聊页全局生效，不随桌面隔离）——键前缀 gc-，
     // 存储在全局命名空间 xy-home-v2:reply-gc-*（见 getCfg 的全局读取分支），
     // 默认值：每个联系人回复概率 60%、回复速度 1~40 秒、回复条数 1~2、
@@ -227,7 +240,7 @@
       }
     });
     // 开关
-    ['py-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'fd-post-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'rc-en'].forEach(k => {
+    ['py-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'fd-post-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'rc-en', 'fish-en', 'work-en'].forEach(k => {
       const el = document.getElementById(k);
       if (el) el.checked = cfg[k] === 1;
     });
@@ -342,7 +355,8 @@
     'qs-noLimit': '逐卡连发不受条数限制', 'mjf-en': '梦角自由造句',
     'mjf-src-cc': '造句语料·自定义字卡', 'mjf-src-def': '造句语料·默认聊天字卡', 'mjf-src-dict': '造句语料·词典',
     'mjf-mix': '造句混合模式',
-    'rc-en': '撤回后补发消息'
+    'rc-en': '撤回后补发消息',
+    'fish-en': '摸鱼值累计', 'work-en': '工作值累计'
   };
   // #388：cc-toast 元素全站懒创建（template.html 无静态元素，chat.js/device.js 等 20+ 文件
   //   都是「查不到就 createElement 补挂 body」）——本文件此前只查不建，用户直达回复设置页时
@@ -365,7 +379,7 @@
       clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, 1800);
     } catch (e) {}
   }
-  ['py-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'fd-post-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'rc-en'].forEach(k => {
+  ['py-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'fd-post-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'rc-en', 'fish-en', 'work-en'].forEach(k => {
     const el = document.getElementById(k);
     if (el) {
       el.addEventListener('change', () => {
@@ -514,7 +528,7 @@
           window.saveReplyCfg(k, v);
         }
       });
-      ['py-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'fd-post-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'rc-en'].forEach(k => {
+      ['py-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'fd-post-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'rc-en', 'fish-en', 'work-en'].forEach(k => {
         const el = document.getElementById(k);
         if (el) window.saveReplyCfg(k, el.checked ? 1 : 0);
       });
@@ -717,6 +731,39 @@
     } catch (e) {}
   }
   migrateQsNoLimitOld();
+  // v3.26.x #513：「梦角自由造句」总开关（mjf-en）与「混合模式」（mjf-mix）默认 0→1 的
+  // 一次性收口迁移——用户点名「梦角自由造句和梦角自由造句的混合模式需要默认打开」。
+  // 与 #443 同因：旧默认 '0' 会随「保存设置」按钮全量写盘（saveCurrentReplyPage 把开关清单
+  // 整表落盘），仅翻 DEFAULTS 对已写盘设备不生效（用户会报「设了默认开但还是关的」）。
+  // 必须用标记键（reply-mjf-on-migrated）只跑一轮、不能用「值等旧默认即改写」式：'0' 既是
+  // 旧默认值也是合法的手动关闭选择，值式会在用户之后每一次手动关闭时被加载反复改回。
+  // 取舍（同 #310/#443）：全量写盘的 '0' 与用户手动关掉的 '0' 无法区分，会被一并打开一次；
+  // 此后用户再自行关闭（标记已落）不再被纠正。缺键设备（从未保存过）本就走 DEFAULTS=1，
+  // 不需迁移也不写标记（写入只会多一条无用键）。
+  // FIX 2026-09-15 #513 存量 mjf-en/mjf-mix 旧默认 '0' → '1' 一次性收口（标记键 reply-mjf-on-migrated）
+  function migrateMjfOn() {
+    try {
+      if (!window.getContacts || !window.storeFor) return;
+      const cids = [window.__activeCid || 'default'];
+      (window.getContacts() || []).forEach(c => { if (c.id && cids.indexOf(c.id) === -1) cids.push(c.id); });
+      const changed = [];
+      cids.forEach(cid => {
+        try {
+          const s = window.storeFor(cid);
+          if (!s) return;
+          if (String(s.get('reply-mjf-on-migrated')) === '1') return;
+          ['mjf-en', 'mjf-mix'].forEach(k => {
+            if (String(s.get('reply-' + k)) === '0') { s.set('reply-' + k, '1'); changed.push(cid + ':' + k); }
+          });
+          s.set('reply-mjf-on-migrated', '1');
+        } catch (e) {}
+      });
+      if (changed.length) {
+        try { if (window.console && console.log) console.log('[reply-settings] 已迁移梦角自由造句/混合模式旧默认 0→1（#513）：' + changed.join(', ')); } catch (e) {}
+      }
+    } catch (e) {}
+  }
+  migrateMjfOn();
 
   // ===== v3.27.x #218：互动频率引导提示（纯提醒，不改任何默认值） =====
   // 背景：系统设置默认全开（设计如此，见开屏公告第八章），但总有用户觉得「概率太高」；

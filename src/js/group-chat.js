@@ -619,11 +619,19 @@
     else body.appendChild(m);
     pruneGcDom();
   }
+  // FIX 2026-09-15 #491 渲染期消息身份锚（对齐聊天页 msgKeyOf）——msgs 可能【开菜单之前】
+  // 已中段位移而气泡未重渲＝陈旧 gcIdx 开场即锁错条；data-mk 记「这个节点当时画的是哪条」，
+  // 开菜单按 mk 反查真实那条，不随数组位移漂移
+  function gcMsgKeyOf(rec) {
+    if (!rec) return '';
+    return (rec.ts || 0) + '|' + (rec.side || '') + '|' + (rec.type || '') + '|' + String(rec.text || '').slice(0, 80);
+  }
   function renderMsg(rec, idx, beforeEl) {
     const m = document.createElement('div');
     m.className = 'msg ' + (rec.side === 'out' ? 'msg-out' : 'msg-in');
     if (idx === undefined) idx = msgs.length - 1;
     m.dataset.gcIdx = idx;
+    m.dataset.mk = gcMsgKeyOf(rec); // FIX 2026-09-15 #491 身份锚随渲染写入
     const timeHtml = rec.ts ? '<span class="msg-time">' + fmtTime(rec.ts) + '</span>' : '';
     if (rec.side === 'out') {
       m.innerHTML = '<div class="msg-bubble"></div><div class="msg-side"><div class="msg-av"></div>' + timeHtml + '</div>';
@@ -715,10 +723,28 @@
         '<div class="msg-voice-wave"><i></i><i></i><i></i><i></i><i></i></div>' +
         '<span class="msg-voice-name">' + escTxt(vname) + '</span>' +
         '</div>';
-      b.querySelector('.msg-voice-play').addEventListener('click', function (e) {
-        e.stopPropagation();
-        gcPlayVoice(this, vsrc);
-      });
+      // FIX 2026-09-15 #507 语音播放按钮 touch 直驱（对齐单聊 #507）：#480 群聊轻点直驱曾把播放
+      // 按钮的轻点也当「点气泡」＝弹成员菜单+吞 click 窗口，吞 click 族内核语音永远播不出、健康
+      // 内核菜单/播放双触发。修复两刀：①gcActionEligible 把 .msg-voice-play 排除出「点气泡」判定；
+      // ②本按钮 touchend 直驱播放 + gvTapGuard 守卫吞补发 click 防双跑。
+      const gvBtn = b.querySelector('.msg-voice-play');
+      if (gvBtn) {
+        let gvTapGuard = 0;
+        const gvPlayAction = function () { gcPlayVoice(gvBtn, vsrc); };
+        gvBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (Date.now() < gvTapGuard) return; // #507 touch 直驱已播，吞补发 click 防双跑
+          gvPlayAction();
+        });
+        gvBtn.addEventListener('touchend', function (e) {
+          const mt = e.changedTouches && e.changedTouches[0];
+          if (!mt) return;
+          e.stopPropagation(); // #507 不入 body touchend＝不开成员菜单、不布吞 click 窗口
+          if (Date.now() < gvTapGuard) return;
+          gvTapGuard = Date.now() + 800;
+          gvPlayAction();
+        });
+      }
     } else if (rec.parts && rec.parts.length) {
       const imgs = rec.parts.filter(p => p.k === 'img');
       const textPart = rec.parts.filter(p => p.k === 'text').map(p => p.v).join(' ');
@@ -1813,6 +1839,33 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
   }
   function renderMainSettingsView() {
     const esc = escapeHtml;
+    // v3.29.x：顶部 tag 分类（形象/回复/通用/数据）——复用全站 .them-tabs/.them-tab 观感
+    //（暗色随变量适配），点击互斥显隐对应 .gc-set-sec 段；默认「形象」。
+    const tabsRow = document.createElement('div');
+    tabsRow.className = 'them-tabs gc-set-tabs';
+    const GTABS = [['profile', '形象'], ['reply', '回复'], ['general', '通用'], ['data', '数据']];
+    tabsRow.innerHTML = GTABS.map((t, i) =>
+      '<div class="them-tab' + (i === 0 ? ' active' : '') + '" data-gt="' + t[0] + '">' + t[1] + '</div>').join('');
+    settingsBody.appendChild(tabsRow);
+    const secs = {};
+    GTABS.forEach((t, i) => {
+      const s = document.createElement('div');
+      s.className = 'gc-set-sec';
+      s.dataset.gt = t[0];
+      if (i !== 0) s.hidden = true;
+      settingsBody.appendChild(s);
+      secs[t[0]] = s;
+    });
+    tabsRow.addEventListener('click', (e) => {
+      const tab = e.target.closest('.them-tab');
+      if (!tab) return;
+      tabsRow.querySelectorAll('.them-tab').forEach(x => x.classList.toggle('active', x === tab));
+      GTABS.forEach(t => { secs[t[0]].hidden = (t[0] !== tab.dataset.gt); });
+    });
+    // 各段写入指针：sec('x') 后续 appendChild 落到对应 tag 段
+    let curSec = null;
+    const sec = (name) => { curSec = secs[name]; };
+    sec('profile');
     // v3.28.x：群聊回复 stepper（读/写 reply-settings.js 的 gc-* 全局键，生效于全部联系人）
     // 复用全站 .stepper/.stp-* 样式与交互语义（与回复设置页一致），作用于群聊设置面板内
     const gcStepperRow = (label, k, min, max, step) => {
@@ -1890,17 +1943,17 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     const t1 = document.createElement('div');
     t1.className = 'gc-set-title';
     t1.textContent = '我的群聊';
-    settingsBody.appendChild(t1);
+    (curSec||settingsBody).appendChild(t1);
     const meP = gcProfileGet('me');
-    settingsBody.appendChild(item('me', meP.name || '', meP.avatar || '', deskMeName()));
+    (curSec||settingsBody).appendChild(item('me', meP.name || '', meP.avatar || '', deskMeName()));
     // —— 成员群聊形象 ——
     const t2 = document.createElement('div');
     t2.className = 'gc-set-title';
     t2.textContent = '成员群聊形象';
-    settingsBody.appendChild(t2);
+    (curSec||settingsBody).appendChild(t2);
     getMembers().forEach(m => {
       const p = gcProfileGet(m.id);
-      settingsBody.appendChild(item(m.id, p.name || '', p.avatar || '', deskPartnerName(m.id)));
+      (curSec||settingsBody).appendChild(item(m.id, p.name || '', p.avatar || '', deskPartnerName(m.id)));
     });
     // —— 成员昵称显示（v3.16.x：是否在消息头像上方显示群聊昵称） ——
     const nmRow = beautyRow('成员昵称显示', gcBeautyGet('show-name') === 'on' ? '头像上方显示' : '不显示', () => {
@@ -1908,24 +1961,26 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
         { label: '头像上方显示', value: 'on' }, { label: '不显示', value: 'off' }
       ], 'off');
     });
-    settingsBody.appendChild(nmRow);
+    (curSec||settingsBody).appendChild(nmRow);
     // —— 群聊回复（v3.28.x：全局生效于全部联系人，与回复设置页） ——
+    sec('reply');
     const tR = document.createElement('div');
     tR.className = 'gc-set-title';
     tR.textContent = '群聊回复';
-    settingsBody.appendChild(tR);
-    settingsBody.appendChild(gcStepperRow('每个联系人回复概率 %', 'gc-prob', 0, 100, 5));
-    settingsBody.appendChild(gcStepperRow('回复速度最短（秒）', 'gc-rs-min', 1, 60, 1));
-    settingsBody.appendChild(gcStepperRow('回复速度最长（秒）', 'gc-rs-max', 2, Infinity, 1));
+    (curSec||settingsBody).appendChild(tR);
+    (curSec||settingsBody).appendChild(gcStepperRow('每个联系人回复概率 %', 'gc-prob', 0, 100, 5));
+    (curSec||settingsBody).appendChild(gcStepperRow('回复速度最短（秒）', 'gc-rs-min', 1, 60, 1));
+    (curSec||settingsBody).appendChild(gcStepperRow('回复速度最长（秒）', 'gc-rs-max', 2, Infinity, 1));
     const rNote = document.createElement('div');
     rNote.className = 'gc-set-note';
     rNote.textContent = '这里的回复概率与速度对所有群聊成员统一生效（全局）；完整的每项概率/条数/开关在「设置 → 回复设置 → 群聊被动回复」里调整。';
-    settingsBody.appendChild(rNote);
+    (curSec||settingsBody).appendChild(rNote);
     // —— 输入与消息（对齐聊天设置「功能」页镜像开关：群聊页内可直接改这些状态） ——
+    sec('general');
     const tIn = document.createElement('div');
     tIn.className = 'gc-set-title';
     tIn.textContent = '输入与消息';
-    settingsBody.appendChild(tIn);
+    (curSec||settingsBody).appendChild(tIn);
     // 开关行（label + toggle，复用全站 .toggle 样式；存全局根命名空间键）
     const gcToggleRow = (label, sub, key, onchange) => {
       const row = document.createElement('div');
@@ -1940,24 +1995,25 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       return row;
     };
     // 回车键发送消息（与 chat.js 同一键 cs-enter-send，'off'=不发送；默认开）
-    settingsBody.appendChild(gcToggleRow('回车键发送消息', '关闭后按回车键换行，不再直接发送', 'cs-enter-send', null));
+    (curSec||settingsBody).appendChild(gcToggleRow('回车键发送消息', '关闭后按回车键换行，不再直接发送', 'cs-enter-send', null));
     // 批量发送消息（群聊输入栏右侧「批量发送」按钮显隐即读 cs-batch-send）
-    settingsBody.appendChild(gcToggleRow('批量发送消息', '输入栏右侧显示「批量发送」按钮，可插入表情包/图片/文字批量发送', 'cs-batch-send',
+    (curSec||settingsBody).appendChild(gcToggleRow('批量发送消息', '输入栏右侧显示「批量发送」按钮，可插入表情包/图片/文字批量发送', 'cs-batch-send',
       () => syncGcInputBtns()));
     // 我可发送语音（群聊输入栏左侧「麦克风」按钮显隐即读 cs-voice-send）
-    settingsBody.appendChild(gcToggleRow('我可发送语音', '输入栏左侧显示「麦克风」按钮，可录音并发送语音', 'cs-voice-send',
+    (curSec||settingsBody).appendChild(gcToggleRow('我可发送语音', '输入栏左侧显示「麦克风」按钮，可录音并发送语音', 'cs-voice-send',
       () => syncGcInputBtns()));
     // 隐藏联系人的表情包（全局键 hide-ta-sticker，表情包面板每次打开时读）
-    settingsBody.appendChild(gcToggleRow('隐藏联系人的表情包', '表情包面板只显示「我的表情包」', 'hide-ta-sticker',
+    (curSec||settingsBody).appendChild(gcToggleRow('隐藏联系人的表情包', '表情包面板只显示「我的表情包」', 'hide-ta-sticker',
       (en) => { try { document.dispatchEvent(new Event('hide-ta-sticker-changed')); } catch (e) {} toast(en ? '已隐藏：表情包面板只显示「我的表情包」' : '已恢复显示 TA 的和公用表情包'); }));
     // 允许删除成员消息（气泡操作菜单出现「删除」，真删除不可恢复）
-    settingsBody.appendChild(gcToggleRow('允许删除成员消息', '点击成员消息气泡可在操作菜单里删除该条消息', 'cs-del-ta-msg',
+    (curSec||settingsBody).appendChild(gcToggleRow('允许删除成员消息', '点击成员消息气泡可在操作菜单里删除该条消息', 'cs-del-ta-msg',
       (en) => toast(en ? '已开启：点击成员消息可在操作菜单里删除该条消息' : '已关闭删除成员消息功能')));
     // —— 群聊数据（对齐聊天设置「数据」页：导出/导入/清空当前群记录） ——
+    sec('data');
     const tD = document.createElement('div');
     tD.className = 'gc-set-title';
     tD.textContent = '数据';
-    settingsBody.appendChild(tD);
+    (curSec||settingsBody).appendChild(tD);
     const gcDataLink = (label, sub, danger, fn) => {
       const row = document.createElement('div');
       row.className = 'gc-set-item gc-set-link' + (danger ? ' gc-set-danger' : '');
@@ -1973,7 +2029,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     };
     const curGroupName = currentGroup().name || '群聊';
     // 导出：与单聊同格式 JSON（流式构建防超长），文件名带群名
-    settingsBody.appendChild(gcDataLink('导出聊天记录', '当前群聊全部消息导出为 JSON 文件', false, () => {
+    (curSec||settingsBody).appendChild(gcDataLink('导出聊天记录', '当前群聊全部消息导出为 JSON 文件', false, () => {
       try {
         gFlushPersistNow();
         const n = msgs.length;
@@ -2056,7 +2112,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       } catch (e) { toast('导出失败：' + (e && e.message || '未知错误')); }
     }));
     // 导入：读取 JSON → 预览确认 → 覆盖当前群记录（兼容单聊导出/裸数组/整份备份）
-    settingsBody.appendChild(gcDataLink('导入聊天记录', '从 JSON 文件导入并覆盖当前群聊记录', false, () => {
+    (curSec||settingsBody).appendChild(gcDataLink('导入聊天记录', '从 JSON 文件导入并覆盖当前群聊记录', false, () => {
       const inp = document.createElement('input');
       inp.type = 'file';
       inp.accept = '.json,application/json';
@@ -2104,7 +2160,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       inp.click();
     }));
     // 清空当前群记录（危险操作二次确认；自定义群连消息键一并清）
-    settingsBody.appendChild(gcDataLink('删除全部聊天记录', '清空「' + curGroupName + '」的全部消息（不可恢复）', true, () => {
+    (curSec||settingsBody).appendChild(gcDataLink('删除全部聊天记录', '清空「' + curGroupName + '」的全部消息（不可恢复）', true, () => {
       if (!window.openModal) return;
       window.openModal('确认删除「' + curGroupName + '」的全部聊天记录？（不可恢复）', '', () => {
         msgs = [];
@@ -2113,7 +2169,8 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
         toast('聊天记录已清空');
       }, { noInput: true });
     }));
-    // —— 美化聊天入口（v3.9.x） ——
+    // —— 美化聊天入口（v3.9.x，归「通用」tag） ——
+    sec('general');
     const bRow = document.createElement('div');
     bRow.className = 'gc-set-item gc-set-link';
     bRow.innerHTML =
@@ -2126,12 +2183,12 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       '</div>' +
       '<span class="gc-set-chev">›</span>';
     bRow.addEventListener('click', () => { gcBeautyView = true; renderSettingsPanel(); });
-    settingsBody.appendChild(bRow);
+    (curSec||settingsBody).appendChild(bRow);
     // —— 底部说明 ——
     const note = document.createElement('div');
     note.className = 'gc-set-note';
     note.textContent = '成员回复内容来自：公用字卡 + 该成员桌面专属字卡 + 系统默认字卡；某成员桌面关闭【聊天使用】，聊天和群聊里这个成员都不再使用系统默认字卡。';
-    settingsBody.appendChild(note);
+    (curSec||settingsBody).appendChild(note);
   }
 
   // 主设置视图行（成员昵称显示等）：纯文字行，与美化视图的 set-row 图标行分开
@@ -3016,8 +3073,16 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       // FIX 2026-09-13 #407：打开时快照身份（对象引用+ts/side/text 签名）——msgs 重排+
       // DOM 未重渲窗口期里 dataset.gcIdx 陈旧会串条，动作执行时由 gcResolveActiveMsg 重定位
       const _gi = (item && item.dataset && item.dataset.gcIdx !== undefined) ? Number(item.dataset.gcIdx) : -1;
-      const _gr = (_gi >= 0 && msgs[_gi]) ? msgs[_gi] : null;
-      gcActiveMsgSnap = { idx: _gi, rec: _gr, ts: _gr ? (_gr.ts || 0) : 0, side: _gr ? (_gr.side || '') : '', text: _gr ? String(_gr.text || '').slice(0, 80) : '' };
+      const _gmk = (item && item.dataset && item.dataset.mk) || '';
+      let _gr = (_gi >= 0 && msgs[_gi]) ? msgs[_gi] : null;
+      // FIX 2026-09-15 #491 渲染期身份锚优先解析（对齐聊天页 openMsgActionsAt）——快照若按
+      // 开菜单前已位移的陈旧 gcIdx 取＝开场即锁错条；按 mk 反查真实那条，查无才回退旧下标
+      let _gj = _gi;
+      if (_gmk) {
+        _gj = msgs.findIndex(gmkMsg => gcMsgKeyOf(gmkMsg) === _gmk);
+        if (_gj >= 0) _gr = msgs[_gj]; else _gj = _gi;
+      }
+      gcActiveMsgSnap = { idx: _gj, rec: _gr, mk: _gmk, ts: _gr ? (_gr.ts || 0) : 0, side: _gr ? (_gr.side || '') : '', text: _gr ? String(_gr.text || '').slice(0, 80) : '' };
       // 对齐聊天页：删除按钮按「允许删除联系人消息」开关（cs-del-ta-msg）显隐，
       // 仅成员消息可删；开关默认关，在群聊设置→输入与消息 里开启
       const delBtn = gcMsgActions.querySelector('.ma-del-gc');
@@ -3079,6 +3144,11 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     function gcActionEligible(t) {
       const bk = t.closest('.msg-bubble');
       if (!bk) return null;
+      // FIX 2026-09-15 #507 语音播放按钮不算「点气泡」（对齐单聊 #507）：否则轻点/长按播放按钮
+      // 都会布气泡轻点/长按＝弹成员菜单+吞 click 窗口，播放按钮 click 被吞（吞 click 族内核语音
+      // 永远播不出、健康内核菜单/播放双触发）。播放走下方 gvBtn touch 直驱，菜单入口保留在
+      // 同气泡非按钮区。
+      if (t.closest('.msg-voice-play')) return null;
       if (t.closest('.msg-quote')) return null;                 // 引用块点击留给后续跳原消息
       const item = bk.closest('.msg');
       if (!item || item.classList.contains('msg-poke')) return null; // 拍一拍居中条不弹

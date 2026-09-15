@@ -44,13 +44,19 @@
   const DIFFS = {
     casual: { rows: 5, cols: 6, kinds: 10, pairPerKind: 3, label: '🌱 休闲 6×5', coin: 520 },
     normal: { rows: 6, cols: 8, kinds: 12, pairPerKind: 2, label: '🌙 普通 8×6', coin: 1314 },
-    hard:   { rows: 6, cols: 10, kinds: 15, pairPerKind: 2, label: '⭐ 挑战 10×6', coin: 5200 }
+    hard:   { rows: 6, cols: 10, kinds: 15, pairPerKind: 2, label: '⭐ 挑战 10×6', coin: 5200 },
+    // #489 大棋盘：rows×cols 必须 = kinds×pairPerKind×2（每款张数为偶）才可清盘；
+    // 12 列是窄屏可玩上限（再宽则半框格子 <20px 读不清图案）
+    king:   { rows: 7, cols: 12, kinds: 21, pairPerKind: 2, label: '👑 王者 12×7', coin: 13140 },
+    legend: { rows: 8, cols: 12, kinds: 24, pairPerKind: 2, label: '🏆 传奇 12×8', coin: 33440 }
   };
   // #301 图案主题包：水果 / 甜品 / 海洋（头部 🎨 循环切换，按联系人桌面记住选择）
+  // #489 扩到 24 款（王者 21 / 传奇 24 用）——新图案只许追加在尾部，前 10/12/15 顺序
+  // 不能动（休闲/普通/挑战的牌面依赖既有顺序）；同主题内禁止重复图案（重复=异种同形，误配）
   const THEMES = {
-    fruit:   { ico: '🍎', kinds: ['🍎', '🍐', '🍇', '🍒', '🍓', '🍑', '🍍', '🥝', '🍉', '🍌', '🧁', '🍰', '🍀', '🌈', '🐬'] },
-    dessert: { ico: '🧁', kinds: ['🍰', '🧁', '🍩', '🍪', '🍫', '🍬', '🍭', '🍮', '🍦', '🧇', '🥞', '🍓', '🍯', '🫖', '☕'] },
-    ocean:   { ico: '🌊', kinds: ['🐬', '🐟', '🐠', '🦈', '🐙', '🦀', '🐡', '🦐', '🐳', '🐚', '🌊', '⛵', '🪸', '⭐', '🫧'] }
+    fruit:   { ico: '🍎', kinds: ['🍎', '🍐', '🍇', '🍒', '🍓', '🍑', '🍍', '🥝', '🍉', '🍌', '🧁', '🍰', '🍀', '🌈', '🐬', '🥑', '🍋', '🥭', '🫐', '🥥', '🌰', '🫒', '🎃', '🌻'] },
+    dessert: { ico: '🧁', kinds: ['🍰', '🧁', '🍩', '🍪', '🍫', '🍬', '🍭', '🍮', '🍦', '🧇', '🥞', '🍓', '🍯', '🫖', '☕', '🧋', '🥐', '🥨', '🥯', '🧈', '🍞', '🍥', '🍡', '🥮'] },
+    ocean:   { ico: '🌊', kinds: ['🐬', '🐟', '🐠', '🦈', '🐙', '🦀', '🐡', '🦐', '🐳', '🐚', '🌊', '⛵', '🪸', '⭐', '🫧', '🦞', '🦑', '🦦', '🦭', '🐢', '⚓', '🎣', '🚤', '💧'] }
   };
   const THEME_ORDER = ['fruit', 'dessert', 'ocean'];
   let themeKey = 'fruit';
@@ -253,7 +259,16 @@
     // #306：格子是固定 px 宽，grid 又有 3px gap——cellPx 若只按 w/cols 取整，
     // 实际总宽会多出 (cols-1)*3px 从右缘溢出截断（最右一列被裁掉）。先扣掉 gap 再取整。
     const GAP = 3;
-    const cellPx = Math.max(24, Math.min(46, Math.floor((w - (st.cols - 1) * GAP) / st.cols)));
+    const byW = Math.floor((w - (st.cols - 1) * GAP) / st.cols);
+    // #489 12 列起（王者/传奇）24px 下限在窄屏放不下会把总宽顶溢出右缘——列多时按实宽收格
+    const floor24 = Math.min(24, byW);
+    let cellPx = Math.max(floor24, Math.min(46, byW));
+    // #488 全屏放大布局：半框维持 46px 宽度上限原样；.game-fs 全屏让高度也参与取值、
+    // 上限放开到 72px——宽屏/横屏/桌面棋盘真正放大，窄手机仍由宽度约束（配合 CSS 纵向居中）
+    if (panel.classList.contains('game-fs')) {
+      const h = stageEl.clientHeight;
+      cellPx = Math.max(floor24, Math.min(72, byW, h ? Math.floor((h - (st.rows - 1) * GAP) / st.rows) : byW));
+    }
     boardEl.style.width = (cellPx * st.cols + (st.cols - 1) * GAP) + 'px';
     const tiles = boardEl.querySelectorAll('.lk-tile');
     for (let i = 0; i < tiles.length; i++) { tiles[i].style.width = cellPx + 'px'; tiles[i].style.height = cellPx + 'px'; tiles[i].style.fontSize = Math.round(cellPx * 0.52) + 'px'; }
@@ -473,7 +488,7 @@
       }
       if (!pair) pair = pairs.length ? pick(pairs) : null;
     } else {
-      // wild：随缘乱点两张（30% 直接抽一对；否则可能点错→抖一下→再认真找）
+      // wild：随缘乱点两张（30% 直接抽一对；否则可能点错→两张一起抖一下→隔一拍再认真找一对）
       if (pairs.length && Math.random() < 0.3) {
         pair = pick(pairs);
       } else {
@@ -486,11 +501,27 @@
             st.grid[a[0]][a[1]] === st.grid[b[0]][b[1]] && connected(st, a, b)) {
           pair = [a, b];
         } else {
-          // 点错了：抖一下提示，再认真找一对
-          if (a) { const ea = tileAt(a[0], a[1]); if (ea) { ea.classList.remove('lk-shake'); void ea.offsetWidth; ea.classList.add('lk-shake'); } }
+          // #487 点错了：台词只指「这次尝试」，隔一拍才真正落子——旧稿抖一张 + 台词与紧随的
+          // 成功连线同帧出现，用户视角＝「TA 明明连上了却弹『连不上』」
+          [a, b].forEach((p) => {
+            if (p) { const el = tileAt(p[0], p[1]); if (el) { el.classList.remove('lk-shake'); void el.offsetWidth; el.classList.add('lk-shake'); } }
+          });
           sfxBad();
-          taSay(pick(['哎呀，点错了…', '这两张连不上呀']));
-          pair = pairs.length ? pick(pairs) : null;
+          const triedSame = !!(a && b && st.grid[a[0]][a[1]] === st.grid[b[0]][b[1]]);
+          taSay(triedSame ? '这两张连不上呀' : '哎呀，点错了…');
+          if (a) remember(a[0], a[1]);
+          if (b) remember(b[0], b[1]);
+          const found = pairs.length ? pick(pairs) : null;
+          if (!found) { endGame(); return; }
+          const s = st;
+          clearTimeout(thinkT);
+          thinkT = setTimeout(() => {
+            if (s !== st || st.over || st.lock || st.turn !== 2) return;   // 重开/结束/已交棒则丢弃重试链
+            remember(found[0][0], found[0][1]); remember(found[1][0], found[1][1]);
+            sfxMatch();
+            removePair(found[0], found[1], false);
+          }, Math.round(700 * fastMul()));
+          return;
         }
       }
     }
