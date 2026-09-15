@@ -17,6 +17,8 @@ if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEd
 let msgs = [];
 const sessionChangedIdx = new Set();
 let chatDbReady = false;
+// FIX 2026-09-15 #526：本会话已确认当前桌面无历史（全新/空库）——进度条不再显示（见 updateChatLoading）
+let chatKnownEmpty = false;
 let lastIdbLoadPrefix = null;
 let lastIdbLoadAt = 0;
 const IDB_RELOAD_MIN_GAP = 8000;
@@ -61,6 +63,7 @@ try { hideTyping(); } catch (e) {}
 msgs = [];
 pendingLocal = null;
 chatDbReady = false;
+chatKnownEmpty = false; // FIX 2026-09-15 #526：换桌面重新判定
 sessionChangedIdx.clear();
 // FIX 2026-09-15 #489：切桌面即作废屏上渲染凭据——聊天 body 的旧 DOM 属于上个会话，
 // 切走期间记录可能被跨桌面补投递原地改写（如 问问TA/邀请TA 的 answered），同窗补丁只
@@ -970,6 +973,11 @@ if (!isMiss) { scheduleIdbRetry(); return; }
 let _ledN = 0;
 try { _ledN = chatLedger[myPrefix] || 0; } catch (e) {}
 if (_ledN > 0) { scheduleIdbRetry(); return; }
+// FIX 2026-09-15 #526：账本 0 + 首轮探测确认 miss ＝ 这个桌面没有历史可读。立刻收起
+//   「正在加载聊天记录…」，否则要白等下面 2.5s 空库二次复核才隐藏（新建联系人首次进
+//   聊天必现的进度条就出在这里）。真有历史的桌面走上面 _ledN>0 / 有数据分支，不受影响。
+chatKnownEmpty = true;
+try { updateChatLoading(); } catch (e) {}
 // FIX 2026-09-12 #358 空库二次复核（账本缺失时的最后防线）：TASKS #133 探测层在冷启动
 // 早期窗口对已存在的键会同时谎报 idbGet undefined + idbHasKey false，账本缺失（chat-meta
 // 未写入/读取失败）时上面的矛盾守卫失效——单次探测说「空库」就把 LS 有损快照（折半弃旧，
@@ -996,6 +1004,7 @@ return;
 // v3.26.x #88：到达这里＝第一轮探测已确认空库（isMiss false 或已重试），原空库分支
 function enterConfirmedEmpty() {
 chatDbReady = true;
+chatKnownEmpty = true; // FIX 2026-09-15 #526：确认空库＝无历史可读
 idbRetryCount = 0;
 authLoadedPrefix = myPrefix;
 try { syncLastMineText(); } catch (e) {}
@@ -1017,6 +1026,7 @@ writeLsSnapshot(msgs, myPrefix, true);
 // #90：已确认库里没有 chat-msgs，账本随之对齐真实状态（过期的高账本不该再拦正常保存）
 try { chatLedgerSave(myPrefix, (msgs && msgs.length) || 0, msgsBytes(msgs)); } catch (e) {}
 try { chatTailMerge(); } catch (e) {} // #180：确认空库也回放尾巴日志（本会话/上次会话未落盘部分）
+try { updateChatLoading(); } catch (e) {} // FIX 2026-09-15 #526：确认空库后收起进度条
 }
 return;
 }
@@ -1024,7 +1034,7 @@ try {
 __prof('ch0_enter');
 const idbArr = typeof v === 'string' ? JSON.parse(v) : v;
 __prof('ch1_parsed');
-if (!Array.isArray(idbArr)) { chatDbReady = true; return; }
+if (!Array.isArray(idbArr)) { chatDbReady = true; chatKnownEmpty = false; return; }
 const sigOf = (m) => { try { return JSON.stringify({ t: m && m.text, s: m && m.side, ts: m && m.ts, i: m && m.img ? (typeof m.img === 'string' ? m.img.slice(0, 32) : String(m.img.length)) : 0 }); } catch (e) { return ''; } };
 const hasLocal = !!((pendingLocal && pendingLocal.length) || (msgs && msgs.length));
 let merged, curArr = pendingLocal || msgs || [];
@@ -1071,6 +1081,7 @@ try { syncLastMineText(); } catch (e) {}
 __prof('ch5_passes');
 pendingLocal = null;
 chatDbReady = true;
+chatKnownEmpty = false; // FIX 2026-09-15 #526：读到权威数据（含空数组）＝不再是「已知空库」，进度条交回常规判定
 // v3.14.x：本命名空间已读到权威（此后空数组落盘才被允许——内存已含全部历史）
 authLoadedPrefix = myPrefix;
 idbRetryCount = 0;
@@ -1389,9 +1400,11 @@ return !!(p && !p.hidden);
 }
 // v3.26.x：聊天记录加载进度条显隐——消息区为空且权威数据未就绪时显示「正在加载聊天记录…」，
 //   读库完成（chatDbReady=true 且 msgs 非空）或离开聊天页自动隐藏
+// FIX 2026-09-15 #526：已知空库（新联系人/空桌面，chatKnownEmpty）不再显示——没有历史可读，
+//   原来新建联系人首次进聊天会白等 2.5s 空库复核才收起进度条
 function updateChatLoading() {
 if (!chatLoadingEl) return;
-chatLoadingEl.hidden = !(chatVisible() && !chatDbReady && !msgs.length);
+chatLoadingEl.hidden = !(chatVisible() && !chatDbReady && !chatKnownEmpty && !msgs.length);
 }
 // FIX #162（iPad Air 7 / iPadOS 26 Safari：对方回一条消息视图就向上漂一次，不贴最新消息）
 // 贴底钉住态：程序化滚到底时置真，用户手动触摸/滚轮滚动即解除；复写与图片补滚只在钉住时进行
@@ -1545,6 +1558,38 @@ out.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
 }
 return out;
 }
+// FIX 2026-09-15 #531：自定义字卡池分类修正——①emoji 判定补 BMP 符号区（☺️⭐☀️✨☕ 等，
+// 原判定只看代理对与 astral 段，纯 BMP 符号卡落进 text）；②颜文字判定补无括号形态
+//（▽・ω・▽、๑•́ ₃ •̀๑ 等）。让「文字」池只装可读句子，避免符号/颜文字卡占满文字池。
+// 判定顺序：含 astral emoji 一律 emoji（保持原行为）→ 含中文/假名/字母/数字＝可读卡按原样
+// 归 text/颜文字 → 无可读字符才按符号区/颜文字特征归 emoji/kaomoji。
+const CHAT_READABLE_RE = /[A-Za-z0-9\u4e00-\u9fff\u3041-\u3096\u30a1-\u30fa]/;
+function chatLooksKaomoji(c) {
+if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) return true;
+return /[｡◕‿・▽´｀￣﹏◠◡≧≦ω＾￢¬^•˙˘๑٩۶ฅヽノ]/.test(c);
+}
+function chatIsEmojiCard(c) {
+if (/[\uD800-\uDBFF]/.test(c)) return true;
+if (CHAT_READABLE_RE.test(c)) return false;
+if (chatLooksKaomoji(c)) return false; // 非可读但含颜文字特征（含 ✿♥✧ 等符号的颜文字）→ 交颜文字分支
+for (const ch of c) {
+const cp = ch.codePointAt(0);
+if ((cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) || (cp >= 0x2B00 && cp <= 0x2BFF)) return true;
+}
+return false;
+}
+function chatIsKaomojiCard(c) {
+if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) return true;
+if (CHAT_READABLE_RE.test(c)) return false;
+return /[｡◕‿・▽´｀￣﹏◠◡≧≦ω＾￢¬^•˙˘๑٩۶ฅヽノ]/.test(c);
+}
+// 「文字」池是否至少有一张可读句子卡（中文/假名/字母/数字）。FIX 2026-09-15 #531：全是颜文字/符号
+// /emoji 时视为「没有可用的自定义文本回复源」——#157 的默认主字卡兜底据此触发，否则用户只加了
+// 颜文字/符号卡时池里没有任何句子，联系人只能反复发那几张符号（用户报「消息和信都是连续发颜表情，
+// 无法使用其他字卡」；系统预设 2 级锁已解锁）。含中文/字母的用户（#157 场景）行为不变。
+function chatHasReadableTextCard(arr) {
+return arr.some(s => typeof s === 'string' && CHAT_READABLE_RE.test(s));
+}
 function getPool() {
 const cards = (window.getCustomCards && window.getCustomCards()) || [];
 const pokeSet = (function () {
@@ -1566,8 +1611,8 @@ if (typeof c === 'string' && c.indexOf('|||') >= 0) return;
 // 回复池里是裸 @@m:hash（无 |||、非 data:），旧两道守卫全漏过＝令牌卡被当文字卡入池，
 // 抽中即把令牌串当文字直出（「联系人消息乱码 @@m:…」，公用库共享故多机型全现）
 if (typeof c === 'string' && window.mochiMediaIsToken && window.mochiMediaIsToken(c)) return;
-if (/[\uD800-\uDBFF]/.test(c) || /^[😀-🙏🌀-🫿]/u.test(c)) emoji.push(c);
-else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) kaomoji.push(c);
+if (chatIsEmojiCard(c)) emoji.push(c);
+else if (chatIsKaomojiCard(c)) kaomoji.push(c);
 else text.push(c);
 });
 try {
@@ -1583,7 +1628,10 @@ if (dcfg.enabled !== false && useChat && !sysLocked) {
 // 里 drawCards 那条混入路径，对池子本身无效：650 张自定义对 4600+ 默认均匀随机抽取，
 // 体感「概率调到 5% 联系人还是基本用默认字卡」（小米15Pro+Chrome 等多机型反馈）。
 // 对齐颜文字/emoji 分支的兜底语义：有自定义就用自定义，默认字卡按 dc-overall 概率混入。
-if (catOn('main') && !text.length) {
+// FIX 2026-09-15 #531：兜底门由「自定义 text 池为空」放宽为「text 池没有可读句子卡」——
+// 用户只加了颜文字/符号卡时 text 池非空却无句子，旧门不触发＝池里没有任何中文/句子卡，
+// 联系人只能反复发那几张符号（#531 报障）。含中文/字母的自定义字卡（#157 场景）语义不变。
+if (catOn('main') && !chatHasReadableTextCard(text)) {
 const defGrps = (window.getDefaultCardGroups && window.getDefaultCardGroups('main')) || [];
 defGrps.forEach(g => {
 const arr = g[1] || [];
@@ -1722,6 +1770,10 @@ window.__replyPoolDiag = function () {
     const P = getPool();
     const cfg = (window.defaultCardCfg && window.defaultCardCfg()) || {};
     const customRaw = (window.getCustomCards && window.getCustomCards()) || [];
+    // FIX 2026-09-15 #531：补「总档/自定义占比/媒体概率/池样本」现场——「联系人只发颜文字、
+    // 用不了其他字卡」类报障一眼看出是概率设置还是自定义池内容（全是符号卡）导致，免复现。
+    const rc = (window.replyCfg && window.replyCfg()) || {};
+    const sample = (a) => a.slice(0, 3).map(s => String(s).replace(/\s+/g, ' ').slice(0, 6)).join('|') || '空';
     return [
       '池text=' + P.text.length,
       'kaomoji=' + P.kaomoji.length,
@@ -1737,7 +1789,14 @@ window.__replyPoolDiag = function () {
       // v3.26.x #163：补概率滑杆现场——「默认概率调到八九十还是总发自定义字卡」类报障
       // 直接核对 dc-overall-chat（场景概率，未设回退整体）与主字卡分类占比是否真调到位
       '默认概率chat=' + (cfg.overallFor ? cfg.overallFor('chat') : cfg.overall),
-      '主卡占比=' + (cfg.probs ? cfg.probs.main : '?')
+      '主卡占比=' + (cfg.probs ? cfg.probs.main : '?'),
+      '总档=' + (window.dcpAll ? window.dcpAll() : '?'),
+      '自定义占比=' + (rc['csp-cust'] !== undefined ? rc['csp-cust'] : '?'),
+      '媒体概率=' + ['sticker', 'emoji', 'image', 'voice', 'kaomoji'].map(k => k + ':' + (rc[k + '-prob'] !== undefined ? rc[k + '-prob'] : '?')).join(','),
+      '多字卡py=' + (rc['py-en'] === 1 ? (rc['py-prob'] + '%') : '关'),
+      'text样本=' + sample(P.text),
+      'kaomoji样本=' + sample(P.kaomoji),
+      'emoji样本=' + sample(P.emoji)
     ].join(' / ');
   } catch (e) { return '诊断出错:' + e.message; }
 };
@@ -2229,6 +2288,13 @@ setTimeout(() => addIn('你领取了红包' + amtTxt, { special: 'poke' }), rand
 return;
 }
 if (e.target.closest('.msg-inplace')) return;
+// v3.33.x #521：批量问卷卡片点击 → 打开问卷详情页（openAskSurvey 自带「返回回聊天页」逻辑）
+const surveyCard = e.target.closest('.msg-survey-card');
+if (surveyCard) {
+e.stopPropagation(); // 不冒泡触发气泡操作菜单
+if (window.openAskSurvey) window.openAskSurvey();
+return;
+}
 const card = e.target.closest('.msg-ask-card, .msg-choose-card');
 if (!card) return;
 const item = card.closest('.msg-ask');
@@ -2835,6 +2901,50 @@ function msgKeyOf(rec) {
 if (!rec) return '';
 return (rec.ts || 0) + '|' + (rec.side || '') + '|' + (rec.type || '') + '|' + String(rec.text || '').slice(0, 80);
 }
+// v3.33.x #521：批量问卷长卡片（special:'ask-survey'）——观感对齐单题 ask-card（同宽/同圆角/
+// 同阴影/同字号；标题、逐题答案、底部提示一一对应，无 emoji、无独立进度徽标，进度并入底部提示）。
+// 题列表/状态/答案全部以快照字段持久化在消息记录上（surveyQs/surveyStatus/surveyAnswers），
+// 作答进度由 ta-ask.js 经 chatSyncSurveyCard 回写；渲染只读 rec 字段，不依赖问卷实时状态
+// （撤回问卷重置为草稿后，历史卡片仍保留最后一次快照，合理）。
+function surveyCardHtml(rec) {
+const qs = Array.isArray(rec.surveyQs) ? rec.surveyQs : [];
+const answers = Array.isArray(rec.surveyAnswers) ? rec.surveyAnswers : [];
+const done = rec.surveyStatus === 'done';
+const nDone = answers.filter(a => typeof a === 'string' && a.trim()).length;
+let rows = '';
+qs.forEach((q, i) => {
+const a = answers[i] || '';
+rows += '<div class="msg-survey-item' + (a ? ' answered' : '') + '">' +
+'<div class="msg-survey-q">' + (i + 1) + '. ' + escTxt(q.text || '') + '</div>' +
+(Array.isArray(q.options) && q.options.length
+? '<div class="msg-survey-opts">' + q.options.map(o => '<span class="msg-survey-opt">' + escTxt(o) + '</span>').join('') + '</div>'
+: '') +
+(a ? '<div class="msg-survey-a">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(a) : a) + '</div>' : '') +
+'</div>';
+});
+return '<div class="msg-survey-card' + (done ? ' done' : '') + '">' +
+'<div class="msg-survey-head">你发出的问卷 · ' + qs.length + ' 题</div>' +
+'<div class="msg-survey-list">' + (rows || '<div class="msg-survey-item">（问卷内容缺失）</div>') + '</div>' +
+'<div class="msg-survey-tip">' + (done ? '已交卷 · 点击查看问卷详情' : 'TA 正在作答 · 已答 ' + nDone + '/' + qs.length + '，点击查看进度') + '</div>' +
+'</div>';
+}
+// v3.33.x #521：问卷进度回写——ta-ask.js 在 TA 每答一题/交卷时调用，按 surveyTs 定位
+// 聊天记录里的 ask-survey 卡片更新快照；卡片在当前渲染窗口内时原地重画 innerHTML，
+// 不在窗口内（上翻历史/未渲染）只落库，下次渲染自然带新状态。
+window.chatSyncSurveyCard = function (surveyTs, status, answers) {
+if (!surveyTs) return;
+for (let i = msgs.length - 1; i >= 0; i--) {
+const r = msgs[i];
+if (r && r.special === 'ask-survey' && r.surveyTs === surveyTs) {
+r.surveyStatus = status;
+r.surveyAnswers = Array.isArray(answers) ? answers : [];
+saveMsgs();
+const el = body.querySelector('.msg-survey[data-idx="' + i + '"]');
+if (el) el.innerHTML = surveyCardHtml(r);
+return;
+}
+}
+};
 function renderMsg(rec) {
 const m = document.createElement('div');
 m.dataset.mk = msgKeyOf(rec); // FIX 2026-09-15 #491 身份锚随渲染写入，批量渲染只覆盖 data-idx 不动它
@@ -3108,6 +3218,14 @@ m.innerHTML = '<div class="msg-choose-card' + (answered ? ' answered' : '') + '"
 : '<div class="msg-ask-tip">' + T('点击回 TA 一句') + '</div>') +
 favHeartHtml(rec) +
 '</div>';
+appendMsg(m);
+maybeScrollChatBottom(rec.side);
+return m;
+}
+if (rec.special === 'ask-survey') {
+m.className = 'msg-ask msg-survey';
+m.dataset.idx = msgs.length - 1;
+m.innerHTML = surveyCardHtml(rec);
 appendMsg(m);
 maybeScrollChatBottom(rec.side);
 return m;
@@ -3738,7 +3856,7 @@ opts = opts || {};
   // 正文本身就是一张完整字卡，label 再渲染一遍会上下两行内容重复）
   const _tagMood = opts.tag ? [{ tag: String(opts.tag), label: opts.tagNoDup ? '' : String(text) }] : null;
   // v3.16.x：gInv = 联系人主动邀请的游戏类型（pong/snake/rps），随消息持久化供小游戏记录识别
-	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, mood: opts.mood || _tagMood || undefined });
+	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, mood: opts.mood || _tagMood || undefined });
 }
 // v3.27.x：对话型回复补「正在输入」过渡——TA 回应先 showTyping 再落地，消除气泡凭空冒出的突兀感。
 // items 可为单条文本或数组（数组=逐条连发，条与条之间再出一次 typing）。仅当前桌面生效：期间切走
@@ -3796,7 +3914,7 @@ try { if (chatVisible()) renderWindow(true); } catch (e) {}
 };
 window.chatAddSystem = function (text, opts) {
 opts = opts || {};
-return addIn(text, { special: opts.special || 'poke', img: opts.img, mailNotice: opts.mailNotice, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, roastText: opts.roastText, roastCat: opts.roastCat, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir });
+return addIn(text, { special: opts.special || 'poke', img: opts.img, mailNotice: opts.mailNotice, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, roastText: opts.roastText, roastCat: opts.roastCat, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers });
 };
 window.chatAddIn = function (text, opts) {
 // FIX 2026-09-15 #492：opts.follow = 用户主动通道（帮我决定/多人决定结果发到聊天）——落聊天
@@ -4625,7 +4743,11 @@ const pAv = document.getElementById('chat-partner-av');
 if (pAv) {
 pAv.addEventListener('click', (e) => {
 e.stopPropagation();
-if (window.openCkPanel) window.openCkPanel();
+// FIX 2026-09-15 #529 再次点顶部头像＝收起寻踪半框：原恒调 openCkPanel()（内部恒 hidden=false），
+// 面板已开时再点纹丝不动＝用户报「再次点击顶部栏头像无法关闭」。改 toggle（开着则关），
+// 点外关闭由 p2-features.js 的 #ck-panel document 关闭器负责。无 toggle 时回退旧行为。
+if (window.toggleCkPanel) window.toggleCkPanel();
+else if (window.openCkPanel) window.openCkPanel();
 });
 }
 const moreCk = document.getElementById('more-ck');
@@ -4703,7 +4825,7 @@ t = replyWord;
 // FIX 2026-09-05 #185 最终非空兜底：固定回复字卡（getReplyCard）/默认主字卡（defs.text）被设成
 // 空白内容时会无条件覆盖抽好的回复，必须在此拦下，否则联系人持续发空气泡
 if (typeof t !== 'string' || !t.trim()) t = pick(FALLBACK_REPLY_POOL);
-if (hit(c['cf-prob'])) {
+if (hit(window.dcpEff ? window.dcpEff(c['cf-prob']) : c['cf-prob'])) { // FIX 2026-09-15 #518 连接词追加套系统预设字卡总档
 const w = (window.getFollowupWord && window.getFollowupWord(t)) || '';
 if (w) t += ' ' + w;
 }
@@ -4914,11 +5036,22 @@ try {
 const defs = (window.getDefaultCards && window.getDefaultCards()) || null;
 if (defs && defs.type !== 'poke' && defs.text) return { text: defs.text, type: 'text' };
 } catch (e) {}
-const r = Math.random() * 100;
-if (pool.sticker.length && r < 15) return { text: pick(pool.sticker), type: 'sticker' };
-if (pool.image.length && r < 25) return { text: pick(pool.image), type: 'image' };
-if (pool.kaomoji.length && r < 40) return { text: pick(pool.kaomoji), type: 'text' };
-if (pool.emoji.length && r < 55) return { text: pick(pool.emoji), type: 'text' };
+// FIX 2026-09-15 #531：空池不再顶替他人概率段。原实现是固定累计阈值（15/25/40/55）——
+// 贴纸/图片池为空时 `pool.sticker.length &&` 短路，颜文字的判定区间前移到 0~40（40%）、
+// emoji 到 40~55，用户体感「联系人连发颜文字」。改为「只有可用分类参与」的设计权重
+//（贴纸15/图片10/颜文字15/emoji15/文字45）归一化抽取：空池权重自动归回文字，比例不失真。
+const _bands = [
+[pool.sticker.length ? 15 : 0, () => ({ text: pick(pool.sticker), type: 'sticker' })],
+[pool.image.length ? 10 : 0, () => ({ text: pick(pool.image), type: 'image' })],
+[pool.kaomoji.length ? 15 : 0, () => ({ text: pick(pool.kaomoji), type: 'text' })],
+[pool.emoji.length ? 15 : 0, () => ({ text: pick(pool.emoji), type: 'text' })],
+[45, () => ({ text: pick(pool.text) || '在吗？', type: 'text' })]
+];
+let _bRoll = Math.random() * _bands.reduce((a, b) => a + b[0], 0);
+for (let i = 0; i < _bands.length; i++) {
+_bRoll -= _bands[i][0];
+if (_bRoll < 0) return _bands[i][1]();
+}
 return { text: pick(pool.text) || '在吗？', type: 'text' };
 };
 const acMin = Math.max(1, Number(cfgn(c, 'as-count-min', 1)) || 1);
@@ -5674,6 +5807,10 @@ const rpRandVal = document.getElementById('rp-rand-val');
 const rpCustomInput = document.getElementById('rp-custom');
 const rpWishInput = document.getElementById('rp-wish');
 const rpSendBtn = document.getElementById('rp-send-btn');
+const rpSettingsBtn = document.getElementById('rp-settings-btn');
+const rpSettings = document.getElementById('rp-settings');
+const rpSettingsDone = document.getElementById('rp-settings-done');
+const rpScrollEl = rpPanel ? rpPanel.querySelector('.poke-card-scroll') : null;
 let rpSide = 'out';
 let rpPickedAmt = null;
 const QIXI_DATES = ['2024-08-10','2025-08-29','2026-08-19','2027-08-08','2028-08-26','2029-08-15','2030-08-04'];
@@ -5713,9 +5850,27 @@ rpPanel.querySelectorAll('.rp-amt').forEach(b => b.classList.remove('sel'));
 closeIme();
 rpRenderBalance();
 rpRenderCover();
+closeRpSettings();
 rpPanel.hidden = false;
 }
-function closeRpPanel() { if (rpPanel) rpPanel.hidden = true; }
+function closeRpPanel() { if (rpPanel) rpPanel.hidden = true; closeRpSettings(); }
+// v3.29.x：红包半框「设置」→ TA 自动发红包（概率/每日上限）。设置区默认收起，
+// 打开时同步一次显示值；「完成」或关闭面板均回到红包主界面。
+function openRpSettings() {
+  if (!rpSettings) return;
+  if (window.csRpSettingsSync) { try { window.csRpSettingsSync(); } catch (e) {} }
+  if (rpBalanceEl) rpBalanceEl.hidden = true;
+  if (rpScrollEl) rpScrollEl.hidden = true;
+  rpSettings.hidden = false;
+}
+function closeRpSettings() {
+  if (!rpSettings) return;
+  rpSettings.hidden = true;
+  if (rpBalanceEl) rpBalanceEl.hidden = false;
+  if (rpScrollEl) rpScrollEl.hidden = false;
+}
+if (rpSettingsBtn) rpSettingsBtn.addEventListener('click', (e) => { e.stopPropagation(); openRpSettings(); });
+if (rpSettingsDone) rpSettingsDone.addEventListener('click', (e) => { e.stopPropagation(); closeRpSettings(); });
 if (rpPanel) {
 rpPanel.querySelectorAll('.rp-side').forEach(btn => {
 btn.addEventListener('click', (e) => {
@@ -8218,6 +8373,14 @@ maRunAction(btn);
 msgActions.addEventListener('touchend', (e) => {
 const btn = e.target.closest('.ma-btn');
 if (!btn || btn.hidden) return;
+// FIX 2026-09-15 #522 长按→【编辑】弹窗刚开即被关（vivo X200s Edge 等多机型报障，几何相关：
+// 弹窗居中、按钮在框外时必现，在框内时偶发）。根因：#480 touch 直驱在本 handler 里同步
+// maRunAction → openModal 打开编辑弹窗后，健康内核仍会补发这次轻点的合成 click；click 目标按
+// 「弹窗已打开」的新布局命中 #modal-mask（z-index 90 > #msg-actions 80），触发遮罩 click→close，
+// 弹窗瞬间关闭＝编辑无反应。#480 的 maClickGuard 只吞得到 msgActions 自己的 click，拦不住落到
+// 遮罩上的那颗。取消 touchend 默认行为＝从引擎层抑制本次合成 click（吞 click 族内核本就不发 click，
+// 不受影响），保留 maClickGuard 作第二道防双跑。
+e.preventDefault();
 maClickGuard = Date.now() + 600; // 吞引擎补发 click 防双跑
 maRunAction(btn); // touch 直驱执行——不依赖内核从 touch 合成 click
 });
