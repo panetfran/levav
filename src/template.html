@@ -80,7 +80,7 @@
              纯静态卡骨架，状态文案/按钮/交互由 clock.js 接线渲染（card-lock.js 提供闸门），在线 notice.json 不影响此处 -->
         <div class="splash-alert splash-cardlock" data-anti-scam="l" id="splash-cardlock">
           <div class="splash-alert-t">防未成年人 · 系统内置字卡已锁定</div>
-          <p id="splash-cardlock-tip">系统内置字卡已全部锁定，这是面向未成年人的保护措施。如你已年满 18 周岁，可输入二级验证密码解锁使用。密码获取方式见开屏说明；解开密码请勿二传（不要告诉别人），一旦有人大范围二传，密码就会被重新设置。继续使用即视为你确认已年满 18 周岁。</p>
+          <p id="splash-cardlock-tip">系统内置字卡已全部锁定，这是面向未成年人的保护措施。如你已年满 18 周岁，可输入二级验证密码解锁使用。锁定不影响：聊天情绪字卡、TA 的心情、聊天回应字卡、你自建的字卡均照常可用。密码非常简单，答案就在开屏里可以找到；解开密码请勿二传（不要告诉别人），一旦有人二传，密码就会被重新设置。继续使用即视为你确认已年满 18 周岁。</p>
           <div class="cardlock-actions" id="splash-cardlock-actions"></div>
         </div>
         <!-- v3.27.x：防骗置顶声明——最顶部固定展示，防收费诈骗；静态 DOM，在线 notice.json 覆盖只改公告列表，不影响此处 -->
@@ -319,7 +319,8 @@
       <div class="splash-mandatory-scroll" id="splash-mandatory-scroll">
         <div class="splash-mandatory-head">
           <div class="splash-mandatory-title">进入前 · 作者必读公告</div>
-          <div class="splash-mandatory-sub">以下四条为作者公告，请逐条阅读（滑到底部后可确认进入）</div>
+          <!-- #315c：进入前最后一屏补年龄红线——与开屏免责卡口径一致，防御链收口 -->
+          <div class="splash-mandatory-sub">本站禁止未满 18 周岁的未成年人使用；以下四条为作者公告，请逐条阅读（滑到底部后可确认进入）</div>
         </div>
         <div class="splash-mandatory-card">
           <div class="splash-mandatory-date">2026.09.12</div>
@@ -1212,6 +1213,14 @@
     <div class="set-group glass">
       <div class="gs-row"><span>使用系统预设字卡</span><label class="toggle"><input type="checkbox" id="ck-default" checked><span class="tk"></span></label></div>
     </div>
+    <!-- v3.26.x #515：发送到聊天概率（用户报「寻踪日常字卡页没有显示触发的概率和可调整的按钮功能」）。
+         与「其他互动功能字卡」页的「寻踪日常发送到聊天」是同一个键 dcf-checkin（per-cid），
+         data-dcfkey 标记由 default-cards.js 统一绑定 + 改一处刷新全部同键 stepper；
+         0% = 完全不在聊天里推（寻踪页与历史记录照常生成），100% = 每次更新都推。 -->
+    <div class="set-group glass" id="ck-prob-box" style="margin:10px 12px 0">
+      <div class="gs-row"><span>寻踪日常发送到聊天</span><div class="stepper" id="dcf-prob-checkin-ck" data-dcfkey="checkin" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-checkin-ck-val" readonly><button class="stp-max">+</button></div></div>
+    </div>
+    <div class="sm-set-hint" id="ck-prob-hint" style="padding:2px 16px 4px">说明：本概率控制「TA 更新日常时是否往聊天里推消息」（更新提示 + 日常内容 + 概率「提醒你来寻踪」），与「其他互动功能字卡」页的同一项设置共用一个值，改任意一处两处同步。调到 0% 时寻踪页与历史记录照常生成，只是不再在聊天里推送。</div>
     <div class="fav-tabs">
       <button class="fav-tab sel" data-cktab="place"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:3px"><path d="M12 21s-6-5.3-6-10a6 6 0 1112 0c0 4.7-6 10-6 10z"/><circle cx="12" cy="11" r="2.2"/></svg>地点</button>
       <button class="fav-tab" data-cktab="action"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:3px"><path d="M13 2L4.5 13.5H11l-1 8.5L18.5 10H12l1-8z"/></svg>在做什么</button>
@@ -1439,6 +1448,17 @@
 <!-- 设置页 -->
     <div class="page" id="page-setting" hidden>
       <div class="set-title">设置</div>
+      <!-- v3.33.x：设置页顶部 tag 分类——设置项太多一页堆到底，用户找不到功能；
+           复用全站 .them-tabs/.them-sec 互斥显示观感（聊天设置/手机桌面美化同款） -->
+      <div class="them-tabs" id="set-tabs">
+        <div class="them-tab active" data-tab="basic">通用</div>
+        <div class="them-tab" data-tab="chat">聊天</div>
+        <div class="them-tab" data-tab="system">系统</div>
+        <div class="them-tab" data-tab="tools">工具</div>
+        <div class="them-tab" data-tab="about">关于</div>
+      </div>
+      <!-- 通用：联系人 / 桌面 + 开启群聊 + 深色模式 / 手机桌面美化 -->
+      <div class="them-sec" data-sec="basic">
       <div class="set-group glass">
         <div class="set-row" id="row-contacts">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.5-6 8-6s8 2 8 6"/></svg></div>
@@ -1464,24 +1484,9 @@
           <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
         </div>
       </div>
-      <!-- 应用锁（隐私防护：防别人拿手机打开本站直接偷看聊天记录；逻辑在 applock.js） -->
-      <div class="set-group glass">
-        <div class="set-row">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 018 0v3"/><circle cx="12" cy="15.5" r="1.5" fill="#111111"/><path d="M12 17v1.5"/></svg></div>
-          <div class="txt">应用锁<span class="sub">打开本站需输密码，防别人偷看聊天记录</span></div>
-          <label class="toggle"><input type="checkbox" id="applock-en"><span class="tk"></span></label>
-        </div>
-        <div class="gs-sub" id="applock-sub">纯本地功能：可设数字密码 + 安全问题（忘记时重置）。提醒：网页数据存于本机，此锁防日常偷看，防不了懂技术的人读取本机数据。</div>
-      </div>
-      <!-- 开屏问答门（可不设应用锁单独用；逻辑在 applock.js） -->
-      <div class="set-group glass">
-        <div class="set-row">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5V11c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5.5z"/><path d="M9.6 9.2a2.6 2.6 0 014.9 1.1c0 1.6-2.5 2-2.5 3.4"/><circle cx="12" cy="16.6" r=".4" fill="#111111"/></svg></div>
-          <div class="txt">开屏问答门<span class="sub">答对问题才放行，可不设数字密码</span></div>
-          <label class="toggle"><input type="checkbox" id="applock-qa-en"><span class="tk"></span></label>
-        </div>
-        <div class="gs-sub" id="applock-qa-sub">纯本地功能：<b>默认开启</b>——每次打开本站（含换浏览器/新设备）先答对问答题才放行，可单独使用；关掉即本机不再询问。锁屏时可输暗号让本机永久跳过问答层。</div>
-      </div>
+      </div><!-- /them-sec basic -->
+      <!-- 聊天：回复 / 通话 / 音效 + 功能大全 + 功能介绍 -->
+      <div class="them-sec" data-sec="chat">
       <div class="set-group glass">
         <div class="set-row" id="row-general">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v3M12 20v3M4.2 4.2l2.2 2.2M17.6 17.6l2.2 2.2M1 12h3M20 12h3M4.2 19.8l2.2-2.2M17.6 6.4l2.2-2.2"/></svg></div>
@@ -1503,11 +1508,27 @@
           <div class="txt">功能大全<span class="sub">全应用功能索引 · 可搜索 · 点条目直达</span></div>
           <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
         </div>
-        <div class="set-row" id="row-about">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg></div>
-          <div class="txt">功能介绍与可二传二改许可</div>
-          <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
+      </div>
+      </div><!-- /them-sec chat -->
+      <!-- 系统：应用锁 + 开屏问答门（隐私防护）+ 后台保活/通知 + 全屏/离线通知等系统开关 -->
+      <div class="them-sec" data-sec="system">
+      <!-- 应用锁（隐私防护：防别人拿手机打开本站直接偷看聊天记录；逻辑在 applock.js） -->
+      <div class="set-group glass">
+        <div class="set-row">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 018 0v3"/><circle cx="12" cy="15.5" r="1.5" fill="#111111"/><path d="M12 17v1.5"/></svg></div>
+          <div class="txt">应用锁<span class="sub">打开本站需输密码，防别人偷看聊天记录</span></div>
+          <label class="toggle"><input type="checkbox" id="applock-en"><span class="tk"></span></label>
         </div>
+        <div class="gs-sub" id="applock-sub">纯本地功能：可设数字密码 + 安全问题（忘记时重置）。提醒：网页数据存于本机，此锁防日常偷看，防不了懂技术的人读取本机数据。</div>
+      </div>
+      <!-- 开屏问答门（可不设应用锁单独用；逻辑在 applock.js） -->
+      <div class="set-group glass">
+        <div class="set-row">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3.5V11c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5.5z"/><path d="M9.6 9.2a2.6 2.6 0 014.9 1.1c0 1.6-2.5 2-2.5 3.4"/><circle cx="12" cy="16.6" r=".4" fill="#111111"/></svg></div>
+          <div class="txt">开屏问答门<span class="sub">答对问题才放行，可不设数字密码</span></div>
+          <label class="toggle"><input type="checkbox" id="applock-qa-en"><span class="tk"></span></label>
+        </div>
+        <div class="gs-sub" id="applock-qa-sub">纯本地功能：<b>默认开启</b>——每次打开本站（含换浏览器/新设备）先答对问答题才放行，可单独使用；关掉即本机不再询问。锁屏时可输暗号让本机永久跳过问答层。</div>
       </div>
       <div class="set-group glass">
         <div class="gs-row"><span>后台保活</span><label class="toggle"><input type="checkbox" id="bg-keepalive"><span class="tk"></span></label></div>
@@ -1540,6 +1561,9 @@
         </div>
         <div class="gs-row" style="display:block"><span id="psync-status" style="font-size:11px;color:var(--muted,#999);line-height:1.5;white-space:normal">…</span></div>
       </div>
+      </div><!-- /them-sec system -->
+      <!-- 工具：导出 / 导入 / 信息诊断 / 存储 / 卡顿优化等数据与诊断工具 -->
+      <div class="them-sec" data-sec="tools">
       <div class="set-group glass">
         <div class="set-row" id="row-export">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg></div>
@@ -1586,7 +1610,14 @@
         <div class="set-row" id="row-storage-view">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg></div>
           <div class="txt">查看存储<span class="sub">查看各功能占用空间，可手动清理错误诊断记录</span></div>
-          <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
+          <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6 6-6"/></svg></div>
+        </div>
+        <!-- #497 压缩图片入口：img-compress.js 接线 #row-img-compress（该功能上线时漏加本行＝设置页一直无入口）；
+             「查看存储」页内另有同款入口 #st-img-compress-btn -->
+        <div class="set-row" id="row-img-compress">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></div>
+          <div class="txt">压缩图片<span class="sub">上传时已自动压缩；这里把历史遗留的偏大存量图再压一遍</span></div>
+          <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6 6-6"/></svg></div>
         </div>
         <!-- v3.26.x #411：卡顿自检 · 一键优化——字卡库数据过大（如公用库 44MB）是 iOS/安卓
              间歇卡顿的主因，本行扫描分级 + 非破坏预热（取回挂起大键 + 令牌化回复池，不删数据） -->
@@ -1596,12 +1627,21 @@
           <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
         </div>
       </div>
+      </div><!-- /them-sec tools -->
+      <!-- 关于：清除本地数据 + 版本 + 防骗声明（常驻底部，不随标签切换） -->
+      <div class="them-sec" data-sec="about">
       <div class="set-group glass">
+        <div class="set-row" id="row-about">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg></div>
+          <div class="txt">功能介绍与可二传二改许可</div>
+          <div class="arrow"><svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg></div>
+        </div>
         <div class="set-row" id="row-reset">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12"/><path d="M9 7V5a2 2 0 012-2h2a2 2 0 012 2v2"/></svg></div>
           <div class="txt">清除本地数据</div>
         </div>
       </div>
+      </div><!-- /them-sec about -->
       <div class="ver">Mochi 字卡传讯 __APP_VERSION__</div>
       <div class="ver-credit">原版小红书@言序（1842523578）</div>
       <!-- v3.27.x：设置页底部防骗声明 -->
@@ -1641,6 +1681,14 @@
           <button class="storage-clear" id="st-slim-other" type="button" hidden>一键清理（仅删其他站点，不动本应用）</button>
           <div class="storage-hint" id="st-other-slim-list"></div>
           <div class="storage-hint">本地音乐是唯一能安全大额释放空间的一项：删除本地音频文件并从歌单移除，外链 / 种子歌不受影响，之后需要还能重新添加。聊天记录（图片、语音）就是你明确要求保留的部分，不在清理范围；壁纸、头像、自定义表情各有各自的删除入口（在对应设置里），避免误删掉你设置好的外观。</div>
+        </div>
+        <!-- #497 图片压缩：上传当时已自动压缩的说明 + 存量偏大图重压入口（扫描/压缩逻辑全在 img-compress.js，
+             本卡只补它接线的 #st-img-compress / #st-img-compress-btn 锚点——该功能上线时漏加＝查看存储页一直无入口） -->
+        <div class="cal-card glass">
+          <div class="cal-card-title">图片压缩</div>
+          <div class="storage-row"><span>可再压缩的存量图片</span><b id="st-img-compress">未扫描</b></div>
+          <button class="storage-clear" id="st-img-compress-btn" type="button">扫描并压缩偏大图片</button>
+          <div class="storage-hint"><b>你上传/发送的图片在选定当时就已自动压缩过</b>（聊天图片与收藏、字卡图片最长边 720px、表情包 480px、壁纸/背景 2880px、卡片背景 1000px、桌面图片 1280px、头像 256px，质量 0.85；支持 WebP 的浏览器照片类自动改存 WebP，同清晰度体积更小），所以上面各项里的图片占用已经是压缩后的体积，不会随使用无限膨胀；聊天图片/表情另存进「媒体池」全库只存一份（见下方媒体池卡）。动图（GIF）、媒体池共享图与已较小的图不会被再压。上面的按钮只把历史遗留的「明显偏大」存量图按同样标准重压一遍（压缩会覆盖原图且不可撤销，建议先导出备份）。</div>
         </div>
         <div class="cal-card glass">
           <div class="cal-card-title">错误诊断记录</div>
@@ -1998,7 +2046,7 @@
           </details>
 
           <details class="lic-grp">
-            <summary><span class="lg-num">02</span><span class="lg-name">字卡系统</span><span class="lg-count">14</span></summary>
+            <summary><span class="lg-num">02</span><span class="lg-name">字卡系统</span><span class="lg-count">15</span></summary>
             <div class="lg-body">
           <div class="lic-li">字卡库：浏览全部字卡，支持搜索与自定义分组管理</div>
           <div class="lic-li">聊天字卡分类可上传：【主字卡】【颜文字】【emoji】【表情包】【图片】【拍一拍】【语音】分类</div>
@@ -2013,6 +2061,7 @@
           <div class="lic-li">新功能专属字卡：TA 的邀请（猜拳 / Pong / 贪吃蛇 / 贴贴）、经期关心、喝水、花园、房间、漂流瓶、位置卡等，逐条开关 + 自定义添加</div>
           <div class="lic-li">字卡库页入口：公用字卡（全桌面联系人共享）、专属字卡（仅当前桌面联系人）、寻踪日常字卡、桌面今日情话、聊天默认字卡、聊天情绪字卡、聊天回应字卡及各功能专属字卡统一管理</div>
           <div class="lic-li">字卡管理：去重复、导出数据、一键清空所有分类</div>
+          <div class="lic-li">触发概率可查看可调：系统预设字卡各页都能看到「当前触发概率」并当场调整（0~100%，0% 即该字卡不再出现）——聊天默认字卡（聊天 / 写信 / 朋友圈）、聊天情绪字卡（情绪 / 心意 / 交流意图）、聊天回应字卡（整条替换 / 连接词追加）、寻踪日常字卡（发送到聊天）以及其他互动功能字卡各分类</div>
           <div class="lic-li">兼容导入 milk 字卡库导出的 json；系统预设字卡（自搓）可逐句开关</div>
             </div>
           </details>
@@ -2485,6 +2534,58 @@
             <div class="gs-row"><span>自定义字卡占比</span><div class="stepper" data-k="csp-cust" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="csp-cust-val" readonly><button class="stp-max">+</button></div></div>
             <div class="gs-sub">TA 每条纯文字回复里，自定义字卡保留的比例（默认 50）：调高=大多数用你自己建的字卡，偶尔用预设默认聊天字卡；调低=更多用预设默认聊天字卡（见 字卡库→默认聊天字卡 页可逐张开关）；0=尽量用默认聊天字卡，100=全用自定义。默认的聊天字卡本身还受「默认聊天字卡」页的『聊天使用』概率控制。</div>
           </div>
+          <!-- #518：系统预设字卡·聊天触发概率总览（总档 + 分类档）——用户点名「自定义字卡概率与系统预设字卡的概率…所有聊天字卡的概率需要有一个整体的分类tag可方便调整」。
+               分类档全部复用各功能既有键（不新开键，同一语义只能有一个键）；非 dcf 行由 reply-settings.js #518 段绑定（id=dcp-<键>），
+               dcf 19 类沿用 data-dcfkey 标记，由 default-cards.js 的 bindDcfProb/dcfRefreshUI 自动接管（跨页同键实时同步）。
+               总档 dcp-all 走回复设置 data-k 体系（DEFAULTS + saveReplyCfg），生效缩放见 src/js/dcp-master.js 的 dcpEff。 -->
+          <div class="gs-title">系统预设字卡 · 聊天触发概率</div>
+          <div class="set-group glass" id="dcp-box">
+            <div class="gs-row"><span>整体概率（总档）</span><div class="stepper" data-k="dcp-all" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-all-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-sub">总档统一缩放下方所有系统预设字卡的聊天触发概率：100（默认）= 各类按自身设定值生效、行为完全不变；50 = 全部减半；0 = 聊天里所有系统预设字卡都不再触发。下方每行显示的是该类自己的设定值（不随总档改写），实际生效 = 设定值 × 总档 ÷ 100。想逐张开关某句话，去 字卡库→系统预设字卡 对应页。</div>
+            <div class="gs-row"><span>默认聊天字卡 · 聊天使用</span><div class="stepper" id="dcp-dc-overall-chat" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-dc-overall-chat-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>词典拼字</span><div class="stepper" id="dcp-qs-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-qs-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>聊天情绪字卡 · 情绪卡</span><div class="stepper" id="dcp-mc-prob-mood" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-mc-prob-mood-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>聊天情绪字卡 · 心意卡</span><div class="stepper" id="dcp-mc-prob-heart" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-mc-prob-heart-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>聊天情绪字卡 · 意图卡</span><div class="stepper" id="dcp-mc-prob-intent" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-mc-prob-intent-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>聊天回应字卡 · 整条替换</span><div class="stepper" id="dcp-rcard-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-rcard-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>聊天回应字卡 · 连接词追加</span><div class="stepper" id="dcp-cf-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-cf-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的心情</span><div class="stepper" id="dcp-tm-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-tm-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的询问</span><div class="stepper" id="dcp-ta-ask-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-ta-ask-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的小问题</span><div class="stepper" id="dcp-tc-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-tc-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的好奇</span><div class="stepper" id="dcp-tcu-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-tcu-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的吐槽</span><div class="stepper" id="dcp-tr-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-tr-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的查岗</span><div class="stepper" id="dcp-ckq-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-ckq-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的邀请 · 猜拳</span><div class="stepper" id="dcp-ai-rps-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-ai-rps-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的邀请 · 游戏</span><div class="stepper" id="dcp-ai-game-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-ai-game-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-row"><span>TA的邀请 · 贴贴</span><div class="stepper" id="dcp-ai-cuddle-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcp-ai-cuddle-prob-val" readonly><button class="stp-max">+</button></div></div>
+            <div class="gs-sub">以上分类档行的键与各功能页/其他设置页是同一份（如「TA的查岗」= 回复设置→查岗 的「查岗概率」、情绪卡 = 字卡库→聊天情绪字卡 页那三行），改哪边都生效。TA的询问/小问题/好奇/吐槽四类是「在自身触发概率之上再乘总档」，各自的题库与弹窗等详细设置在 字卡库→系统预设字卡 对应页。</div>
+            <div class="gs-row"><span>桌面今日情话 · 系统预设（开关型）</span><label class="toggle"><input type="checkbox" id="dcp-tg-quote"><span class="tk"></span></label></div>
+            <div class="gs-row"><span>TA在身边位置卡 · 系统预设（开关型）</span><label class="toggle"><input type="checkbox" id="dcp-tg-loc"><span class="tk"></span></label></div>
+            <div class="gs-sub">这两类只有「用不用系统预设」的开关、没有概率，不受总档缩放；关闭后分别只从你自己添加的情话/位置话术里出。</div>
+            <div class="gs-row" id="dcp-fun-expander-row" style="cursor:pointer"><span>其他互动功能字卡（19 个分类 · 点此展开 / 收起）</span><span id="dcp-fun-expander-arrow">▾</span></div>
+            <div id="dcp-fun-box" hidden>
+              <div class="gs-row"><span>摸鱼字卡概率</span><div class="stepper" id="dcf-prob-fish-rs" data-dcfkey="fish" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-fish-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>吃饭字卡概率</span><div class="stepper" id="dcf-prob-eat-rs" data-dcfkey="eat" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-eat-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>经期字卡概率</span><div class="stepper" id="dcf-prob-period-rs" data-dcfkey="period" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-period-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>喝水字卡概率</span><div class="stepper" id="dcf-prob-water-rs" data-dcfkey="water" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-water-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>花园字卡概率</span><div class="stepper" id="dcf-prob-garden-rs" data-dcfkey="garden" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-garden-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>同频字卡概率</span><div class="stepper" id="dcf-prob-sync-rs" data-dcfkey="sync" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-sync-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>伸手字卡概率</span><div class="stepper" id="dcf-prob-reach-rs" data-dcfkey="reach" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-reach-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>此间字卡概率</span><div class="stepper" id="dcf-prob-cjian-rs" data-dcfkey="cjian" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-cjian-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>房间字卡概率</span><div class="stepper" id="dcf-prob-room-rs" data-dcfkey="room" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-room-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>存钱罐字卡概率</span><div class="stepper" id="dcf-prob-piggy-rs" data-dcfkey="piggy" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-piggy-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>漂流瓶字卡概率</span><div class="stepper" id="dcf-prob-drift-rs" data-dcfkey="drift" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-drift-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>互动回应字卡概率</span><div class="stepper" id="dcf-prob-interact-rs" data-dcfkey="interact" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-interact-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>音乐字卡概率</span><div class="stepper" id="dcf-prob-music-rs" data-dcfkey="music" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-music-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>跨桌面查岗字卡概率</span><div class="stepper" id="dcf-prob-deskcheck-rs" data-dcfkey="deskcheck" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-deskcheck-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>寻踪日常字卡概率</span><div class="stepper" id="dcf-prob-checkin-rs" data-dcfkey="checkin" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-checkin-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>番茄钟字卡概率</span><div class="stepper" id="dcf-prob-pomo-rs" data-dcfkey="pomo" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-pomo-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>TA的关心（经期）字卡概率</span><div class="stepper" id="dcf-prob-care-rs" data-dcfkey="care" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-care-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>备忘提醒字卡概率</span><div class="stepper" id="dcf-prob-memo-rs" data-dcfkey="memo" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-memo-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-row"><span>TA主动提问字卡概率</span><div class="stepper" id="dcf-prob-ask-rs" data-dcfkey="ask" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="dcf-prob-ask-rs-val" readonly><button class="stp-max">+</button></div></div>
+              <div class="gs-sub">与 字卡库→其他互动功能字卡 页（含寻踪页）是同一批键，两处实时同步；各项详细说明在那页的「功能说明」标签里。</div>
+            </div>
+          </div>
           <div class="gs-title">每条消息使用多字卡回复</div>
           <div class="set-group glass">
             <div class="gs-row"><span>多字卡回复</span><label class="toggle"><input type="checkbox" id="py-en"><span class="tk"></span></label></div>
@@ -2506,6 +2607,8 @@
             <div class="gs-sub" id="qs-diag" style="color:var(--muted,#888)">链路自检中…</div>
             <div class="gs-sub">开启后联系人回复按「拼字概率」随机变成拼字：从词典（系统预设字卡→词典，语录/词库/常用词全部分组都可抽，可逐张关闭）抽字卡整卡，效果举例：命中拼字时 TA 会连着发几条词典里的短句（如「想你了」「晚安哦」），像打字很快连着发消息一样。<br>发送形态：单气泡拼字为主，「多回复逐卡连发」开着时每次命中另按 20% 小概率变成逐条连发；「多回复逐卡连发」关＝不能连发（只发单气泡拼字）。<br>· 「单气泡拼字」＝几张字卡用空格拼成【一条】消息发在一个气泡里（如「今天也要好好爱自己 晚安」），气泡下 tag 是「词典」（全是长句时）或「词典拼字」（含短卡时）；<br>· 「多回复逐卡连发」＝每张字卡单独一条气泡一条一条发出来，每条气泡下 tag 是「词典逐卡连发」；连发条数跟随上方「每条消息使用多字卡回复」的最少/最多条数（默认 2~5 条）；<br>· 「逐卡连发不受条数限制」默认关＝连发条数按「回复条数最多」截断（默认最多 2 条）；打开＝连发条数不受「回复条数最多」约束（想连发 5 条就发 5 条）。<br>两个形态都能在没开「多字卡回复」的情况下触发；两个形态开关都关时兜底发单气泡拼字。开启「混用自定义字卡」时你的字卡库文本也会进抽卡池（可能把你的普通字卡抽去拼字，默认开）。概率 0 = 不触发</div>
           </div>
+          <!-- #513 梦角自由造句总开关与混合模式改为默认打开（用户点名「需要默认打开」）：
+               DEFAULTS mjf-en/mjf-mix=1 + reply-settings migrateMjfOn 把存量 '0' 一次性收成 '1' -->
           <div class="gs-title">梦角自由造句（截字重造句）</div>
           <div class="set-group glass">
             <div class="gs-row"><span>梦角自由造句</span><label class="toggle"><input type="checkbox" id="mjf-en"><span class="tk"></span></label></div>
@@ -2522,7 +2625,19 @@
             <div class="gs-row"><span>混合模式（三手法随机）</span><label class="toggle"><input type="checkbox" id="mjf-mix"><span class="tk"></span></label></div>
             <!-- #364 存库概率：多桌面联系人时新句按此概率进公用库、其余进专属库；仅 1 个联系人固定进专属库 -->
             <div class="gs-row"><span>存公用库概率（多联系人）</span><div class="stepper" data-k="mjf-pub" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="mjf-pub-val" readonly><button class="stp-max">+</button></div></div>
-            <div class="gs-sub">自由选择开关（默认关）：开启后梦角（联系人）说话按「触发概率」随机重造句，气泡下带「梦角自由造句」小标签。造句手法三选一（上方数字 0/1/2），效果举例（源句「今天也要好好爱自己，晚安哦」）：<br>· 0 语气词式：截掉一个词补个语气词 →「今天也要好好想你了」，或句尾加语气字 →「…晚安哦呀」，也可能词间加逗号/空格、删句尾字；<br>· 1 撤回式（默认）：像撤回消息一样把后半句撤回，留下的前缀就是新句子 →「今天也要好好爱自己」；<br>· 2 换字卡内容式：截掉一个词、从你别的字卡里挑一个词补上 →「今天也要好好看日落」。<br>「混合模式」（#414，默认关）：开启后每次造句先在三种手法里随机掷一个再出招，三种模式交替出现，上方「造句手法」的固定选择暂不生效；关闭即恢复单一手法。<br>造出的新句自动存进 字卡库→自定义聊天字卡→梦角自由造句 分类，可在那里查看/删除，也会作为语料被再次抽用。概率 0 = 不触发。<br>「语料来源」（#413，默认全开=可用全部字卡）：自定义聊天字卡 / 默认聊天字卡 / 词典三源可分别开关；下方三个「权重」= 抽语料时各源的中签占比（默认 50/25/25，按权重归一化，和不必凑 100），某源权重调 0 或开关关＝该源不参与；三源全关＝不触发造句。默认聊天字卡尊重 字卡库→默认聊天字卡 的逐张关闭；词典含语录/词库全部词条（过短的词自动过滤）。<br>「存公用库概率」：有多个桌面联系人时，造出的新句按该概率进公用字卡、其余进专属字卡；只有一个桌面联系人时固定进专属字卡</div>
+            <div class="gs-sub"><b>是什么</b>：梦角（联系人）说话时按「触发概率」随机掷一次，命中就把一句语料<b>截字重造句</b>后当作 TA 的回复发出来（气泡下带「梦角自由造句」小标签）；命中时若同一条回复也掷中了词典拼字，拼字优先、本次造句让位（同一回复不叠加两种玩法）。概率 0＝不触发。<br>
+<b>语料来自四类字卡</b>（对应下方三个「语料·」开关）：<br>
+· ①【自定义字卡·公用字卡】＋ ②【自定义字卡·专属字卡】——由「语料·自定义字卡」一个开关管两个作用域（公用全桌面共享、专属只在本联系人桌面）；字卡库→可自定义字卡 里两个作用域各自的【分组停用】都生效，改/删字卡实时跟新，抽语料时会跳过【其他互动功能字卡】类（鱼塘/吃喝/经期/花园/此间/房间/存钱罐/漂流瓶/互动回应/音乐/这里造的句子本身…）；<br>
+· ③【系统预设·默认聊天字卡】——由「语料·默认聊天字卡」开关控制，取 字卡库→系统预设→默认聊天字卡 的四大基础分类（主字卡 / 颜文字 / emoji / 拍一拍）；颜文字与 emoji 基本不含 4 个以上汉字，实际不会成为源句，真正参与的是主字卡与拍一拍。该分类的开关（主字卡/颜文字/emoji/拍一拍）与逐张关闭都生效；<br>
+· ④【系统预设·词典】——由「语料·词典」开关控制，取 字卡库→词典 的全部语录（词库里的 2~3 字词只用于切词、不作为源句）；词典的逐张关闭生效（关掉的语录不再被用）。<br>
+· 二级密码锁锁定时：系统预设（③默认聊天字卡 / ④词典）不参与，①②自建字卡照常。<br>
+<b>权重怎么算</b>：三个「权重」＝抽语料时各源的中签占比，按权重归一化（默认 50/25/25，不必凑够 100）；某个源权重调 0 或开关关掉＝该源不参与，三源全关＝不触发造句。<br>
+<b>造句手法</b>（上方数字 0/1/2，效果举例，源句「今天也要好好爱自己，晚安哦」）：<br>
+· 0 语气词式：截掉一个词补个语气词 →「今天也要好好想你了」，或句尾加语气字 →「…晚安哦呀」，也可能词间加逗号/空格、删句尾字；<br>
+· 1 撤回式：像撤回消息一样把后半句撤回，留下的前缀就是新句子 →「今天也要好好爱自己」；<br>
+· 2 换字卡内容式：截掉一个词、从上面的语料里挑一个词补上 →「今天也要好好看日落」。<br>
+「混合模式」（#414，#513 起默认开）：开启后每次造句先在 0/1/2 三种手法里随机掷一个再出招，三种模式交替出现，上方「造句手法」的固定选择暂不生效；关闭即恢复单一手法（默认撤回式）。<br>
+<b>造出来的句子去哪了</b>：自动存进 字卡库→可自定义字卡→梦角自由造句（可查看/删除；有多个桌面联系人时按「存公用库概率」分流进公用/专属字卡）。这些句子只作为 TA 的回复展示，不会再被拿去当语料（避免自我循环）。</div>
           </div>
           </div>
           </div>
@@ -2667,6 +2782,13 @@
             <div class="gs-row"><span>跨桌面来电概率</span><div class="stepper" data-k="desk-call-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="desk-call-prob-val" readonly><button class="stp-max">+</button></div></div>
           </div>
           <div class="gs-sub" style="padding:0 14px 2px">其他桌面的联系人会按各自概率（默认 2%，可在此逐联系人调整）主动给你来电，冷却与查岗一致 30 分钟。全局开关在 设置 →「开启 联系人跨桌面打电话」（默认关闭，需先到那里手动打开，这里调了概率也不会来电）</div>
+          <!-- v3.26.x：摸鱼值 / 工作值累计总开关——桌面摸鱼小组件数值增长闸门（personalize.js addFish/addWork 消费） -->
+          <div class="gs-title" style="margin-top:10px">摸鱼值 / 工作值</div>
+          <div class="set-group glass">
+            <div class="gs-row"><span>摸鱼值累计</span><label class="toggle"><input type="checkbox" id="fish-en"><span class="tk"></span></label></div>
+            <div class="gs-row"><span>工作值累计</span><label class="toggle"><input type="checkbox" id="work-en"><span class="tk"></span></label></div>
+          </div>
+          <div class="gs-sub" style="padding:0 14px 14px">桌面摸鱼小组件两组数值的增长总开关（默认开）。关闭「摸鱼值累计」后：TA 的自动摸鱼、你点摸鱼按钮、番茄钟补偿摸鱼、抓包奖励都不再涨摸鱼值；关闭「工作值累计」后：自动打工、专注期间的工作值等不再涨。已有数值保留不清零，重新打开即恢复累计，各联系人独立保存</div>
         </div>
         <!-- v3.6.x：保存设置按钮——点击把当前所有概率/开关写入本地并提示 -->
         <button class="ta-add-btn gs-save-btn" id="reply-save-btn" style="width:100%;margin:6px 0 10px">
@@ -2983,7 +3105,22 @@
         </div>
         <label class="toggle"><input type="checkbox" id="mc-enabled"><span class="tk"></span></label>
       </div>
-      <div class="gs-title">情绪分组</div>
+      <!-- v3.26.x #515：三类的触发概率显示 + 可调（用户报「聊天情绪字卡页没有显示触发的概率和
+           可调整的按钮功能」）。存键 mc-prob-mood / mc-prob-heart / mc-prob-intent（per-cid），
+           未设置时回退改版前写死的 70 / 40 / 40＝行为不变；情绪卡连续触发的原有衰减按比例缩放
+           （基数 70% 时与旧行为逐档一致）。消费方 mood-reply-cards.js 的
+           getMoodCard / getHeartCard / getIntentCard，接线见该文件。 -->
+      <div class="set-group glass" id="mc-prob-box" style="margin:10px 12px 0">
+        <div class="gs-row"><span>情绪字卡概率</span><div class="stepper" id="mc-prob-mood" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="mc-prob-mood-val" readonly><button class="stp-max">+</button></div></div>
+        <div class="gs-row"><span>心意字卡概率</span><div class="stepper" id="mc-prob-heart" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="mc-prob-heart-val" readonly><button class="stp-max">+</button></div></div>
+        <div class="gs-row"><span>交流意图字卡概率</span><div class="stepper" id="mc-prob-intent" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="mc-prob-intent-val" readonly><button class="stp-max">+</button></div></div>
+      </div>
+      <!-- v3.6.x #500：三类分栏（情绪 / 心意 / 交流意图）——三级链路整类与单张都要能关，
+           此前只渲染情绪一类，心意与交流意图卡在字卡库里没有列表＝没有关闭入口 -->
+      <div class="cc-groups-bar" id="mc-type-bar"></div>
+      <div class="sm-set-hint" id="mc-type-hint" style="padding:2px 16px 4px">说明：联系人回复可能依次附带情绪 → 心意 → 交流意图三类字卡（各自独立概率，可在上方逐类调整），三类均可整类或逐张关闭。</div>
+      <div class="sm-set-hint" id="mc-prob-hint" style="padding:0 16px 4px">「情绪字卡概率」为基础概率：连续触发时仍按原有衰减规则递减（相对基数第 1 次 100%、第 2 次约 86%、第 3 次约 64%、第 4 次约 43%、第 5 次起约 29%）；三类各自独立判定，一次回复可同时出现 1~3 类。想彻底关：把对应概率调到 0%，或关掉上方「使用情绪字卡」（三类一起停）。</div>
+      <div class="gs-title" id="mc-group-title">情绪分组</div>
       <div class="cc-groups-bar" id="mc-groups-bar"></div>
       <div class="card-search glass" id="mc-search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -3037,6 +3174,18 @@
         </div>
         <label class="toggle"><input type="checkbox" id="rc-enabled"><span class="tk"></span></label>
       </div>
+      <!-- v3.26.x #515：回应字卡（逻辑连接词）两个消费点的概率显示 + 可调（用户报「聊天回应字卡页
+           没有显示触发的概率和可调整的按钮功能」）：
+           ①「回应字卡使用概率」＝整条回复被换成一整张回应字卡的概率（原 getReplyCard 里写死 30%，
+             现读 rcard-prob，per-cid，未设置＝30% 行为不变）；
+           ②「连接词追加概率」＝回复尾部再追加一条连接词的概率（原回复设置里无 UI 的 cf-prob，
+             默认 20%），读写走 window.replyCfg / window.saveReplyCfg（与回复设置同一份 reply- 键），
+             不新开键——避免同一语义两处各存一份。 -->
+      <div class="set-group glass" id="rc-prob-box" style="margin:10px 12px 0">
+        <div class="gs-row"><span>回应字卡使用概率</span><div class="stepper" id="rcard-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="rcard-prob-val" readonly><button class="stp-max">+</button></div></div>
+        <div class="gs-row"><span>连接词追加概率</span><div class="stepper" id="cf-prob" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="cf-prob-val" readonly><button class="stp-max">+</button></div></div>
+      </div>
+      <div class="sm-set-hint" id="rc-prob-hint" style="padding:2px 16px 4px">说明：本页字卡是「逻辑连接词」，TA 回话时有两种用法——①按「回应字卡使用概率」整条回复换成一张连接词字卡（默认 30%）；②按「连接词追加概率」在回复末尾再补一句连接词（默认 20%，与回复设置里的连接词概率是同一项，改任意一处都生效）。两个概率都调到 0% 等于不用回应字卡（也可直接用上方总开关）。</div>
       <div class="gs-title">回应字卡分类</div>
       <div class="cc-groups-bar" id="rc-groups-bar"></div>
       <div class="card-search glass" id="rc-search">
@@ -3071,6 +3220,7 @@
         <input type="color" id="modal-color" value="#111111" hidden>
         <button class="modal-custom" id="modal-custom" hidden>自定义颜色</button>
         <select class="modal-select" id="modal-select" hidden></select>
+        <div class="modal-group-chips" id="modal-group-chips" hidden></div>
         <button class="modal-file" id="modal-file" hidden>从文件导入</button>
         <input type="file" id="modal-file-input" accept=".txt,.json,text/plain,application/json" style="display:none">
         <div class="modal-btns">
@@ -4282,6 +4432,17 @@
         <div class="poke-card-head">
           <span>贪吃蛇 · <b id="snake-partner-name">TA</b></span>
           <div class="snake-head-actions">
+            <select class="snake-diff" id="snake-mode" title="模式：经典对战 / 双人同屏对战 / 双人组队 vs TA">
+              <option value="duo" selected>我 vs TA</option>
+              <option value="pvp">双人对战</option>
+              <option value="coop">双人组队</option>
+            </select>
+            <select class="snake-diff" id="snake-food" title="同屏食物数量">
+              <option value="2" selected>🍎×2</option>
+              <option value="4">🍎×4</option>
+              <option value="6">🍎×6</option>
+              <option value="8">🍎×8</option>
+            </select>
             <select class="snake-diff" id="snake-diff">
               <option value="easy">慢</option>
               <option value="normal" selected>普通</option>
@@ -4586,6 +4747,8 @@
               <option value="casual">🌱 休闲 6×5</option>
               <option value="normal" selected>🌙 普通 8×6</option>
               <option value="hard">⭐ 挑战 10×6</option>
+              <option value="king">👑 王者 12×7</option>
+              <option value="legend">🏆 传奇 12×8</option>
             </select>
             <button class="snake-icon-btn" id="lk-theme" title="图案主题（点击切换）">🍎</button>
             <button class="snake-icon-btn" id="lk-hint" title="提示（×3）">💡</button>
@@ -4739,7 +4902,25 @@
       <div class="poke-card" id="chat-rp-panel" hidden>
         <div class="poke-card-head">
           <span>红包 · <b id="rp-partner-name">TA</b></span>
-          <button class="poke-card-close" id="chat-rp-close">✕</button>
+          <div class="poke-card-head-actions">
+            <button class="rp-head-set" id="rp-settings-btn" type="button">设置</button>
+            <button class="poke-card-close" id="chat-rp-close">✕</button>
+          </div>
+        </div>
+        <!-- v3.29.x：TA 自动发红包设置（原聊天设置页「红包」组移入红包半框，入口=头部「设置」按钮）。
+             每联系人独立：概率默认 4%（0-100%）、每日上限默认 5（0=不限）；
+             chat.js trySystemAutoSend 读 cs-rp-auto-prob / cs-rp-daily-max -->
+        <div class="rp-settings" id="rp-settings" hidden>
+          <div class="rp-settings-title">TA 自动发红包</div>
+          <div class="set-row" id="cs-rp-auto-prob">
+            <div class="txt">TA 自动发红包概率<span class="sub">联系人有概率主动发个红包给你，每个联系人可单独设置</span></div>
+            <div class="val" id="cs-rp-auto-prob-val">4%</div>
+          </div>
+          <div class="set-row" id="cs-rp-daily-max">
+            <div class="txt">TA 每日发红包上限<span class="sub">联系人每天最多主动发红包的次数，填 0 表示不限制</span></div>
+            <div class="val" id="cs-rp-daily-max-val">5 次</div>
+          </div>
+          <button class="rp-send rp-settings-done" id="rp-settings-done" type="button">完成</button>
         </div>
         <div class="rp-balance" id="rp-balance"></div>
         <div class="poke-card-scroll">
@@ -5534,10 +5715,18 @@
       </div>
       </div>
       <div class="them-sec" data-sec="function" hidden>
+      <!-- v3.29.x：功能页二级 tag 分类（全部/形象/消息输入/界面），点击只显示对应分组；
+           交互在 chat-settings.js（#cs-func-tags），分组按 gs-title/set-group 成对 data-tag 过滤 -->
+      <div class="them-tabs sub" id="cs-func-tags">
+        <div class="them-tab active" data-ft="all">全部</div>
+        <div class="them-tab" data-ft="profile">形象</div>
+        <div class="them-tab" data-ft="msg">消息输入</div>
+        <div class="them-tab" data-ft="ui">界面</div>
+      </div>
       <!-- v3.8.x：聊天专用昵称/头像（与桌面 deco-widget 的 lbl-*/avatar-* 完全独立，
            桌面只能在桌面改，聊天只能在聊天设置改；未设时聊天页显示默认占位 TA/我 + 人形图标） -->
-      <div class="gs-title">昵称与头像</div>
-      <div class="set-group glass">
+      <div class="gs-title" data-tag="profile">昵称与头像</div>
+      <div class="set-group glass" data-tag="profile">
         <div class="set-row" id="cs-lbl-partner">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.5-6 8-6s8 2 8 6"/></svg></div>
           <div class="txt">联系人昵称</div>
@@ -5567,8 +5756,8 @@
           <div class="txt">清空我的头像</div>
         </div>
       </div>
-      <div class="gs-title">发送按钮</div>
-      <div class="set-group glass">
+      <div class="gs-title" data-tag="msg">发送按钮</div>
+      <div class="set-group glass" data-tag="msg">
         <div class="set-row" id="cs-send-show-row">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></div>
           <div class="txt">隐藏发送按钮<span class="sub">回车键可发送消息，隐藏这个按钮不影响使用</span></div>
@@ -5592,8 +5781,8 @@
       </div>
       <!-- v3.11.x：批量发送消息开关（默认关闭，每联系人独立）。开启后聊天输入栏右侧显示
            「批量发送」按钮：可插入表情包/图片/文字，每个项目一条消息，多条按顺序批量发送 -->
-      <div class="gs-title">批量发送</div>
-      <div class="set-group glass">
+      <div class="gs-title" data-tag="msg">批量发送</div>
+      <div class="set-group glass" data-tag="msg">
         <div class="set-row" id="cs-batch-send-row">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg></div>
           <div class="txt">批量发送消息<span class="sub">聊天输入栏右侧显示「批量发送」按钮：可插入表情包、图片、文字，每条消息单独一条，多条按顺序一次性发送</span></div>
@@ -5602,35 +5791,18 @@
       </div>
       <!-- v3.16.x：我可发送语音开关（默认关闭，每联系人独立）。开启后聊天输入栏左侧显示
            「麦克风」按钮：点击打开录音半框，录完可试听，一键把语音发进聊天 -->
-      <div class="gs-title">语音消息</div>
-      <div class="set-group glass">
+      <div class="gs-title" data-tag="msg">语音消息</div>
+      <div class="set-group glass" data-tag="msg">
         <div class="set-row" id="cs-voice-send-row">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></svg></div>
           <div class="txt">我可发送语音<span class="sub">聊天输入栏左侧出现「麦克风」按钮：点击打开录音窗口，最长录 60 秒，可先试听再发送为语音消息</span></div>
           <label class="toggle"><input type="checkbox" id="cs-voice-send"><span class="tk"></span></label>
         </div>
       </div>
-      <!-- 红包：TA 自动主动发红包概率（每联系人独立，默认 4%，0-100%）。
-           chat.js trySystemAutoSend 读 cs-rp-auto-prob -->
-      <div class="gs-title">红包</div>
-      <div class="set-group glass">
-        <div class="set-row" id="cs-rp-auto-prob">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="14" rx="2"/><path d="M3 11.5h18"/><path d="M12 11.5V21"/><path d="M12 11.5Q9 8 7 5.5A2.5 2.5 0 0112 6.5A2.5 2.5 0 0117 5.5Q15 8 12 11.5z"/></svg></div>
-          <div class="txt">TA 自动发红包概率<span class="sub">联系人有概率主动发个红包给你，每个联系人可单独设置</span></div>
-          <div class="val" id="cs-rp-auto-prob-val">4%</div>
-        </div>
-        <!-- v3.27.x #297：TA 每日发红包上限次数（每联系人独立，默认 5，0=不限）。
-             chat.js trySystemAutoSend 读 cs-rp-daily-max -->
-        <div class="set-row" id="cs-rp-daily-max">
-          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
-          <div class="txt">TA 每日发红包上限<span class="sub">联系人每天最多主动发红包的次数，填 0 表示不限制</span></div>
-          <div class="val" id="cs-rp-daily-max-val">5 次</div>
-        </div>
-      </div>
       <!-- v3.12.x：隐藏联系人的表情包开关（默认关闭，全局生效）。开启后聊天与朋友圈的
            表情包面板只显示「我的表情包」，不再显示 TA 的/公用表情包 -->
-      <div class="gs-title">表情包</div>
-      <div class="set-group glass">
+      <div class="gs-title" data-tag="ui">表情包</div>
+      <div class="set-group glass" data-tag="ui">
         <div class="set-row" id="cs-hide-ta-sticker-row">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 10h.01M15 10h.01"/><path d="M8.5 14a4.5 4.5 0 007 0"/></svg></div>
           <div class="txt">隐藏联系人的表情包<span class="sub">隐藏后，聊天和朋友圈的表情包面板里只显示「我的表情包」，不再显示TA的和公用表情包</span></div>
@@ -5638,8 +5810,8 @@
         </div>
       </div>
       <!-- v3.7.x：全屏模式（镜像设置页 #sf-fullscreen，同一状态双向同步） -->
-      <div class="gs-title">全屏</div>
-      <div class="set-group glass">
+      <div class="gs-title" data-tag="ui">全屏</div>
+      <div class="set-group glass" data-tag="ui">
         <div class="set-row" id="cs-fullscreen-row">
           <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 00-2 2v3M16 3h3a2 2 0 012 2v3M8 21H5a2 2 0 01-2-2v-3M16 21h3a2 2 0 002-2v-3"/></svg></div>
           <div class="txt">全屏模式（隐藏手机状态栏）</div>
