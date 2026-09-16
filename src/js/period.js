@@ -37,13 +37,57 @@
     '经期情绪低落是正常的，不是你的错，我在',
     '抱抱，今天什么都不做也行，就躺着'
   ];
-  var PERIOD_CARE_LINES = (function () {
+  function cardGroupLines(name, fb) {
     try {
       var g = window.DEFAULT_CARD_DATA && window.DEFAULT_CARD_DATA.period;
-      if (g && g[0] && Array.isArray(g[0][1]) && g[0][1].length) return g[0][1];
+      if (Array.isArray(g)) {
+        for (var i = 0; i < g.length; i++) {
+          if (g[i] && g[i][0] === name && Array.isArray(g[i][1]) && g[i][1].length) return g[i][1];
+        }
+      }
     } catch (e) {}
-    return PERIOD_CARE_FALLBACK;
-  })();
+    return fb;
+  }
+  var PERIOD_CARE_LINES = cardGroupLines('经期关心', PERIOD_CARE_FALLBACK);
+  // v3.42.x #559：经期预警/推迟专属语（按语境 + 经期规律分级）——此前经前提醒日/推迟日
+  //   与经期中共用「经期关心」语料（经期中口吻），经期还没到就发「今天经期第几天了？」
+  //   （用户反馈①）。分级（用户反馈②「根据经期规律提醒」）：cycleStats 有效周期 ≥3 且
+  //   CV<0.2（很规律+较规律）＝「预测可信」（rule），其余（不规律/记录不足）＝「预测仅
+  //   参考」（free）——对后者不再说「推迟/晚了 N 天」（预测误差可能比推迟天数还大，
+  //   用户反馈「太扯淡」），改以「距上次经期已经 {d} 天」的间隔口吻。{d} 由 checkCare
+  //   替换为具体天数；「经期关心」标签与原语料仅经期中使用；单卡开关 dc-off-period:*。
+  var PERIOD_PREWARN_FALLBACK = [
+    '算算日子，还有 {d} 天左右可能就来经期了，这几天别贪凉',
+    '经期快到了（预计 {d} 天后），提前把热水袋给你翻出来',
+    '还有 {d} 天左右到经期，最近早点睡，经前别熬夜',
+    '预计 {d} 天后来经期，这几天情绪有点波动也正常，有我在',
+    '快到经期了（约 {d} 天后），卫生用品备好了吗？没有我提醒你',
+    '还有 {d} 天左右经期就来，这几天少喝冰的，乖'
+  ];
+  var PERIOD_PREWARN_FREE_FALLBACK = [
+    '记录上看，还有 {d} 天左右到经期——你的周期一向随性，就当个参考',
+    '按你的记录粗算，大约 {d} 天后是经期，仅供参考，先有个准备',
+    '大概还有 {d} 天？你的经期比较有个性，这条就当提个醒',
+    '估摸 {d} 天前后，快到了就提前少碰凉的，不准也别怪我'
+  ];
+  var PERIOD_DELAY_FALLBACK = [
+    '比平时晚了 {d} 天了，你一向很准的，这两天多留意，注意休息',
+    '你周期一直挺稳的，这次晚了 {d} 天，最近是不是太累了？早点睡',
+    '晚了 {d} 天了，先别慌，你的经期向来准时，注意保暖，再等等看',
+    '按你的规律这次迟到了 {d} 天，压力大也会这样，别自己吓自己'
+  ];
+  var PERIOD_DELAY_DEEP_FALLBACK = [
+    '已经比平时晚了 {d} 天了，你这么准的人都推迟这么久，建议关注一下身体',
+    '晚了 {d} 天了，一直不来的话，陪你去看看医生吧，我先帮你记着日子',
+    '推迟第 {d} 天了，你一向规律，这种情况别拖着，查一下更放心',
+    '已经 {d} 天没来了，身体的事不拖，想什么时候去检查，我陪你'
+  ];
+  var PERIOD_DELAY_FREE_FALLBACK = [
+    '距上次经期已经 {d} 天了，你的经期一向随性，再等等，别自己吓自己',
+    '这次间隔到 {d} 天了，你的周期自由发挥惯了，正常，照顾好自己',
+    '上次到现在 {d} 天了，你的经期从不按套路来，安心，我陪着你',
+    '已经 {d} 天没来了，你的周期向来有自己的想法；超过两个月还没来就去看看医生吧'
+  ];
   function loadCareLines() {
     try { var a = JSON.parse(store.get(KEY_CARE) || 'null'); if (Array.isArray(a)) return a; } catch (e) {}
     return PERIOD_CARE_LINES.slice();
@@ -372,11 +416,30 @@
     } catch (e) {}
     return ['乖，', '傻瓜，', '我在呢。', '嘘…', '宝贝，', '嗯，'];
   })();
-  var WARM_SUFFIX = [
-    '（把你往怀里带了带）', '（轻轻抵着你的额头）', '（握紧你的手）',
-    '（摸了摸你发顶）', '（语气柔下来）', '（把热牛奶推到你手边）'
-  ];
-  // v3.26.x #196：近期已用不重复——池只有 6 条且纯均匀随机，连抽同几句被用户当 bug
+  // v3.26.x：温柔动作后缀受字卡库【其他互动功能字卡→经期→温柔动作】单卡开关联动——
+  // FIX 2026-09-16 #586：与「温柔前缀」同口径改为【读数据分组本身】。原实现把 6 条后缀
+  //   抄死在代码里（v3.14.x 只登记 1 条，v3.26.x 补到 6 条），而 default-cards-data.js 的
+  //   「温柔动作」分组此后随字卡薄池批次涨到 12 条：字卡库列出 12 张、逐张开关齐全，
+  //   实际只有前 6 张会被拼出——后 6 张是「哑开关」（开关点了不生效），前缀侧读实时数据
+  //   已涨到 12 条，两侧口径不一致。现按前缀同款做法以数据分组为唯一来源，池子加卡片时
+  //   字卡库开关自动跟上，不再需要改代码；数据缺失时回退内置 6 条兜底。
+  var WARM_SUFFIX = (function () {
+    try {
+      var g = window.DEFAULT_CARD_DATA && window.DEFAULT_CARD_DATA.period;
+      if (Array.isArray(g)) {
+        for (var i = 0; i < g.length; i++) {
+          if (g[i] && g[i][0] === '温柔动作' && Array.isArray(g[i][1]) && g[i][1].length) {
+            return g[i][1].slice();
+          }
+        }
+      }
+    } catch (e) {}
+    return [
+      '（把你往怀里带了带）', '（轻轻抵着你的额头）', '（握紧你的手）',
+      '（摸了摸你发顶）', '（语气柔下来）', '（把热牛奶推到你手边）'
+    ];
+  })();
+  // v3.26.x #196：近期已用不重复——池小且纯均匀随机时连抽同几句被用户当 bug
   // （小米15Pro 反馈「基本都是这几句」）。各池记最近 3 条，先抽未在近期的，全用过才放宽。
   var warmRecent = { p: [], s: [] };
   function warmPick(pool, hist) {
@@ -395,13 +458,23 @@
     try { return warmPick(PERIOD_WARM_PREFIX, 'p'); } catch (e) {}
     return '';
   }
-  // v3.26.x：温柔动作后缀受字卡库【其他互动功能字卡→经期→温柔动作】单卡开关联动——
-  //   六条后缀与 DEFAULT_CARD_DATA.period「温柔动作」分组同源（v3.14.x 曾只登记
-  //   「（轻轻抵着你的额头）」一条，其余五条无字卡库开关；现全部写全），每条均可
-  //   逐张开关（dc-off-period:<文案>），关闭后该动作后缀不再随机拼出。开关键即文案本身。
+  // v3.26.x：温柔动作后缀同前缀口径——逐张开关（dc-off-period:<文案>）在 warmPick 内过滤，
+  //   关闭后该动作后缀不再随机拼出；池子取自 DEFAULT_CARD_DATA.period「温柔动作」分组（见上）。
   function warmSuffix() {
     try { return warmPick(WARM_SUFFIX, 's'); } catch (e) {}
     return '';
+  }
+  // FIX 2026-09-16 #586 拼接处必须以空白分隔——温柔前缀、正文、温柔动作各自是一张字卡：
+  //   原实现直接 `p + text + s` 首尾相接，用户看到的是「多张字卡粘成一串、没有空格」
+  //   （如「傻瓜，今天也要好好爱自己（握紧你的手）」＝前缀+字卡+动作三张挤在一起），
+  //   与单气泡拼字的既定口径相反（#315/#370 定稿：字卡与字卡之间空一格），用户据此
+  //   报「没开拼字功能，联系人发消息还是用拼字卡」。本函数＝唯一拼接点：两端各留一个
+  //   空格；任一段为空（卡被字卡库逐张关掉）时不留孤立空格；正文自身已带空白时不重复。
+  function warmJoin(a, b) {
+    if (!a) return b || '';
+    if (!b) return a;
+    if (/\s$/.test(a) || /^\s/.test(b)) return a + b;
+    return a + ' ' + b;
   }
   function warmText(text) {
     if (typeof text !== 'string' || !text) return text;
@@ -422,9 +495,12 @@
       var p = warmPrefix();
       var s = warmSuffix();
       var r = Math.random();
-      if (r < 0.45) return p + text;
-      if (r < 0.8) return text + s;
-      return p + text + s;
+      // FIX 2026-09-16 #586：45% 前缀 / 35% 动作 / 20% 双拼（口径不变），拼接一律走 warmJoin
+      //   （字卡之间空一格）——回改成 p + text + s 的裸拼接即回归「字卡粘成一串」。
+      if (r < 0.45) return warmJoin(p, text);
+      if (r < 0.8) return warmJoin(text, s);
+      var out = warmJoin(warmJoin(p, text), s);
+      return out || text;
     } catch (e) { return text; }
   }
   window.periodWarmText = warmText;
@@ -1126,7 +1202,24 @@
     if (fired) saveNotify(notifyCfg);
   }
 
-  // ---- 关心语抽取（80% 经期专属语 + 20% ta-ask care 题库）----
+  // ---- 关心语抽取 ----
+  // v3.42.x #559：语境 + 规律分级抽取——经期中走原逻辑（80% 经期专属语 + 20% ta-ask
+  //   care 题库）；预警语境只从对应分组抽（不混通用题库，避免语境错位），全被字卡库
+  //   关掉则返回空串（本次不发）。ctx 决定语境（adv*/delay/delayDeep/delayIrregular），
+  //   tier 决定规律档（rule=预测可信 / free=预测仅参考）。
+  function pickWarnLine(ctx, tier) {
+    var name, fb;
+    if (ctx.indexOf('adv') === 0) {
+      if (tier === 'free') { name = '经前预警·不规律'; fb = PERIOD_PREWARN_FREE_FALLBACK; }
+      else { name = '经前预警'; fb = PERIOD_PREWARN_FALLBACK; }
+    } else if (ctx === 'delayDeep') { name = '经期推迟·关注'; fb = PERIOD_DELAY_DEEP_FALLBACK; }
+    else if (ctx === 'delayIrregular') { name = '经期推迟·不规律'; fb = PERIOD_DELAY_FREE_FALLBACK; }
+    else { name = '经期推迟'; fb = PERIOD_DELAY_FALLBACK; }
+    var pool = cardGroupLines(name, fb).filter(function (l) { return l && !careLineBlocked(l); });
+    if (!pool.length) return '';
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+  // 经期中专用（原逻辑不变）
   function pickCareLine() {
     var lines = loadCareLines().filter(function (l) { return l && !careLineBlocked(l); });
     if (!lines.length) lines = PERIOD_CARE_LINES.filter(function (l) { return l && !careLineBlocked(l); });
@@ -1143,31 +1236,61 @@
   }
   // ---- 梦角关心触发（经期专属，每天最多一条）----
   // 触发时机：启动后 + 联系人每条文字回复后（chat.js）；经期中每天 + 经期前
-  //   advanceDays 提醒日 + 推迟≥5天
+  //   advanceDays 提醒日 + 推迟预警
+  // v3.42.x #559 详细设计（语境 × 经期规律 分级提醒，用户反馈「根据经期规律提醒」）：
+  //   predictTier：cycleStats 有效周期 ≥3 且 CV<0.2（很规律+较规律）＝rule「预测可信」；
+  //   其余（不规律/记录 <3 次）＝free「预测仅参考」。
+  //   ① 经前预警：rule 按提醒设置的全部预警日（默认提前 3/1 天）发确定口吻；
+  //     free 的预测误差可能 ±一周以上，只在最接近的一次预警日（提前天数最小值）发一次
+  //     措辞带「按记录推算、仅供参考」的版本，避免按不可信预测连发多天。
+  //   ② 推迟预警：rule 晚 ≥5 天发「比平时晚了 N 天」（你一向很准），晚 ≥10 天升
+  //     「关注」档（措辞带就医建议）；free 不说「推迟/晚了」——预测本身不可信，说了
+  //     就是「太扯淡」（用户原话），晚 ≥10 天才以「距上次经期已经 N 天」的间隔口吻
+  //     轻提（{d} 语义=间隔天数，且 60 天+ 的文案自然带出就医建议）。
+  //   各语境每天最多一条（fired 键含 ctx，tier/深浅不同互不挤占）；字卡库同名分组
+  //   可逐张开关，整组关掉则该语境当天不发。
   // v3.14.x 概率重设计——旧版三层门控叠加（chat 回复路径预掷 20% × 连发衰减至 20%
   //   × 当日基数），第 2 天起单次触发率跌到约 12%、第 5 天起仅 ~4%，体感就是
   //   「只有第一天会来关心」。现在：去掉连发衰减与 chat 预掷，只保留「同一天最多
   //   一条」冷却；进入判定后按当天基数掷一次——经期第1-2天 90%、第3-4天 70%、
   //   第5+天 55%；经期前提醒/推迟预警 75%。防刷屏由每日一条上限兜底。
+  // v3.42.x #422：「梦角关心」开关之外叠加「其他互动功能字卡」的 dcf-care 概率门控
+  //   （默认 100%＝原节奏，0%＝不发），随联系人桌面隔离；两者都关才真完全关。
+  function predictTier() {
+    var s = cycleStats();
+    if (s.n >= 3 && s.cv < 0.2) return 'rule';
+    return 'free';
+  }
   function checkCare() {
     if (!notifyCfg.careEnabled) return;
     if (!window.chatAddIn) return;
-    // v3.42.x #422：在「梦角关心」开关之外，叠加「其他互动功能字卡」里的「TA的关心（经期）」
-    //   概率门控（dcf-care，默认 100%＝保持原节奏，0%＝不发关心）。总开关 dcf-enabled 也会覆盖它。
-    //   随联系人桌面隔离；经期页「梦角关心」按钮（careEnabled）仍独立生效，两者都关才真完全关。
+    // v3.42.x #559：深夜静默 23:00–06:00（同 memo-app「备忘提醒」/ p2-features「喝水·吃饭提醒」
+    //   先例）——之前经期关心/预警是本功能族唯一没有静默期的，半夜聊天时 TA 会发
+    //   「经期预警」把人叫醒。静默期直接不发、也不写 fired，白天再触发照常补发（不吞当天）。
+    var _h = new Date().getHours();
+    if (_h >= 23 || _h < 6) return; // #559 深夜静默（23:00–06:00 不发、不写 fired）
     try { if (Math.random() * 100 >= (window.dcfGet ? window.dcfGet('care') : 100)) return; } catch (e) {}
     var st = status();
     var today = todayStr();
-    var shouldCare = false, ctx = '';
-    if (st.inPeriod) { shouldCare = true; ctx = 'inPeriod'; }
+    var tier = predictTier();
+    var shouldCare = false, ctx = '', kind = '';
+    if (st.inPeriod) { shouldCare = true; ctx = 'inPeriod'; kind = 'in'; }
     else if (st.nextStart) {
       var d = diffDays(today, st.nextStart);
-      if (notifyCfg.advanceDays.indexOf(d) >= 0) { shouldCare = true; ctx = 'adv' + d; }
+      // free 档只认最接近的一次预警日（提前天数最小值，0=当天不可达故滤掉）
+      var advOk = true;
+      if (tier === 'free') {
+        var advs = notifyCfg.advanceDays.filter(function (x) { return x >= 1; });
+        advOk = advs.length ? d === Math.min.apply(null, advs) : false;
+      }
+      if (advOk && notifyCfg.advanceDays.indexOf(d) >= 0) { shouldCare = true; ctx = 'adv' + d; kind = 'adv'; }
     }
+    var delayDays = 0;
     if (st.phase === 'safe' && /推迟/.test(st.title)) {
       var m = st.title.match(/推迟 (\d+) 天/);
-      var delayDays = m ? parseInt(m[1], 10) : 0;
-      if (delayDays >= 5) { shouldCare = true; ctx = 'delay'; }
+      delayDays = m ? parseInt(m[1], 10) : 0;
+      if (tier === 'rule' && delayDays >= 5) { shouldCare = true; ctx = delayDays >= 10 ? 'delayDeep' : 'delay'; kind = 'delay'; }
+      else if (tier === 'free' && delayDays >= 10) { shouldCare = true; ctx = 'delayIrregular'; kind = 'delayIrr'; }
     }
     if (!shouldCare) return;
     notifyCfg.fired = notifyCfg.fired || {};
@@ -1181,11 +1304,16 @@
       else baseProb = 55;
     }
     if (Math.random() * 100 > baseProb) return;
-    var line = pickCareLine();
+    // {d} 占位符按语境取数：adv=距预测经期天数；delay/delayDeep=已推迟天数；
+    // delayIrregular=距上次经期天数（间隔口吻，不提「推迟」）
+    var line = kind === 'in' ? pickCareLine() : pickWarnLine(ctx, tier);
     if (!line) return;
-    // v3.14.x：带「经期关心」标签 chip 发进聊天（addIn opts.tag → rec.mood），
-    // 用户能看出这条消息是经期功能触发的关心，不再是没头没尾的普通气泡
-    try { window.chatAddIn(line, { tag: '经期关心' }); } catch (e) {}
+    if (kind === 'adv') line = String(line).replace(/\{d\}/g, String(diffDays(today, st.nextStart)));
+    else if (kind === 'delay') line = String(line).replace(/\{d\}/g, String(delayDays));
+    else if (kind === 'delayIrr') line = String(line).replace(/\{d\}/g, String(st.dayOfCycle || 0));
+    // 带标签 chip 发进聊天（addIn opts.tag → rec.mood），用户能看出消息来源与语境：
+    // 「经期关心」= 经期中，「经期预警」= 经前预警/推迟（#559 起区分）
+    try { window.chatAddIn(line, { tag: kind === 'in' ? '经期关心' : '经期预警' }); } catch (e) {}
     notifyCfg.fired[careKey] = 1;
     var cut = addDays(today, -30);
     Object.keys(notifyCfg.fired).forEach(function (k) { if (k < cut) delete notifyCfg.fired[k]; });

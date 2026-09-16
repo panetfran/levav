@@ -576,7 +576,11 @@ try {
           if (show) ctl.focus();
         },
         // 重建胶囊组；传空数组/null 隐藏。initVal 设初始选中项
-        pills: function (list, initVal) { buildPills(list, initVal); }
+        pills: function (list, initVal) { buildPills(list, initVal); },
+        // #576：ctl.close()——调用方主动关窗（存储异常弹窗「去导出备份/查看存储」直达
+        // 按钮跳转成功后关闭）。走与取消/遮罩同一个 close()（含 stayOnce/关键盘语义），
+        // 不另开直接摘 mask 的口子；失败静默（弹窗留在原地，调用方有手动路径兜底）。
+        close: function () { try { close(); } catch (e) {} }
       };
       // v3.16.x：opts.copyBtn——弹窗底部「复制」按钮（诊断信息等只读展示场景）。
       // 传 { label, fn }，fn(ctl) 在点击时调用，可用 ctl.hint() 就地反馈复制结果；
@@ -637,6 +641,23 @@ try {
     });
     function close() {
       if (stayOnce) { stayOnce = false; return; } // ctl.stay()：本次确定不关闭，cb 已就地切到下一阶段
+      // FIX 2026-09-15 #542：关弹窗前先显式收起输入法（同 #512 问问TA 半框）。用户报（红米 K80
+      // Chrome，明说其他机型也有）：「桌面弹出输入文字的弹窗，点输入框后用输入法收起，回弹很慢、
+      // 看到大片灰底」。根因：关闭弹窗时弹窗内输入框（安卓已转 .ce-box）正持有焦点，直接 hidden
+      // ＝把「聚焦中的可编辑元素」从布局摘掉——一批内核/输入法不为这种移除派 focusout、也不派
+      // visualViewport.resize，移动适配层的收键盘链拿不到证据 → .phone 内联收缩高停在键盘期数值，
+      // 键盘位置一直露 body 灰底，要等看门狗「2.2s 无活动」才复原（继续点/滑就更久）。
+      // 修法：先 blur 走标准失焦链（focusout 必派发、有界快速复原当场生效），再向移动层报备一次
+      // 有界兜底（连 focusout 都不派的内核）。零机型分支：无聚焦时 blur 与报备均为空操作，
+      // iOS/桌面不受影响。
+      try {
+        var _ae = document.activeElement;
+        if (_ae && (_ae.tagName === 'INPUT' || _ae.tagName === 'TEXTAREA' || _ae.isContentEditable)
+            && mask.contains(_ae)) {
+          try { _ae.blur(); } catch (eB) {}
+        }
+        if (window.mochiKbDismiss) { try { window.mochiKbDismiss(); } catch (eD) {} }
+      } catch (eC0) {}
       mask.hidden = true; cb = null;
     }
     function fire() {
@@ -1369,6 +1390,57 @@ try {
     const op = Math.max(0, Math.min(100, pct)) / 100;
     img.style.opacity = String(op);
   };
+  // FIX 2026-09-16 #581 图标图片可单独调「缩放 + 位置」（用户反馈：「上传了图标按钮图片后，
+  // 需要可以只移动按钮里图片的位置，不用重新上传」）。此前上传的图只有 object-fit:cover 居中
+  // 裁切，想让图标里露出照片的某个部位只能重新裁一张再传。现在每个图标三个键（per-cid，与
+  // app-icon-opacity-<key> 同族）：
+  //   app-icon-zoom-<key>     100~300（%），100/缺省 = 原样铺满（不写键）
+  //   app-icon-pos-x/-y-<key> 0~100，50 = 居中（缺省 = 50）
+  // 渲染分两支，两支都保证「图片边缘永远不会离开图标框」（不露底色）：
+  //   ① 未放大：位移交给 object-position——原图被 cover 裁掉才有位移空间（竖图/横图最常见），
+  //      正方形原图 + 正方形图标时无空间，此时提示用户先放大；
+  //   ② 放大后：位移交给 translate，上限 ±(z-100)/2 × 图标宽＝缩放多出来的余量的正好一半，
+  //      缩放到边界时图片边缘恰好贴住图标边缘，因此任意组合都不会露底色。
+  //      放大同时需要 .app-ico 裁边（overflow:hidden）——图标圆角本来就在 .app-ico 上。
+  // 注：这里的 transform:scale 只作用在图标里这张小图上，与 AGENTS「禁止整页缩放」红线无关。
+  const applyAppIconFit = (app) => {
+    const ico = app.querySelector('.app-ico');
+    if (!ico) return;
+    const img = ico.querySelector('img');
+    if (!img) { ico.style.overflow = ''; return; }
+    const key = app.dataset.app;
+    const clamp100 = (v, d) => {
+      if (v === null || v === undefined || v === '') return d;
+      const n = parseInt(v, 10);
+      return isNaN(n) ? d : Math.max(0, Math.min(100, n));
+    };
+    const zRaw = parseInt(store.get('app-icon-zoom-' + key) || '100', 10);
+    const z = (isNaN(zRaw) || zRaw < 100) ? 100 : Math.min(300, zRaw);
+    const x = clamp100(store.get('app-icon-pos-x-' + key), 50);
+    const y = clamp100(store.get('app-icon-pos-y-' + key), 50);
+    const zoomed = z > 100;
+    ico.style.overflow = (zoomed || x !== 50 || y !== 50) ? 'hidden' : '';
+    if (zoomed) {
+      // translate 的百分比相对图片自身尺寸（= 图标框）计算，故 ±(z-1)/2 就是可用的全部余量。
+      // 方向与「壁纸定位/object-position」同一口径：值越大＝看图片越靠右/越靠下的一段，
+      // 所以图片要往「反方向」平移（负号）——两支方向必须一致，否则放大前后同一根滑杆
+      // 会把画面推向相反的一侧。
+      const tx = -Math.round(((x - 50) / 50) * ((z - 100) / 2) * 100) / 100;
+      const ty = -Math.round(((y - 50) / 50) * ((z - 100) / 2) * 100) / 100;
+      if (img.style.objectPosition) img.style.objectPosition = '';
+      img.style.transform = 'translate(' + tx + '%, ' + ty + '%) scale(' + (z / 100) + ')';
+    } else {
+      if (img.style.transform) img.style.transform = '';
+      img.style.objectPosition = (x === 50 && y === 50) ? '' : (x + '% ' + y + '%');
+    }
+  };
+  // 一次把「透明度 + 缩放/位置」都刷到图标上（新增图片的每个入口都要调，漏一处＝该入口
+  // 上传后位置设置不生效）
+  const applyAppIconLook = (app) => {
+    const op = store.get('app-icon-opacity-' + app.dataset.app);
+    if (op) applyAppIconOpacity(app, parseInt(op, 10));
+    applyAppIconFit(app);
+  };
   const restoreAppIcons = () => {
     document.querySelectorAll('.app').forEach(app => {
       let saved = store.get('app-icon-' + app.dataset.app);
@@ -1387,8 +1459,8 @@ try {
         if (ico) {
           const cur = ico.querySelector('img');
           if (cur && cur.src === saved) {
-            const op = store.get('app-icon-opacity-' + app.dataset.app);
-            if (op) applyAppIconOpacity(app, parseInt(op, 10));
+            // #581：同源 img 不重建，但缩放/位置也要补刷（方案导入/撤销后走这条）
+            applyAppIconLook(app);
             return;
           }
           ico.innerHTML = '';
@@ -1396,13 +1468,14 @@ try {
           img.src = saved;
           img.alt = '';
           ico.appendChild(img);
-          // v3.27.x：恢复自定义图标透明度
-          const op = store.get('app-icon-opacity-' + app.dataset.app);
-          if (op) applyAppIconOpacity(app, parseInt(op, 10));
+          // v3.27.x：恢复自定义图标透明度；#581：同时恢复缩放/位置
+          applyAppIconLook(app);
         }
       } else if (ico && ico.dataset.orig) {
         if (ico.innerHTML === ico.dataset.orig) return;
         ico.innerHTML = ico.dataset.orig;
+        // #581：还原默认图标时清掉自定义图留下的裁边/位移
+        applyAppIconFit(app);
       }
     });
   };
@@ -1511,6 +1584,10 @@ try {
   // 移出 .app-grid（如群聊开启时占卜移到隐藏池，或用户拖到其他页），grid click 监听器
   // 不触发；暴露 window.openIconMenu 供各图标自身监听器兜底调用
   window.openIconMenu = function (app) {
+    // FIX 2026-09-16 #581：调整图片位置优先——①面板开着时再点图标＝换目标；②「调整图标图片位置」
+    // 入口置了 __iconAdjustPick，点哪个图标就调哪个（不用先认出菜单里的同名项）
+    if (window.__iconFitPanelOpen) { openIconFitPanel(app); return; }
+    if (window.__iconAdjustPick) { openIconFitPanel(app); return; }
     // v3.27.x：批量换图队列——「批量上传图标图片」载入多张后，依次点桌面图标按顺序
     // 换上（每点一个消耗一张），队列清空自动恢复正常图标菜单。绕过弹窗直接换图，
     // 是批量场景的专用快路径；透明度沿用该图标已存设置。
@@ -1519,16 +1596,16 @@ try {
       const bKey = app.dataset.app;
       // 优化④：换图前留底旧图标（prev=null 表示原本是默认 SVG），供「撤销上次批量换图」
       ;(window.__iconBatchUndo = window.__iconBatchUndo || []).push({ key: bKey, prev: store.get('app-icon-' + bKey) || null });
-      const bIco = app.querySelector('.app-ico');
-      if (bIco) {
-        bIco.innerHTML = '';
+      const bIcon = app.querySelector('.app-ico');
+      if (bIcon) {
+        bIcon.innerHTML = '';
         const bImg = document.createElement('img');
         bImg.src = bData; bImg.alt = '';
-        bIco.appendChild(bImg);
+        bIcon.appendChild(bImg);
       }
       store.set('app-icon-' + bKey, bData);
-      const bOp = store.get('app-icon-opacity-' + bKey);
-      if (bOp) applyAppIconOpacity(app, parseInt(bOp, 10));
+      // #581：批量换上的图同样吃该图标已存的缩放/位置（换图不重置构图）
+      applyAppIconLook(app);
       const bLeft = window.__iconBatchQ.length;
       if (bLeft) toast('已换上，还剩 ' + bLeft + ' 张——继续点下一个图标');
       else { toast('批量换图完成，共 ' + (window.__iconBatchTotal || '?') + ' 张'); window.__iconBatchQ = null; }
@@ -1569,9 +1646,8 @@ try {
                 ico.appendChild(img);
               }
               store.set('app-icon-' + key, data);
-              // v3.27.x：换图保持已设透明度
-              const opSaved = store.get('app-icon-opacity-' + key);
-              if (opSaved) applyAppIconOpacity(app, parseInt(opSaved, 10));
+              // v3.27.x：换图保持已设透明度；#581：一并保持缩放/位置（换图不用重调构图）
+              applyAppIconLook(app);
               toast('图标已更新');
             });
           }, 80);
@@ -1594,6 +1670,8 @@ try {
     const pills = [];
     pills.push({ label: hasCustom ? '更换图片' : '上传图片', value: '1' });
     if (hasCustom) pills.push({ label: '清除图片', value: '2' });
+    // FIX 2026-09-16 #581：单张图的「缩放 + 位置」——只移动图片在图标里的位置，不用重新上传
+    if (hasCustom) pills.push({ label: '调整图片位置', value: 'fit' });
     // 优化④：统一图标风格——把当前这张图应用到桌面全部图标（每个图标保留各自的透明度设置）
     if (hasCustom) pills.push({ label: '同图应用到全部图标', value: 'all' });
     if (hasCustom) pills.push({ label: '图标透明度', value: 'opacity' });
@@ -1602,9 +1680,15 @@ try {
     if (window.openModal) {
       window.openModal('图标设置', '', (v) => {
         if (v === '1') pickFile();
+        else if (v === 'fit' && hasCustom) openIconFitPanel(app);
         else if (v === '2' && hasCustom) {
           store.remove('app-icon-' + key);
           if (ico && ico.dataset.orig) ico.innerHTML = ico.dataset.orig;
+          // #581：清除图片后位置/缩放一并撤掉（图片没了，构图设置留着只会误导）
+          store.remove('app-icon-zoom-' + key);
+          store.remove('app-icon-pos-x-' + key);
+          store.remove('app-icon-pos-y-' + key);
+          applyAppIconFit(app);
           toast('已恢复默认图标');
         } else if (v === 'all' && hasCustom) {
           // 优化④：同图应用到全部图标——喜欢单色图标套装的一次到位。
@@ -1625,6 +1709,8 @@ try {
             }
             const op2 = store.get('app-icon-opacity-' + k2);
             if (op2) applyAppIconOpacity(a2, parseInt(op2, 10));
+            // #581：每个图标保留各自的缩放/位置（同透明度口径），换图后构图不串
+            applyAppIconFit(a2);
             n++;
           });
           toast('已把同图应用到 ' + n + ' 个图标（可在装修模式逐个改回）');
@@ -1665,6 +1751,129 @@ try {
       pickFile();
     }
   };
+  // FIX 2026-09-16 #581：图标图片「缩放 + 位置」调整面板（底部浮层，桌面上半屏边看边调）。
+  // 两个入口共用：①装修模式点图标 →「调整图片位置」；②边看边调抽屉/设置页「调整图标图片位置」
+  // → 置 __iconAdjustPick，点哪个图标就调哪个。面板开着再点别的图标＝换目标（不重开面板）。
+  // 只改键 + 即时重绘该图标，不碰图片本体（正是用户要的「不用重新上传」）。
+  // 独立小滑杆（抽屉那套 mkSlider 在 openBeautyDrawer 闭包里，此处复刻同款观感与行高）。
+  const iconFitSlider = (label, min, max, step, val, unit, onInput) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px';
+    const lb = document.createElement('span');
+    lb.textContent = label;
+    lb.style.cssText = 'font-size:11.5px;color:var(--muted,#888);flex:none;width:74px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step || 1;
+    inp.value = String(val);
+    inp.style.cssText = 'flex:1;min-width:0';
+    const vv = document.createElement('span');
+    vv.style.cssText = 'font-size:11px;color:var(--muted,#999);flex:none;width:40px;text-align:right';
+    vv.textContent = inp.value + unit;
+    inp.addEventListener('input', () => { vv.textContent = inp.value + unit; onInput(inp.value); });
+    row.appendChild(lb); row.appendChild(inp); row.appendChild(vv);
+    row.__input = inp; row.__val = vv; row.__unit = unit;
+    return row;
+  };
+  const iconFitVals = (key) => {
+    const zRaw = parseInt(store.get('app-icon-zoom-' + key) || '100', 10);
+    const g = (k, d) => { const v = store.get(k); if (v === null || v === undefined || v === '') return d; const n = parseInt(v, 10); return isNaN(n) ? d : n; };
+    return {
+      z: (isNaN(zRaw) || zRaw < 100) ? 100 : Math.min(300, zRaw),
+      x: g('app-icon-pos-x-' + key, 50),
+      y: g('app-icon-pos-y-' + key, 50),
+    };
+  };
+  // 目标图标高亮（装修模式下图标本就有描边，这里再加一圈底影＝「现在调的是这个」）
+  let iconFitHi = null;
+  const iconFitHighlight = (app) => {
+    if (iconFitHi && iconFitHi !== app) { try { iconFitHi.style.boxShadow = ''; } catch (e) {} }
+    iconFitHi = app || null;
+    if (iconFitHi) { try { iconFitHi.style.boxShadow = '0 0 0 3px rgba(47,111,208,.85)'; } catch (e) {} }
+  };
+  const openIconFitPanel = (app) => {
+    if (!app || !app.dataset.app || !store.get('app-icon-' + app.dataset.app)) {
+      toast('这个图标还没有自定义图片，先上传一张');
+      return;
+    }
+    const key = app.dataset.app;
+    window.__iconAdjustPick = false;
+    let p = document.getElementById('icon-fit-panel');
+    if (!p) {
+      p = document.createElement('div');
+      p.id = 'icon-fit-panel';
+      // 与边看边调抽屉同款半透明底，避免整块挡住桌面（#562 口径）
+      p.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:96;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 82%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:none;flex-direction:column;gap:8px';
+      document.body.appendChild(p);
+    }
+    const nameEl = app.querySelector('.app-name');
+    const name = (nameEl && nameEl.textContent.trim()) || key;
+    const cur = iconFitVals(key);
+    p.innerHTML = '';
+    const grip = document.createElement('div');
+    grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 0;flex:none';
+    p.appendChild(grip);
+    const hd = document.createElement('div');
+    hd.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none';
+    const hdTxt = document.createElement('span');
+    hdTxt.textContent = '调整「' + name + '」的图片位置';
+    hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const mkMini = (label, fn, cssExtra) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:11.5px;border-radius:8px;padding:4px 9px;cursor:pointer' + (cssExtra || '');
+      b.addEventListener('click', fn);
+      return b;
+    };
+    const closePanel = () => { p.style.display = 'none'; window.__iconFitPanelOpen = false; iconFitHighlight(null); };
+    const closeBtn = mkMini('\u2715', closePanel, ';padding:4px 8px');
+    hd.appendChild(hdTxt); hd.appendChild(closeBtn);
+    p.appendChild(hd);
+    const setFit = (patch) => {
+      const next = Object.assign({}, iconFitVals(key), patch);
+      if (next.z === 100) store.remove('app-icon-zoom-' + key); else store.set('app-icon-zoom-' + key, String(next.z));
+      if (next.x === 50) store.remove('app-icon-pos-x-' + key); else store.set('app-icon-pos-x-' + key, String(next.x));
+      if (next.y === 50) store.remove('app-icon-pos-y-' + key); else store.set('app-icon-pos-y-' + key, String(next.y));
+      applyAppIconFit(app);
+      hint.textContent = next.z === 100
+        ? '先放大一点，再拖「水平/垂直位置」——不放大时只有原图被裁掉的部分能移动'
+        : '图片即时生效：放大后可水平/垂直移动到任意部位';
+    };
+    const hint = document.createElement('div');
+    hint.style.cssText = 'font-size:10.5px;color:var(--muted,#999);line-height:1.5;flex:none';
+    // 标签与「壁纸定位与缩放」面板同款（水平位置/垂直位置/缩放），用户不必学两套说法
+    const zRow = iconFitSlider('缩放', 100, 300, 5, cur.z, '%', (v) => setFit({ z: parseInt(v, 10) }));
+    const xRow = iconFitSlider('水平位置', 0, 100, 1, cur.x, '%', (v) => setFit({ x: parseInt(v, 10) }));
+    const yRow = iconFitSlider('垂直位置', 0, 100, 1, cur.y, '%', (v) => setFit({ y: parseInt(v, 10) }));
+    p.appendChild(zRow); p.appendChild(xRow); p.appendChild(yRow);
+    p.appendChild(hint);
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:8px;flex:none;padding-bottom:2px';
+    const resetBtn = mkMini('重置为默认', () => {
+      store.remove('app-icon-zoom-' + key);
+      store.remove('app-icon-pos-x-' + key);
+      store.remove('app-icon-pos-y-' + key);
+      applyAppIconFit(app);
+      const v0 = iconFitVals(key);
+      zRow.__input.value = String(v0.z); zRow.__val.textContent = v0.z + zRow.__unit;
+      xRow.__input.value = String(v0.x); xRow.__val.textContent = v0.x + xRow.__unit;
+      yRow.__input.value = String(v0.y); yRow.__val.textContent = v0.y + yRow.__unit;
+      hint.textContent = '已重置：图片按默认居中铺满';
+      toast('已重置图片位置');
+    }, ';flex:1;padding:7px;font-size:12px');
+    const doneBtn = mkMini('完成', () => {
+      closePanel();
+      toast('图标图片已保存，刷新后仍是这个位置');
+    }, ';flex:1;padding:7px;font-size:12px;font-weight:700');
+    btns.appendChild(resetBtn); btns.appendChild(doneBtn);
+    p.appendChild(btns);
+    hint.textContent = cur.z === 100
+      ? '先放大一点，再拖「水平/垂直位置」——不放大时只有原图被裁掉的部分能移动'
+      : '图片即时生效：放大后可水平/垂直移动到任意部位';
+    iconFitHighlight(app);
+    p.style.display = 'flex';
+    window.__iconFitPanelOpen = true;
+  };
+  window.mochiIconFitPanel = openIconFitPanel;
   grids.forEach(grid => {
     grid.addEventListener('click', (e) => {
       if (!grid.classList.contains('editing')) return;
@@ -1793,6 +2002,16 @@ try {
       startPick();
     });
   }
+  // FIX 2026-09-16 #581：设置页「调整图标图片位置」行——与装修模式点图标同一套面板，
+  // 这里先切到桌面装修模式并置标记，用户点哪个图标就调哪个（三个入口：设置页 / 抽屉 / 图标菜单）
+  const iconFitRow = document.getElementById('row-icon-fit');
+  if (iconFitRow) {
+    iconFitRow.addEventListener('click', () => {
+      try { enterDecor(); } catch (e) {}
+      window.__iconAdjustPick = true;
+      toast('点桌面上要调整的图标，就能调它的图片位置');
+    });
+  }
   // v3.27.x：快捷面板（项5）——美化页常用项直达，避免进多层菜单
   (function bindQuickPanel() {
     const bind = (id, targetId) => { const b = document.getElementById(id); const t = document.getElementById(targetId); if (b && t) b.addEventListener('click', () => t.click()); };
@@ -1809,6 +2028,10 @@ try {
   // 所以这个坑只在真机暴露）。现改为底部抽屉：桌面完整留在上半屏，抽屉占下半屏、可折叠。
   // 同时按「颜色/尺寸/背景」分区补齐控件（原来只有 5 项：主题色/组件背景/边框/圆角/透明度，
   // 按钮色、按钮文字色、爱心色、图标圆角、字号、卡片大小、壁纸/模糊/遮罩全都没有）。
+  // FIX 2026-09-16 #562：边看边调面板可拖动/吸附（用户「还是会遮挡其他东西我看不见」）——
+  // 会话内记住拖到的纵向位置；null=贴底（默认）。放模块作用域不落盘：纯 UI 位置，避免与
+  // contacts.js 的根键迁移/EXCLUDE 清单打交道。
+  let beautyDockTop = null;
   const openBeautyDrawer = () => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     const phoneTab = document.querySelector('.tab[data-page="page-phone"]');
@@ -1830,7 +2053,10 @@ try {
       //   ② 三个分区胶囊互斥，一次只渲染一组控件（原来三段全堆一起 = 内容超高的主因）；
       //   ③ 颜色改为「点色块 → 就地展开调色盘」即时生效，不用原生取色器、不弹全屏弹窗；
       //   ④ 「收起」把控件区整体折叠，只剩标题行，随时看整屏效果。
-      d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:44vh;background:var(--card-bg,#fff);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
+      // FIX 2026-09-16 #562：面板改半透明（用户报「又不是半透明的页面，还是会遮挡其他东西我看不见」）——
+      // 底色 72% 不透明 + 不透明度更高时保留原观感（color-mix 不支持的老内核回落上一句纯色，行为不变）；
+      // 同时高度上限 44vh→40vh，给桌面留更多可视区。刻意不加 backdrop-filter：AGENTS 的 iOS 卡顿红线。
+      d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
       d.innerHTML = '';
       const grip = document.createElement('div');
       grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 0;flex:none';
@@ -1892,7 +2118,7 @@ try {
       let paletteHost = null;
       // 颜色项：2 列网格里一个可点小块。点它在下方面板就地展开调色盘（即时生效），
       // 不再用原生取色器（真机上它会被渲染成一大块，正是抽屉超高的直接原因）。
-      const mkColorItem = (label, key, varName, isGlobal) => {
+      const mkColorItem = (label, key, varName, isGlobal, onSet) => {
         const el = document.createElement('div');
         el.style.cssText = 'display:flex;align-items:center;gap:7px;padding:6px 8px;border:1px solid var(--card-border,#ddd);border-radius:9px;cursor:pointer;min-width:0';
         const sw = document.createElement('span');
@@ -1910,6 +2136,9 @@ try {
           sw.style.background = c || '#ffffff';
         };
         const curSet = (v) => {
+          // FIX 2026-09-16 #562：可选 onSet——「主题色」走与设置页同一套 applier（同时写
+          // --btn-bg/--btn-ink 与键），修「边看边调点主题色只有 --btn-bg 变、--btn-ink 不跟随」。
+          if (onSet) { try { onSet(v); } catch (e) {} paint(); return; }
           if (v === null) {
             try { if (isGlobal) localStorage.removeItem(key); else store.remove(key); } catch (e) {}
             document.documentElement.style.removeProperty(varName);
@@ -1968,7 +2197,12 @@ try {
           wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px';
           const grid = document.createElement('div');
           grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
-          grid.appendChild(mkColorItem('主题色', 'xy-home-v2:accent-color', '--btn-bg', true));
+          grid.appendChild(mkColorItem('主题色', 'xy-home-v2:accent-color', '--btn-bg', true, (v) => {
+            // FIX 2026-09-16 #562：与设置页「主题色」同一 applier（同时写 --btn-bg/--btn-ink 与键），
+            // 顺带让桌面小组件按钮默认跟随主题色（home.css --widget-btn:var(--btn-bg)）。
+            try { if (v) localStorage.setItem(ACCENT_KEY, v); else localStorage.removeItem(ACCENT_KEY); } catch (e) {}
+            try { applyAccentColor(v || ''); } catch (e) {}
+          }));
           grid.appendChild(mkColorItem('组件背景', 'widget-bg-color', '--widget-bg', false));
           grid.appendChild(mkColorItem('边框', 'widget-border-color', '--widget-border', false));
           grid.appendChild(mkColorItem('按钮', 'widget-btn-color', '--widget-btn', false));
@@ -2035,6 +2269,39 @@ try {
             if (row) row.click();
           });
           wrap.appendChild(bgBtn);
+          return wrap;
+        } },
+        // FIX 2026-09-16 #581：新增「图标」分区（用户：「【边看边调】功能里缺少批量上传桌面图标按钮」＋
+        // 「上传了图标按钮图片后，需要可以只移动按钮里图片的位置，不用重新上传」）。
+        // 两个按钮都复用既有链路，不重复实现：批量上传＝点设置页 #row-icon-batch（载入后自动进装修模式）；
+        // 调整位置＝进装修模式 + 置 __iconAdjustPick，点哪个图标就调哪个（openIconMenu 认这个标记）。
+        { key: 'icon', label: '图标', build: () => {
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px';
+          const mkAct = (label, fn) => {
+            const b = document.createElement('button');
+            b.textContent = label;
+            b.style.cssText = 'padding:8px;border:1px solid var(--card-border,#ddd);border-radius:9px;background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:11.5px;cursor:pointer';
+            b.addEventListener('click', fn);
+            return b;
+          };
+          wrap.appendChild(mkAct('批量上传桌面图标图片（可多选）', () => {
+            d.style.display = 'none';
+            const row = document.getElementById('row-icon-batch');
+            if (row) row.click(); else toast('入口暂不可达，请到设置 → 手机桌面美化 → 批量上传图标图片');
+          }));
+          const fitBtn = mkAct('调整图标图片位置（点图标）', () => {
+            d.style.display = 'none';
+            try { enterDecor(); } catch (e) {}
+            window.__iconAdjustPick = true;
+            toast('点桌面上要调整的图标，就能调它的图片位置');
+          });
+          fitBtn.style.fontWeight = '600';
+          wrap.appendChild(fitBtn);
+          const note = document.createElement('div');
+          note.style.cssText = 'font-size:10.5px;color:var(--muted,#999);line-height:1.5';
+          note.textContent = '上传过的图片可单独调「缩放 / 水平位置 / 垂直位置」，即时生效、不用重新上传；装修模式点图标 →「调整图片位置」也是同一套。';
+          wrap.appendChild(note);
           return wrap;
         } }
       ];
@@ -2121,6 +2388,131 @@ try {
         const txt = (txtEl ? txtEl.textContent : '').toLowerCase();
         r.style.display = txt.indexOf(q) >= 0 ? '' : 'none';
       });
+    });
+  })();
+  // #542：设置页搜索（与上方美化项搜索同款）——设置项上百行，输入即跨 5 个 tag（通用/聊天/系统/工具/关于）
+  // 过滤 .set-row 显示匹配项；清空后复位所有行并重放当前 tag（恢复原分区视图）
+  (function bindSettingsSearch() {
+    const inp = document.getElementById('set-search-input');
+    const page = document.getElementById('page-setting');
+    if (!inp || !page) return;
+    // #549：搜索无条件带一个「在功能大全中搜索『X』」入口——设置行只是子集，功能大全才是全量索引；
+    // 点了走 feature-hub.js 暴露的 window.mochiFeatureHubOpen（带入关键词，返回仍回设置页）。
+    const jump = document.createElement('div');
+    jump.hidden = true;
+    jump.style.cssText = 'padding:7px 12px 0';
+    const jumpBtn = document.createElement('div');
+    jumpBtn.style.cssText = 'display:inline-block;padding:7px 12px;border-radius:9px;background:rgba(47,111,208,.12);color:#2f6fd0;font-size:13px;font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent';
+    jump.appendChild(jumpBtn);
+    if (inp.parentNode) inp.parentNode.insertBefore(jump, inp.nextSibling);
+    jumpBtn.addEventListener('click', () => {
+      const kw = inp.value.trim();
+      if (!kw) return;
+      if (typeof window.mochiFeatureHubOpen === 'function') window.mochiFeatureHubOpen(kw);
+    });
+    // FIX 2026-09-16 #550 设置搜索精准化（用户报「不能精准搜索」）：
+    // ① 取词剔除 settings-help.js 注入的「功能说明」.tag 胶囊（此前搜「功能/说明」几乎全行命中）；
+    // ② 口语词→入口行别名表（此前搜「壁纸/通知/概率/夜间」等 0 命中）；
+    // ③ 多词 AND（空格分隔，每词都须命中）；④ 空分组/空分区隐藏 + 零命中空态提示。
+    const SEC_NAME = { basic: '通用', chat: '聊天', system: '系统', tools: '工具', about: '关于' };
+    const KW = {
+      '联系人 / 桌面': '切换桌面 多桌面 独立 称呼',
+      '开启群聊': '多人聊天 群',
+      '跨桌面查岗': '定位 位置 远程',
+      '查岗频率': '次数',
+      '打电话': '拨打 通话',
+      '深色模式': '夜间模式 暗色模式 黑暗模式 夜间 暗色 黑暗 黑色 主题 dark mode',
+      '手机桌面美化': '壁纸 主题 图标 字体 字号 圆角 装修 装扮 小组件 桌面美化',
+      '回复设置': '概率 回复速度 拍一拍 撤回 已读 触发 自动回复 聊天',
+      '通话设置': '来电 挂断 通话背景 铃声',
+      '音效设置': '声音 铃声 提示音 静音',
+      '功能大全': '索引 直达 查找',
+      '应用锁': '密码 锁 隐私',
+      '开屏问答门': '问答 暗号 验证 提问',
+      '手机布局': '布局 适配 模式',
+      '离线消息提醒': '通知 推送 通知提醒 新消息',
+      '使用说明': '教程 帮助 常见问题 安装',
+      '导出数据': '备份 保存 导出',
+      '导入数据': '恢复 还原 迁移 换机',
+      '设备兼容诊断': '诊断 兼容 报错 环境',
+      '顶部避让修正': '安全区 白带 重叠 刘海',
+      '屏幕适配诊断': '适配 屏幕 空白 裁切',
+      '功能诊断': '检测 测试',
+      '查看存储': '空间 清理 占用',
+      '压缩图片': '图片 瘦身',
+      '卡顿自检': '卡顿 优化 流畅',
+      '字卡使用状态自检': '字卡 自检 可用',
+      '清除本地数据': '清空 重置 删除',
+      '新手引导': '教程 上手 入门',
+      '功能介绍': '介绍 许可 版权 二传'
+    };
+    // FIX 2026-09-16 #573 拼音首字母轻量表（仅设置入口行，不引拼音库＝产物零增重）：
+    // 搜「ssms」＝深色模式、「hfsz」＝回复设置。单字母前缀会泛命中属预期，用户自然补足。
+    const PY = {
+      '联系人 / 桌面': 'lxrzm', '开启群聊': 'kqql', '跨桌面查岗': 'kzmcg', '查岗频率': 'cgpl', '打电话': 'dh',
+      '深色模式': 'ssms', '手机桌面美化': 'sjzmmh', '回复设置': 'hfsz', '通话设置': 'thsz', '音效设置': 'yxsz',
+      '功能大全': 'gndq', '应用锁': 'yys', '开屏问答门': 'kpwdm', '手机布局': 'sjbj', '离线消息提醒': 'lxxtx',
+      '使用说明': 'sysm', '导出数据': 'dcsj', '导入数据': 'drsj', '设备兼容诊断': 'sbjrzd', '顶部避让修正': 'dbbrxz',
+      '屏幕适配诊断': 'pmspzd', '功能诊断': 'gnzd', '查看存储': 'ckcc', '压缩图片': 'ystp', '卡顿自检': 'kdzj',
+      '字卡使用状态自检': 'zksyztzj', '清除本地数据': 'qcbdsj', '新手引导': 'xsyd', '功能介绍': 'gnjs'
+    };
+    // 行搜索素材 = 标题 + .sub 说明 + 分区名 + settings-help 说明文案（#573）+ 命中 key 的别名/拼音；
+    // 标题取词剔除 .tag 胶囊（①）
+    const rowHay = (r) => {
+      const t = r.querySelector('.txt');
+      if (!t) return '';
+      const c = t.cloneNode(true);
+      c.querySelectorAll('.tag').forEach(x => x.remove());
+      const base = c.textContent.replace(/\s+/g, ' ').trim();
+      const sec = r.closest('.them-sec');
+      let extra = ' ' + (SEC_NAME[sec && sec.dataset.sec] || '');
+      // #573：按行上「功能说明」胶囊的 data-setdesc 反查说明文案，说明里的词（壁纸/备份/总入口…）自动可搜
+      const tagEl = t.querySelector('[data-setdesc]');
+      const help = (tagEl && window.__settingsHelpDesc) ? window.__settingsHelpDesc[tagEl.getAttribute('data-setdesc')] : null;
+      if (help) extra += ' ' + (help.name || '') + ' ' + (help.d || '');
+      for (const k in KW) { if (base.indexOf(k) >= 0) { extra += ' ' + KW[k]; if (PY[k]) extra += ' ' + PY[k]; } }
+      return (base + extra).toLowerCase();
+    };
+    const emptyTip = document.createElement('div');
+    emptyTip.id = 'set-search-empty-tip';
+    emptyTip.hidden = true;
+    emptyTip.style.cssText = 'padding:14px 12px 4px;text-align:center;font-size:13px;color:var(--muted,#888)';
+    emptyTip.textContent = '没有匹配的设置项，可换个词试试，或用上方按钮去「功能大全」搜索';
+    if (jump.parentNode) jump.parentNode.insertBefore(emptyTip, jump.nextSibling);
+    inp.addEventListener('input', () => {
+      const q = inp.value.trim().toLowerCase();
+      const secs = page.querySelectorAll('.them-sec');
+      const rows = page.querySelectorAll('.set-row');
+      if (!q) {
+        jump.hidden = true;
+        rows.forEach(r => r.style.display = '');
+        page.querySelectorAll('.set-group').forEach(g => g.style.display = '');
+        emptyTip.hidden = true;
+        const activeTab = page.querySelector('.them-tab.active');
+        if (activeTab) activeTab.click();
+        return;
+      }
+      jump.hidden = false;
+      jumpBtn.textContent = '在「功能大全」中搜索“' + inp.value.trim() + '” →';
+      // ③ 多词 AND：空格分隔的每个词都须出现在行素材里
+      const terms = q.split(/\s+/);
+      let hits = 0;
+      rows.forEach(r => {
+        const hay = rowHay(r);
+        const ok = terms.every(w => hay.indexOf(w) >= 0);
+        r.style.display = ok ? '' : 'none';
+        if (ok) hits++;
+      });
+      // ④ 命中稀疏时不留空分组/空分区，零命中给空态提示
+      secs.forEach(sec => {
+        sec.querySelectorAll('.set-group').forEach(g => {
+          const rs = g.querySelectorAll('.set-row');
+          const any = Array.prototype.some.call(rs, x => x.style.display !== 'none');
+          g.style.display = (rs.length > 0 && !any) ? 'none' : '';
+        });
+        sec.hidden = !Array.prototype.some.call(sec.querySelectorAll('.set-row'), x => x.style.display !== 'none');
+      });
+      emptyTip.hidden = hits > 0;
     });
   })();
   // v3.6.x：装修模式设置卡片背景入口的绑定在 CARD_BG_TYPES 定义之后（见卡片背景段末尾）——
@@ -2276,14 +2668,14 @@ try {
   const widgetBtnVal = document.getElementById('widget-btn-val');
   const applyWidgetBtn = (color) => {
     document.documentElement.style.setProperty('--widget-btn', color);
-    paintBeautyVal(widgetBtnVal, color, '#111111', '默认黑');
+    paintBeautyVal(widgetBtnVal, color, '#111111', '跟随主题色');
   };
   const savedWidgetBtn = store.get('widget-btn-color');
   if (savedWidgetBtn) applyWidgetBtn(savedWidgetBtn);
   if (widgetBtnRow) {
     const syncWidgetBtnUI = () => {
       const c = store.get('widget-btn-color') || '#111111';
-      paintBeautyVal(widgetBtnVal, c, '#111111', '默认黑');
+      paintBeautyVal(widgetBtnVal, c, '#111111', '跟随主题色');
     };
     syncWidgetBtnUI();
     const btnSwatches = [
@@ -2313,7 +2705,9 @@ try {
         if (!color) return;
         if (color === '__reset__') {
           store.remove('widget-btn-color');
-          applyWidgetBtn('#111111');
+          // FIX 2026-09-16 #562：恢复默认＝摘掉内联变量、回落到 :root 的 var(--btn-bg)（跟随主题色）；
+          // 原来写死 applyWidgetBtn('#111111')＝内联变量把主题色链截断，恢复默认后再点主题色按钮不跟随。
+          document.documentElement.style.removeProperty('--widget-btn');
           syncWidgetBtnUI();
           return;
         }
@@ -2335,14 +2729,14 @@ try {
   const widgetBtnTextVal = document.getElementById('widget-btn-text-val');
   const applyWidgetBtnText = (color) => {
     document.documentElement.style.setProperty('--widget-btn-text', color);
-    paintBeautyVal(widgetBtnTextVal, color, '#ffffff', '默认白');
+    paintBeautyVal(widgetBtnTextVal, color, '#ffffff', '跟随主题色');
   };
   const savedWidgetBtnText = store.get('widget-btn-text-color');
   if (savedWidgetBtnText) applyWidgetBtnText(savedWidgetBtnText);
   if (widgetBtnTextRow) {
     const syncWidgetBtnTextUI = () => {
       const c = store.get('widget-btn-text-color') || '#ffffff';
-      paintBeautyVal(widgetBtnTextVal, c, '#ffffff', '默认白');
+      paintBeautyVal(widgetBtnTextVal, c, '#ffffff', '跟随主题色');
     };
     syncWidgetBtnTextUI();
     const btnTextSwatches = [
@@ -2372,7 +2766,8 @@ try {
         if (!color) return;
         if (color === '__reset__') {
           store.remove('widget-btn-text-color');
-          applyWidgetBtnText('#ffffff');
+          // FIX 2026-09-16 #562：同按钮颜色——摘内联变量回落到 var(--btn-ink)，跟随主题色文字色
+          document.documentElement.style.removeProperty('--widget-btn-text');
           syncWidgetBtnTextUI();
           return;
         }
@@ -2770,6 +3165,12 @@ try {
         const ok = 'app-icon-opacity-' + app.dataset.app;
         const ov = store.get(ok);
         if (ov) data[ok] = ov;
+        // FIX 2026-09-16 #581：图标图片缩放/位置随方案导出（同一动态键口径）
+        ['app-icon-zoom-', 'app-icon-pos-x-', 'app-icon-pos-y-'].forEach(pfx => {
+          const fk = pfx + app.dataset.app;
+          const fv = store.get(fk);
+          if (fv !== null && fv !== undefined && fv !== '') data[fk] = fv;
+        });
       });
       document.querySelectorAll('.app-grid').forEach(grid => {
         const k = 'app-icon-order-' + grid.dataset.app;
@@ -3306,6 +3707,14 @@ try {
           BEAUTY_KEYS.forEach(k => store.remove(k));
           ['app-name-color','phone-bg-solid','phone-bg-pos-x','phone-bg-pos-y','phone-bg-size'].forEach(k => store.remove(k));
           document.querySelectorAll('.app').forEach(app => { if (app.dataset.app) store.remove('app-icon-' + app.dataset.app); });
+          // FIX 2026-09-16 #581：图标图片的缩放/位置（与图片同生共死）一并清掉
+          document.querySelectorAll('.app').forEach(app => {
+            const k = app.dataset.app;
+            if (!k) return;
+            store.remove('app-icon-zoom-' + k);
+            store.remove('app-icon-pos-x-' + k);
+            store.remove('app-icon-pos-y-' + k);
+          });
           document.querySelectorAll('.app-grid').forEach(g => { if (g.dataset.app) store.remove('app-icon-order-' + g.dataset.app); });
           try { localStorage.removeItem('xy-home-v2:accent-color'); } catch (e) {}
           try { localStorage.removeItem('xy-home-v2:theme-mode'); } catch (e) {}
@@ -3533,52 +3942,65 @@ try {
     show(tabs[0] ? tabs[0].dataset.tab : 'basic');
   })();
 
-  // ===== 设置 → 工具：安装与使用限制说明（只读弹窗；行 #row-platform-limits 在 template） =====
-  // 汇总「安装方式差异 + iPhone/iOS 稳定平台限制 + 数据备份须知」，内容与开屏公告/各功能说明一致。
-  (function initPlatformLimits() {
-    const row = document.getElementById('row-platform-limits');
-    if (!row) return;
-    const TEXT = [
-      '【iPhone / iOS：推荐用法】',
-      '推荐：用 Safari 打开本站 → 底部「分享」→「添加到主屏幕」，之后从桌面图标打开使用。这样是无浏览器栏的独立应用，全屏更完整、内存表现也更稳（浏览器标签页更容易卡顿，也更容易被系统清掉数据）。',
-      '注意：在 iPhone 上用 Edge / Chrome 的「添加到主屏幕」只会生成快捷方式，打开仍是带工具栏的浏览器页面，拿不到独立应用与全屏。',
-      '',
-      '【iPhone / iOS 平台限制】',
-      '· 全屏：顶部系统状态栏（时间、电量、灵动岛）由系统控制，任何网页都无法隐藏；全屏开关只能隐藏应用内的模拟状态栏。真正无浏览器栏的独立应用，只有 Safari「添加到主屏幕」这一条路。部分旧版 iOS 浏览器（iOS 16.4 之前的 Safari）不支持网页全屏，点开会弹说明并回滚开关。',
-      '· 全屏会掉：切到后台再切回、或在浏览器里切换页面，全屏会失效，需手动重新打开。',
-      '· 方向：iOS 不支持屏幕方向锁定，不会自动锁竖屏，也不会纠正横屏（iPad 横屏是正常姿势，布局会自适应）。',
-      '· 声音：iOS 要求先与页面互动（点 / 滑一下）才允许播放有声内容，应用已在首次点击时自动解锁；如果全程没有任何操作，定时触发的来电铃声 / 消息音效可能不响。',
-      '· 系统通知：iPhone 浏览器内不支持系统通知；「离线消息提醒」（页面全部关闭后仍能收到 TA 的消息）只在安卓 Chrome / Edge 且添加到桌面后可用，iPhone 不支持。',
-      '· 导出：从主屏幕打开时 iPhone 没有下载管理器，导出数据 / 方案会走系统「分享」面板，请保存到「文件」App。',
-      '· 语音：录音格式由系统决定，安卓录制的语音在 iPhone 上可能无法播放，跨设备迁移/导入后个别语音会提示无法播放。',
-      '· 文件选择：iPhone 的「文件」选择器会按文件类型过滤，导入字卡 / 语音 / 备份等时个别文件可能灰显、选不中（系统限制）。',
-      '· 其他：iOS 没有振动反馈；Safari 会忽略网页设置的音量大小；字卡库 / 图片过多时更容易被系统回收内存、导致页面重新加载（可用设置 → 工具 →「卡顿自检 · 一键优化」缓解）。',
-      '',
-      '【安装（安卓 / 电脑）】',
-      '· 安装按钮只会在 Chrome、Edge 等主流浏览器出现；iPhone 没有该按钮，只能手动「添加到主屏幕」。',
-      '· 安卓 Edge：装到桌面的应用与浏览器标签页使用各自独立的存储，装完从桌面打开会看到空数据。安装前请先在浏览器里导出一份备份，装好后再导入。',
-      '· 浏览器标签页 与 桌面快捷方式 的数据可能互不相通，且不要同时打开使用（会导致两边数据不统一）。',
-      '',
-      '【数据与备份（所有平台）】',
-      '· 所有数据只存在你自己的浏览器里，没有云端：清除浏览器数据、卸载、换机、系统回收存储都会导致数据丢失，本机不保留任何自动副本。',
-      '· 有备份提醒弹窗：距上次成功导出超过 1 天提醒一次。请把导出的文件保存到不会被浏览器清理的地方。',
-      '· 导入：设置 → 导入数据 选择之前导出的备份文件；iOS 上会打开系统「文件」App 让你选文件。',
-      '· 系统 / 浏览器版本不同，适配表现可能不同属正常现象；建议始终使用 Chrome、Edge 等主流浏览器。',
-      '',
-      '【更新提醒】',
-      '· 刚更新完时新旧版本正在交接，可能重复提醒一次；不想现在更新可点「稍后」，下次重新打开会自动同步。',
-      '· 不同设备的网络节点可能还没同步到最新版，可以关掉浏览器重开、用流量多刷新几次，或晚几小时再试。',
-      '',
-      '【功能提醒】',
-      '· 音乐：通过网易云链接上传的 VIP / 付费歌曲无法播放（仅免费歌曲可播），歌单导入会自动移除 VIP / 付费歌曲；外链有防盗链也可能播放失败。',
-      '· 图片：超大图片上传时会被自动压缩，过大的会被拒绝（防止图片解码导致 iOS 页面崩溃），请换小一点的图。',
-      '· 体积越大越容易卡：字卡库、表情、图片、聊天记录体积很大时会变慢，可用「卡顿自检 · 一键优化」或精简数据。'
-    ].join('\n');
-    row.addEventListener('click', () => {
-      if (!window.openModal) return;
-      const ctl = window.openModal('安装与使用限制', '', () => {}, { noInput: true, big: true, staticText: TEXT });
-      if (ctl && ctl.okText) ctl.okText('知道了');
-    });
+  // ===== 设置 → 工具：使用说明页导航 + 页内搜索（#row-guide → #page-guide；说明内容静态在 template.html） =====
+  (function initGuideNav() {
+    const page = document.getElementById('page-guide');
+    const row = document.getElementById('row-guide');
+    if (row) {
+      row.addEventListener('click', () => {
+        document.querySelectorAll('.page').forEach(p => { p.hidden = true; });
+        if (page) {
+          page.hidden = false;
+          try { const sc = page.querySelector('.cal-scroll'); if (sc) sc.scrollTop = 0; } catch (e) {}
+        }
+      });
+    }
+    const back = document.getElementById('guide-back');
+    if (back) {
+      back.addEventListener('click', () => {
+        document.querySelectorAll('.page').forEach(p => { p.hidden = true; });
+        const setPage = document.getElementById('page-setting');
+        if (setPage) setPage.hidden = false;
+      });
+    }
+    // ---- 页内搜索：跨分组过滤条目；组标题命中则整组显示，命中组自动展开、未命中组隐藏 ----
+    const input = document.getElementById('guide-search');
+    if (!page || !input) return;
+    const hero = document.getElementById('guide-hero');
+    const empty = document.getElementById('guide-empty');
+    const groups = Array.prototype.slice.call(page.querySelectorAll('.lic-grp'));
+    const baseOpen = groups.map(g => !!g.open); // 记原始展开态（首个默认 open）
+    function norm(s) { return String(s || '').toLowerCase().replace(/\s+/g, ''); }
+    function apply() {
+      const q = norm(input.value);
+      if (!q) {
+        if (hero) hero.hidden = false;
+        if (empty) empty.hidden = true;
+        groups.forEach((g, i) => {
+          g.hidden = false;
+          g.open = baseOpen[i];
+          Array.prototype.forEach.call(g.querySelectorAll('.lic-li'), li => { li.style.display = ''; });
+        });
+        return;
+      }
+      if (hero) hero.hidden = true;
+      let hits = 0;
+      groups.forEach(g => {
+        const nameEl = g.querySelector('.lg-name');
+        const titleHit = norm(nameEl && nameEl.textContent).indexOf(q) >= 0;
+        let gHit = 0;
+        Array.prototype.forEach.call(g.querySelectorAll('.lic-li'), li => {
+          const show = titleHit || norm(li.textContent).indexOf(q) >= 0;
+          li.style.display = show ? '' : 'none';
+          if (show) gHit++;
+        });
+        g.hidden = gHit === 0;
+        if (gHit > 0) { g.open = true; hits += gHit; }
+      });
+      if (empty) empty.hidden = hits > 0;
+    }
+    input.addEventListener('input', apply);
+    apply();
   })();
 
   // ===== v3.6.x：深色模式 · v3.27.x：三档（浅色/深色/跟随系统） =====
@@ -3768,6 +4190,37 @@ try {
       });
     });
   }
+
+  // FIX 2026-09-16 #562：美化页每个颜色行补一个可见的「默认」按钮（用户报「桌面美化的所有颜色，
+  // 没有恢复默认颜色的按钮」——此前只有「点行→开弹窗→点弹窗里的『恢复默认』pill」这条隐藏路径，
+  // 行上没有可见入口）。点它就地恢复该项：删键 + 摘内联 CSS 变量（回落主题/深色模式的默认值）。
+  (function bindBeautyColorResets() {
+    const rows = [
+      ['row-accent-color', () => { try { localStorage.removeItem(ACCENT_KEY); } catch (e) {} applyAccentColor(''); }],
+      ['row-widget-color', () => { store.remove('widget-bg-color'); document.documentElement.style.removeProperty('--widget-bg'); paintBeautyVal(widgetColorVal, '', '#ffffff', '默认白'); }],
+      ['row-widget-border', () => { store.remove('widget-border-color'); document.documentElement.style.removeProperty('--widget-border'); paintBeautyVal(widgetBorderVal, '', 'rgba(0,0,0,.1)', '默认'); }],
+      ['row-widget-btn', () => { store.remove('widget-btn-color'); document.documentElement.style.removeProperty('--widget-btn'); paintBeautyVal(widgetBtnVal, '', '#111111', '默认黑'); }],
+      ['row-widget-btn-text', () => { store.remove('widget-btn-text-color'); document.documentElement.style.removeProperty('--widget-btn-text'); paintBeautyVal(widgetBtnTextVal, '', '#ffffff', '默认白'); }],
+      ['row-app-name-color', () => { store.remove(APP_NAME_COLOR_KEY); applyAppNameColor(); }],
+      ['row-widget-heart', () => { store.remove('widget-heart-color'); document.documentElement.style.removeProperty('--widget-heart'); paintBeautyVal(widgetHeartVal, '', '#111111', '默认黑'); }]
+    ];
+    rows.forEach(function (pair) {
+      const row = document.getElementById(pair[0]);
+      if (!row || row.querySelector('.bfy-reset-btn')) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bfy-reset-btn';
+      btn.textContent = '默认';
+      btn.title = '恢复该项默认颜色';
+      btn.style.cssText = 'flex:none;margin-left:8px;padding:3px 9px;font-size:11px;line-height:1.4;border:1px solid var(--card-border,#ddd);border-radius:8px;background:var(--btn-cancel-bg,#fafafa);color:var(--muted,#888);cursor:pointer';
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation(); // 别触发该行的弹窗
+        try { pair[1](); } catch (err) {}
+        try { if (typeof toast === 'function') toast('已恢复默认'); } catch (err) {}
+      });
+      row.appendChild(btn);
+    });
+  })();
 
   // ===== v3.27.x：全局字体（桌面美化快捷入口，与聊天设置「全局字体」互通同一功能） =====
   // 复用 chat-settings.js 的存储键 'cs-font' + 同款 applyFont 逻辑（@font-face 注入 / body+html font-family），
@@ -4454,14 +4907,43 @@ try {
     if (!pagesBox) return;
     const slides = pagesBox.querySelectorAll('.page-slide');
     const pool = ensureWidgetPool();
+    // FIX 2026-09-16 #560 冷启动第三页顺序竞态（新浏览器默认「图标在上、小组件在下」，
+    // 多机型随机复现）：时序为 0ms buildDeskPages 收缩把第三页三组件（desk-period/
+    // memo-row/p3apps）扫进隐藏池 → 50ms ensureP3 重建第三页先放回 p3apps →
+    // mochi-restore-done(~秒级) 回放 applyDeskLayout 时本函数此前对池里的组件逐个
+    // appendChild 到页尾，而已在页里的 p3apps 被「node.parentNode === slide」跳过
+    // ＝小组件全部排到图标组后面。两步谁先谁后不可控（50ms 与回放时序竞态）＝
+    // 机型相关随机复现。改为按模板快照顺序整页归位：先把该页快照组件按原序
+    // 依次插回（insertBefore addBtn 保位），快照顺序天然恢复；已在位且相对顺序
+    // 与模板一致时整体跳过（幂等零抖动，同 #249 恒等跳过思路）。
+    // 仅无布局（未装修）桌面走此分支，已装修用户 desk-layout 优先级不变。
+    const byPage = {};
     TEMPLATE_DESK_ARR.forEach((it) => {
-      const node = document.querySelector('[data-desk-widget="' + it.wid + '"]');
-      if (!node) return;
-      if (it.pool) { if (node.parentNode !== pool) pool.appendChild(node); return; }
-      const slide = slides[it.page];
-      if (!slide || node.parentNode === slide) return;
+      if (it.pool) return;
+      (byPage[it.page] = byPage[it.page] || []).push(it.wid);
+    });
+    Object.keys(byPage).forEach((pi) => {
+      const slide = slides[pi];
+      if (!slide) return;
+      const nodes = byPage[pi].map(wid => document.querySelector('[data-desk-widget="' + wid + '"]')).filter(Boolean);
+      if (!nodes.length) return;
+      // 已全部在位且子节点相对顺序与快照一致 → 不动（避免每次切桌面/回填重排抖动）
+      const orderOk = nodes.every((n, i) => {
+        if (n.parentNode !== slide) return false;
+        const idx = Array.prototype.indexOf.call(slide.children, n);
+        return i === 0 || idx > Array.prototype.indexOf.call(slide.children, nodes[i - 1]);
+      });
+      if (orderOk) return;
       const addBtn = slide.querySelector('.desk-page-add');
-      if (addBtn) slide.insertBefore(node, addBtn); else slide.appendChild(node);
+      nodes.forEach((n) => {
+        if (addBtn) slide.insertBefore(n, addBtn); else slide.appendChild(n);
+      });
+    });
+    // 模板快照里属池的组件归池（页数收缩/未添加语义不变）；页缺失的保持旧版留池语义
+    TEMPLATE_DESK_ARR.forEach((it) => {
+      if (!it.pool) return;
+      const node = document.querySelector('[data-desk-widget="' + it.wid + '"]');
+      if (node && node.parentNode !== pool) pool.appendChild(node);
     });
   };
   const pagesVal = document.getElementById('desk-pages-val');
@@ -6875,11 +7357,21 @@ try {
           //   不在 activePrefix 过滤范围内——重置数据应连年龄确认一并清掉，
           //   让用户重新勾选（重置≠保留「已确认年满18」的举证记录）
           const BARE_KEYS = ['divine-history', 'xy-home-v2:age-confirmed'];
-          try {
-            Object.keys(localStorage)
-              .filter(k => k.indexOf(window.activePrefix() + ':') === 0 || BARE_KEYS.indexOf(k) >= 0)
-              .forEach(k => localStorage.removeItem(k));
-          } catch (e) {}
+          // #551：清除范围从「仅当前桌面命名空间」升级为「全部 xy-home-v2 键」——
+          //   旧范围漏掉根命名空间全局键（联系人列表、公用字卡 cc-groups-public、
+          //   我的表情包 my-emoji-groups、存钱罐 piggy-*、桌面美化/布局等）与
+          //   其他联系人的整个命名空间，清完重载后这些数据原地残留＝「没有把本地
+          //   的所有数据清空」（红米 K70 Chrome 及多机型确定复现，纯范围逻辑、
+          //   与机型无关）。弹窗承诺「清除所有本地数据」，行为必须对齐；
+          //   age-confirmed 前缀本就命中，BARE_KEYS 保留作显式口径。
+          const wipeAppKeys = function () {
+            try {
+              Object.keys(localStorage)
+                .filter(k => k.indexOf('xy-home-v2:') === 0 || BARE_KEYS.indexOf(k) >= 0)
+                .forEach(k => localStorage.removeItem(k));
+            } catch (e) {}
+          };
+          wipeAppKeys();
           // 清会话级迁移标记（大键迁移标记，随会话残留无实际数据，一并清掉）
           try { sessionStorage.removeItem('xy-ls-big-migrated'); } catch (e) {}
           // 清空 IndexedDB（mochi-db）：只清 localStorage 不清 IDB 的话，
@@ -6901,7 +7393,9 @@ try {
           }
           // 清完后刷新；__resetting 屏障已阻止 beforeunload 把内存回写，删库成功则
           // 重启后 IDB 为空、idbRestore 无可回填，彻底清除（含专属字卡等 LS-only 键）。
-          idbDone.then(() => { try { location.reload(); } catch (e) {} });
+          // #551：reload 前再全量补一刀——清窗口期（真删库最长 6s）内，未挂
+          // __resetting 屏障的模块定时器/落盘路径可能重写键，不清会活过本次重置。
+          idbDone.then(() => { wipeAppKeys(); try { location.reload(); } catch (e) {} });
         }, { noInput: true });
       }
     });
@@ -8016,6 +8510,47 @@ try {
         });
       };
       ccScanBtn.addEventListener('click', runCcScan);
+    }
+    // ===== #554（TASKS #128）字卡媒体令牌化持久化：库键内联图转池令牌（同图全库只存一份）=====
+    // 后端 chatcard.js mochiCcPersistTokenize（池先令牌后 / 字符串级替换 / 不变小不写）。
+    const ccTokBtn = document.getElementById('st-cc-tokbtn');
+    if (ccTokBtn) {
+      const tokEl = document.getElementById('st-cc-tok');
+      ccTokBtn.addEventListener('click', function () {
+        if (!window.mochiCcPersistTokenize) {
+          if (window.openModal) window.openModal('本环境不支持', '', null, { noInput: true, staticText: '字卡图去重需要安全上下文（HTTPS/localhost）+ IndexedDB，当前环境不可用。' });
+          return;
+        }
+        if (ccTokBtn.disabled) return;
+        if (!window.openModal) { if (typeof toast === 'function') toast('当前环境缺少弹窗组件'); return; }
+        window.openModal('字卡图去重入库？', '', function () {
+          ccTokBtn.disabled = true;
+          if (tokEl) tokEl.textContent = '处理中…';
+          window.mochiCcPersistTokenize(function (label, done, total) {
+            if (tokEl) tokEl.textContent = '处理中：' + label + ' ' + done + '/' + total;
+          }).then(function (rep) {
+            ccTokBtn.disabled = false;
+            if (!rep || !rep.ok) {
+              if (tokEl) tokEl.textContent = '未处理';
+              if (typeof toast === 'function') toast('去重未执行：' + ((rep && rep.reason) || '未知原因'));
+              return;
+            }
+            const msg = rep.written
+              ? '已处理 ' + rep.images + ' 张内联图（唯一 ' + rep.uniq + ' 张），库键共缩小约 ' + fmtBytes(rep.saved) + '，写回 ' + rep.written + ' 个库'
+              : '没有需要去重的内联大图（可能已处理过，或图片都在阈值以下）';
+            if (tokEl) tokEl.textContent = rep.written ? ('已去重：缩小约 ' + fmtBytes(rep.saved)) : '无内联大图';
+            try { if (typeof renderStorage === 'function') renderStorage(); } catch (eR) {}
+            window.openModal('字卡图去重完成', '', null, { noInput: true, staticText: msg + '\n\n图片显示/发送不变；「导出数据」会自动还原成完整图片。' });
+          }).catch(function (e) {
+            ccTokBtn.disabled = false;
+            if (tokEl) tokEl.textContent = '未处理';
+            if (typeof toast === 'function') toast('去重异常：' + ((e && e.message) || e));
+          });
+        }, {
+          noInput: true,
+          staticText: '把字卡库里的内联图片转成媒体池令牌（与聊天图片同机制）：同一张贴图在公用库+各专属库里只存一份，库键大幅缩小；图片显示/发送不变，「导出数据」自动还原完整图片。处理不可逆，建议先导出备份留底。'
+        });
+      });
     }
     if (row) {
       row.addEventListener('click', function () {

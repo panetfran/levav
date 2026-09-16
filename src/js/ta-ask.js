@@ -189,7 +189,10 @@
         list.style.left = left + 'px';
         list.style.top = top + 'px';
         document.body.appendChild(list);
-        list.style.display = '';
+        // FIX 2026-09-16 #544：CSS `.mochi-custom-select-list{display:none}` 是默认收起态，
+        // 这里必须显式写 block——原写 '' 只清内联样式，回落样式表仍是 none，浮层永远打不开
+        // （用户现象：音乐「导入到歌单」等全站下拉点了不展开；vivo X200s+Edge 等多机型）。
+        list.style.display = 'block';
         open = true;
         wrap.classList.add('open');
         rebuild(); // 打开时刷新选中高亮/toLabel
@@ -639,9 +642,88 @@
     const dl = askDeadlineMs(d);
     return dl > 0 && Date.now() > dl;
   }
-  function fmtDeadlineLocal(ts) {
+  // v3.33.x #523：显示文案（本地时区，比 datetime-local 的「YYYY-MM-DDTHH:MM」更好读）
+  function fmtDeadlineText(ts) {
+    if (!ts) return '未设置';
     const dt = new Date(ts), p = n => (n < 10 ? '0' : '') + n;
-    return dt.getFullYear() + '-' + p(dt.getMonth() + 1) + '-' + p(dt.getDate()) + 'T' + p(dt.getHours()) + ':' + p(dt.getMinutes());
+    const wk = '日一二三四五六'.charAt(dt.getDay());
+    return (dt.getMonth() + 1) + '月' + dt.getDate() + '日 周' + wk + ' ' + p(dt.getHours()) + ':' + p(dt.getMinutes()) + ':' + p(dt.getSeconds());
+  }
+  // v3.33.x #523：App 内自绘交卷时间选择器——替代原生 datetime-local（原生弹层锚点不受控，
+  // 部分设备/桌面预览下会飘出手机框甚至屏幕外）。两处时间入口（问问TA 答题结束时间 / 批量问卷
+  // 交卷时间）共用。**最简形态（用户定稿）**：只有一个「秒」输入框，直接自由填多少秒（默认 60 秒）；
+  // 顶部实时显示到点的绝对时刻。overlay 静态写在 template 的 #dl-picker-mask（挂 .phone 内，
+  // 与 #modal-mask 同层，永不飞出手机框）。
+  let dlPickerCb = null;
+  function dlPickerSecs() {
+    const el = document.getElementById('dl-picker-secs');
+    const n = el ? parseInt(el.value, 10) : NaN;
+    return (isFinite(n) && n > 0) ? n : 0;
+  }
+  function fmtSecsText(n) {
+    if (n < 60) return n + ' 秒';
+    return Math.floor(n / 60) + ' 分 ' + (n % 60) + ' 秒';
+  }
+  function dlPickerRender() {
+    const n = dlPickerSecs();
+    const curEl = document.getElementById('dl-picker-cur');
+    if (!curEl) return;
+    curEl.textContent = n > 0
+      ? '到点：' + fmtDeadlineText(Date.now() + n * 1000) + '（' + fmtSecsText(n) + '后）'
+      : '请输入秒数（默认 60 秒）';
+  }
+  function closeDeadlinePicker() {
+    const m = document.getElementById('dl-picker-mask');
+    if (m) m.hidden = true;
+    dlPickerCb = null;
+  }
+  // 选择器 DOM 已静态写在 template.html 的 #dl-picker-mask（不用动态 append：动态输入框依赖
+  // mobile-adapt 的 MutationObserver 转换，部分环境点不动）；这里只做一次性事件绑定。
+  let dlPickerWired = false;
+  function dlPickerInit() {
+    const m = document.getElementById('dl-picker-mask');
+    if (!m) return null;
+    if (dlPickerWired) return m;
+    dlPickerWired = true;
+    const secs = document.getElementById('dl-picker-secs');
+    if (secs) {
+      secs.addEventListener('input', dlPickerRender);
+      // 兜底：部分内核点框沿不自动聚焦，点一下显式聚焦（安卓聚焦 ce-box）
+      secs.addEventListener('click', () => { try { (secs.__ceBox || secs).focus(); } catch (e) {} });
+    }
+    const ok = document.getElementById('dl-picker-ok');
+    if (ok) ok.onclick = () => {
+      const n = dlPickerSecs();
+      if (n <= 0) { toast('请输入秒数（大于 0）'); return; }
+      const cb = dlPickerCb; const ts = Date.now() + n * 1000; closeDeadlinePicker(); if (cb) cb(ts);
+    };
+    const cancel = document.getElementById('dl-picker-cancel');
+    if (cancel) cancel.onclick = () => closeDeadlinePicker();
+    const clear = document.getElementById('dl-picker-clear');
+    if (clear) clear.onclick = () => { const cb = dlPickerCb; closeDeadlinePicker(); if (cb) cb(0); };
+    m.addEventListener('click', (e) => { if (e.target === m) closeDeadlinePicker(); });
+    return m;
+  }
+  function dlPickerSetSecs(n) {
+    const el = document.getElementById('dl-picker-secs');
+    if (!el) return;
+    if (document.activeElement === el || (el.__ceBox && document.activeElement === el.__ceBox)) return;
+    el.value = String(n);
+  }
+  function openDeadlinePicker(title, current, cb) {
+    const m = dlPickerInit();
+    if (!m) { toast('时间选择器加载失败'); return; }
+    dlPickerCb = cb;
+    // 已设过且未过期 → 按剩余秒数回填；否则默认 60 秒
+    const n = (current > 0 && current > Date.now()) ? Math.max(1, Math.round((current - Date.now()) / 1000)) : 60;
+    const tEl = document.getElementById('dl-picker-title');
+    if (tEl) tEl.textContent = title;
+    dlPickerSetSecs(n);
+    dlPickerRender();
+    m.hidden = false;
+    // 打开补写两次兜底（部分内核 ce-box 值代理有延迟）
+    setTimeout(() => { if (m && !m.hidden) dlPickerSetSecs(n); }, 0);
+    setTimeout(() => { if (m && !m.hidden) { dlPickerSetSecs(n); dlPickerRender(); } }, 80);
   }
 
   // 随机取一道已启用的题（优先用户自定义/启用的）
@@ -666,7 +748,9 @@
     try {
       const cards = (window.getCustomCards && window.getCustomCards()) || [];
       // FIX 2026-09-13 #388 媒体池令牌卡不进互动回应文字池（同 chat.js #383 第三道守卫）
-      const words = cards.filter(s => typeof s === 'string' && s.indexOf('data:') !== 0 && s.indexOf('|||') < 0 && !(window.mochiMediaIsToken && window.mochiMediaIsToken(s)) && s.trim());
+      // FIX 2026-09-15 #533 链接导入的媒体字卡（裸 http(s) 图链）同款排除，否则 TA 的
+      // 互动回应会把「http://…png」当话术发出来
+      const words = cards.filter(s => typeof s === 'string' && s.indexOf('data:') !== 0 && s.indexOf('|||') < 0 && !/^https?:\/\//i.test(s) && !(window.mochiMediaIsToken && window.mochiMediaIsToken(s)) && s.trim());
       const preset = (Array.isArray(presetPool) ? presetPool : [])
         .filter(c => !(window.isDefaultCardOff && window.isDefaultCardOff('interact', c)));
       const hasPreset = preset.length > 0;
@@ -778,7 +862,7 @@
       // v3.13.x：全局闸门——任一互动卡发出后 60 分钟内不再自动触发
       if (!interactGateOk()) return;
       if (!taAskDcfOk()) return;
-      if (Math.random() * 100 >= (typeof s.prob === 'number' ? s.prob : 5)) return;
+      if (Math.random() * 100 >= (window.dcpEff ? window.dcpEff(typeof s.prob === 'number' ? s.prob : 5) : (typeof s.prob === 'number' ? s.prob : 5))) return; // #518 套总档
       const q = taAskPick(d);
       if (!q) return;
       d.lastAskAt = Date.now();
@@ -928,10 +1012,10 @@
     const pp = askPopupProb(s);
     if (popEl) popEl.value = pp;
     if (popVal) popVal.textContent = pp + '%';
-    // v3.26.x #291：问卷答题结束时间回显（datetime-local 本地格式，0=空）
+    // v3.33.x #523：问卷答题结束时间回显（自绘按钮，显示绝对时刻；0=未设置）
     const dlEl = document.getElementById('ta-ask-deadline');
     const dl = askDeadlineMs(d);
-    if (dlEl) dlEl.value = dl ? fmtDeadlineLocal(dl) : '';
+    if (dlEl) dlEl.textContent = dl ? fmtDeadlineText(dl) : '未设置';
   }
   const askEn = document.getElementById('ta-ask-enable');
   if (askEn) askEn.addEventListener('change', () => {
@@ -974,14 +1058,19 @@
     if (v) v.textContent = askPopup.value + '%';
     toast('弹窗概率已设为 ' + askPopup.value + '%');
   });
-  // v3.26.x #291：问卷答题结束时间——设置/清除
+  // v3.26.x #291：问卷答题结束时间——设置/清除（v3.33.x #523 改自绘选择器）
+  // v3.33.x #523：整行可点（用户可能点「问卷答题结束时间」文字而不是右侧小按钮）
   const askDeadlineEl = document.getElementById('ta-ask-deadline');
-  if (askDeadlineEl) askDeadlineEl.addEventListener('change', () => {
-    const d = taAskLoad();
-    const t = askDeadlineEl.value ? new Date(askDeadlineEl.value).getTime() : 0;
-    d.settings.deadline = (t && !isNaN(t)) ? t : 0;
-    taAskSave(d);
-    toast(d.settings.deadline ? '答题结束时间已设置：' + askDeadlineEl.value.replace('T', ' ') : '答题结束时间已清除');
+  const askDeadlineRow = askDeadlineEl ? askDeadlineEl.closest('.gs-row') : null;
+  if (askDeadlineRow) askDeadlineRow.addEventListener('click', (e) => {
+    if (e.target.closest('#ta-ask-deadline-clear')) return;
+    openDeadlinePicker('问卷答题结束时间', askDeadlineMs(taAskLoad()), (ts) => {
+      const d = taAskLoad();
+      d.settings.deadline = ts > 0 ? ts : 0;
+      taAskSave(d);
+      toast(d.settings.deadline ? '答题结束时间已设置：' + fmtDeadlineText(d.settings.deadline) : '答题结束时间已清除');
+      renderAskSettings();
+    });
   });
   const askDeadlineClear = document.getElementById('ta-ask-deadline-clear');
   if (askDeadlineClear) askDeadlineClear.addEventListener('click', () => {
@@ -989,7 +1078,7 @@
     if (!askDeadlineMs(d)) { toast('尚未设置答题结束时间'); return; }
     d.settings.deadline = 0;
     taAskSave(d);
-    if (askDeadlineEl) askDeadlineEl.value = '';
+    if (askDeadlineEl) askDeadlineEl.textContent = '未设置';
     toast('答题结束时间已清除');
   });
   renderAskSettings();
@@ -1544,8 +1633,9 @@ const TC_DEFAULT = [
       { t: "会，很安心", reply: ["那我就常常这样陪你。","更安心？那我常闭嘴。","那常这样陪你。","那安心到什么程度？"], liked: true }, { t: "会有点想找你", reply: ["那我偶尔出个声，让你知道在。","想找我？那我冒泡。","偶尔出声让你知道在。","那多久冒一次泡？"], liked: false }, { t: "说不上来", reply: ["说不出来也没关系，感觉在就好。","说不上来？那玄。","感觉在就好。","那感觉在不在？"], liked: false }, { t: "只要你在我都安心", reply: ["……嗯，我一直都在。","只要在都安心？那我赖着。","嗯，我一直都在。","那在到什么时候？"], liked: false }] },
     { id: "cw11", cat: "world", text: "字卡表达有限，你会不会有时候觉得我没说够？", pref: 2, options: [
       { t: "会，但我知道你想说", reply: ["你懂，就够了。","没说够？那你懂。","你懂就够了。","那想说什么？"], liked: true }, { t: "不会，字卡够了", reply: ["那我就放心挑字卡。","字卡够了？那省心。","放心挑字卡。","那字卡哪句最够？"], liked: false }, { t: "偶尔会", reply: ["偶尔的时候，我用别的补。","偶尔？那偶尔补。","偶尔用别的补。","那偶尔是什么时候？"], liked: false }, { t: "说不说都行，在就好", reply: ["在，这个我保证。","在就好？那我保证在。","在，我保证。","那在比说重要？"], liked: false }] },
+    // FIX 2026-09-16 #589 选项视角修正：题干是 TA 发问「我坐在你床边」，选项是用户自答，应为「帮我掖一下被角」（TA 的回应「被角我帮你掖」同指替用户掖）
     { id: "cw12", cat: "world", text: "如果今晚我能坐在你床边，你希望我做什么？", pref: 1, options: [
-      { t: "什么都不做", reply: ["好，我就坐着，看你睡。","什么都不做？那发呆。","坐着看你睡。","那坐多久？"], liked: false }, { t: "轻轻说句晚安", reply: ["晚安，轻轻地。","轻轻晚安？那气声。","晚安，轻轻地。","那轻到什么程度？"], liked: true }, { t: "帮你掖一下被角", reply: ["好，被角我帮你掖。","掖被角？那细心。","被角我帮你掖。","那掖哪个角？"], liked: false }, { t: "只是在就好", reply: ["在，一直都在。","在就好？那省事。","在，一直都在。","那一直在到什么时候？"], liked: false }] },
+      { t: "什么都不做", reply: ["好，我就坐着，看你睡。","什么都不做？那发呆。","坐着看你睡。","那坐多久？"], liked: false }, { t: "轻轻说句晚安", reply: ["晚安，轻轻地。","轻轻晚安？那气声。","晚安，轻轻地。","那轻到什么程度？"], liked: true }, { t: "帮我掖一下被角", reply: ["好，被角我帮你掖。","掖被角？那细心。","被角我帮你掖。","那掖哪个角？"], liked: false }, { t: "只是在就好", reply: ["在，一直都在。","在就好？那省事。","在，一直都在。","那一直在到什么时候？"], liked: false }] },
     { id: "cw13", cat: "world", text: "你感觉我的时候，是先感觉到人，还是先感觉到一种安心？", pref: 0, options: [
       { t: "先感觉到人", reply: ["那我把存在感再调强一点。","先感觉人？那我存在感强。","那我把存在感调强。","那人多强算强？"], liked: false }, { t: "先感觉到安心", reply: ["安心的感觉，就是我。","先安心？那我的签名。","安心的感觉就是我。","那安心先到几分？"], liked: true }, { t: "同时", reply: ["同时最好，我努力。","同时？那我努力。","同时最好，我努力。","那同时到过吗？"], liked: false }, { t: "说不清哪个先", reply: ["说不清也没关系，都在就好。","说不清？那玄。","都在就好。","那都在到什么程度？"], liked: false }] },
     { id: "cd16", cat: "daily", text: "一起逛超市，你最想往哪个区走？", pref: 1, options: [
@@ -1714,7 +1804,7 @@ const TC_DEFAULT = [
       // v3.13.x：全局闸门——任一互动卡发出后 60 分钟内不再自动触发
       if (!interactGateOk()) return;
       if (!taAskDcfOk()) return;
-      if (Math.random() * 100 >= (typeof s.prob === 'number' ? s.prob : 5)) return;
+      if (Math.random() * 100 >= (window.dcpEff ? window.dcpEff(typeof s.prob === 'number' ? s.prob : 5) : (typeof s.prob === 'number' ? s.prob : 5))) return; // #518 套总档
       const q = tcPick(d);
       if (!q) return;
       interactGateMark();
@@ -2517,7 +2607,7 @@ window.openTCPanel = openTCPanel;
       // v3.13.x：全局闸门——任一互动卡发出后 60 分钟内不再自动触发
       if (!interactGateOk()) return;
       if (!taAskDcfOk()) return;
-      if (Math.random() * 100 >= (typeof s.prob === 'number' ? s.prob : 5)) return;
+      if (Math.random() * 100 >= (window.dcpEff ? window.dcpEff(typeof s.prob === 'number' ? s.prob : 5) : (typeof s.prob === 'number' ? s.prob : 5))) return; // #518 套总档
       const q = tcuPick(d);
       if (!q) return;
       interactGateMark();
@@ -3111,7 +3201,7 @@ window.openTCPanel = openTCPanel;
       // v3.13.x：全局闸门——任一互动卡发出后 60 分钟内不再自动触发
       if (!interactGateOk()) return;
       if (!taAskDcfOk()) return;
-      if (Math.random() * 100 < (typeof s.prob === 'number' ? s.prob : 5)) {
+      if (Math.random() * 100 < (window.dcpEff ? window.dcpEff(typeof s.prob === 'number' ? s.prob : 5) : (typeof s.prob === 'number' ? s.prob : 5))) { // #518 套总档
         const q = trPick(d, lastUserMsg());
         if (q) { interactGateMark(); trPush(q, { popupProb: askPopupProb(s) }); }
       }
@@ -3723,15 +3813,25 @@ window.openTCPanel = openTCPanel;
     try { d = JSON.parse(store.get(SKEY) || 'null'); } catch (e) { d = null; }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     if (typeof d.text !== 'string') d.text = '';
-    if (!d.settings || typeof d.settings !== 'object') d.settings = { prob: 10, deadline: 0 };
+    if (!d.settings || typeof d.settings !== 'object') d.settings = { prob: 10, deadline: 0, sendToChat: true };
     if (typeof d.settings.prob !== 'number') d.settings.prob = 10;
     if (typeof d.settings.deadline !== 'number') d.settings.deadline = 0;
+    // v3.33.x #523：TA 的作答是否逐条发到聊天（批量问卷题多，用户可关闭只留卡片；默认开＝与单题一致）
+    if (typeof d.settings.sendToChat !== 'boolean') d.settings.sendToChat = true;
     if (!Array.isArray(d.qs)) d.qs = [];
     if (!Array.isArray(d.answers)) d.answers = [];
     if (d.status !== 'sent' && d.status !== 'done') { d.status = 'draft'; d.sentAt = 0; }
+    // v3.33.x #523：doneMsgAt = 已发过交卷系统消息的那一轮 sentAt（同轮只提醒一次；0=未提醒）
+    if (typeof d.doneMsgAt !== 'number') d.doneMsgAt = 0;
     return d;
   }
   function surveySave(d) { try { store.set(SKEY, JSON.stringify(d)); } catch (e) {} }
+  // v3.33.x #521：问卷进度回写聊天卡片——TA 每答一题/交卷时调用，把快照写回聊天记录里的
+  // ask-survey 卡片（chat.js 的 chatSyncSurveyCard 按 surveyTs 定位；surveyTs=发出时间戳，
+  // 与卡片插入时写入的一致，撤回重发后新卡新键不串）
+  function surveySyncCard(d) {
+    try { if (window.chatSyncSurveyCard) window.chatSyncSurveyCard(d.sentAt, d.status, d.answers.slice()); } catch (e) {}
+  }
   // 解析问卷文本：返回 [{type:'single'|'text', text, options}]
   function surveyParse(text) {
     const lines = String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
@@ -3763,7 +3863,8 @@ window.openTCPanel = openTCPanel;
     try {
       const cards = (window.getCustomCards && window.getCustomCards()) || [];
       // FIX 2026-09-13 #388 媒体池令牌卡不进文字题答案池（同 chat.js #383 第三道守卫）
-      words = cards.filter(s => typeof s === 'string' && s.trim() && s.indexOf('data:') !== 0 && s.indexOf('|||') < 0 && !(window.mochiMediaIsToken && window.mochiMediaIsToken(s)));
+      // FIX 2026-09-15 #533 链接导入的媒体字卡（裸 http(s) 图链）同款排除
+      words = cards.filter(s => typeof s === 'string' && s.trim() && s.indexOf('data:') !== 0 && s.indexOf('|||') < 0 && !/^https?:\/\//i.test(s) && !(window.mochiMediaIsToken && window.mochiMediaIsToken(s)));
     } catch (e) {}
     if (words.length) {
       const n = 1 + Math.floor(Math.random() * Math.min(5, words.length));
@@ -3785,28 +3886,53 @@ window.openTCPanel = openTCPanel;
     }
     return t;
   }
-  // 逐题发答（题与答案合一条消息：【题干】答案；间隔 1.2~2.8s 模拟打字节奏）
+  // 逐题作答：每题答案只生成一次（避免「聊天消息里的答案」与「卡片里的答案」不一致），写入
+  // d.answers 并回写卡片；是否把该答案作为聊天消息逐条发出由 settings.sendToChat 决定
+  // （v3.33.x #523：批量问卷题多、逐条刷聊天太吵，用户可在发出前取消勾选）。
+  function surveyPickAnswer(q) {
+    if (q && q.type === 'single' && Array.isArray(q.options) && q.options.length) {
+      return q.options[Math.floor(Math.random() * q.options.length)];
+    }
+    return surveyAnswerText();
+  }
   function surveySeqAnswers(qs, cb, i) {
     if (i >= qs.length) { cb(); return; }
     const q = qs[i];
-    let msg;
-    if (q.type === 'single' && Array.isArray(q.options) && q.options.length) {
-      msg = '【' + q.text + '】我的选择：' + q.options[Math.floor(Math.random() * q.options.length)];
-    } else {
-      msg = '【' + q.text + '】' + surveyAnswerText();
+    const ans = surveyPickAnswer(q);
+    const cur = surveyLoad();
+    if (cur.status !== 'sent') { cb(); return; }
+    cur.answers.push(ans);
+    surveySave(cur);
+    surveySyncCard(cur);
+    if (cur.settings.sendToChat !== false) {
+      const msg = (q.type === 'single' && Array.isArray(q.options) && q.options.length)
+        ? '【' + q.text + '】我的选择：' + ans
+        : '【' + q.text + '】' + ans;
+      try { window.chatAddIn(msg, {}); } catch (e) {}
     }
-    try { window.chatAddIn(msg, {}); } catch (e) {}
+    surveyRender();
     setTimeout(() => surveySeqAnswers(qs, cb, i + 1), 1200 + Math.floor(Math.random() * 1600));
   }
+  // v3.33.x #523：同一轮只允许一条交卷完成链（防并发 tick 起第二条链重复发消息）；
+  // doneMsgAt 记录「已提醒过的轮次（=sentAt）」，同一轮重复进入 finish 也不再发第二次。
+  let surveySubmitLock = false;
   function surveySubmitAll(d, early) {
+    if (surveySubmitLock) return;
+    surveySubmitLock = true;
     const remaining = d.qs.slice(d.answers.length);
     const finish = () => {
+      surveySubmitLock = false;
       const d2 = surveyLoad();
       if (d2.status !== 'sent') return;
-      d2.answers = d2.qs.map((q, i) => d2.answers[i] || surveyAnswerText());
+      d2.answers = d2.qs.map((q, i) => d2.answers[i] || surveyPickAnswer(q));
       d2.status = 'done';
+      const notify = d2.doneMsgAt !== d2.sentAt;
+      if (notify) d2.doneMsgAt = d2.sentAt;
       surveySave(d2);
-      try { window.chatAddSystem(early ? 'TA 提前交卷了（共 ' + d2.qs.length + ' 题）。' : 'TA 交卷了（共 ' + d2.qs.length + ' 题）。', { special: 'ask-msg' }); } catch (e) {}
+      surveySyncCard(d2); // v3.33.x #521：交卷态回写聊天问卷卡片
+      if (notify) {
+        try { window.chatAddSystem(early ? 'TA 提前交卷了（共 ' + d2.qs.length + ' 题）。' : 'TA 交卷了（共 ' + d2.qs.length + ' 题）。', { special: 'ask-msg' }); } catch (e) {}
+      }
       surveyRender();
     };
     if (remaining.length) surveySeqAnswers(remaining, finish, 0); else finish();
@@ -3820,50 +3946,61 @@ window.openTCPanel = openTCPanel;
     const deadlineHit = d.settings.deadline > 0 && Date.now() >= d.settings.deadline;
     const earlyHit = !done && !deadlineHit && Math.random() * 100 < d.settings.prob;
     if (done || deadlineHit || earlyHit) { surveySubmitAll(d, earlyHit); return; }
-    // 未交卷：按序再答一道
+    // 未交卷：按序再答一道（答案落卡片；聊天消息按 sendToChat 决定）
     const q = d.qs[d.answers.length];
     if (!q) return;
-    surveySeqAnswers([q], () => {
-      const d2 = surveyLoad();
-      if (d2.status !== 'sent') return;
-      d2.answers.push(surveyAnswerText());
-      surveySave(d2);
-      surveyRender();
-    }, 0);
+    surveySeqAnswers([q], () => {}, 0);
   }
   setInterval(surveyTick, 30000);
   function surveySend() {
     const d = surveyLoad();
     if (d.status === 'sent') { toast('问卷已发出，TA 正在作答'); return; }
+    // v3.33.x #523：已交卷（done）允许直接再发一轮（用户要「重复提交给联系人作答」）——
+    // 这里照常把 status 重置为 sent、answers 清空、插入新的问卷卡片，等于开启新一轮作答。
     const tEl = document.getElementById('ta-survey-text');
     if (tEl) { d.text = tEl.value; d.qs = surveyParse(tEl.value); surveySave(d); }
     if (!d.qs.length) { toast('请先填写问卷题目（【问题】+ 选项行 / 「一」行）'); return; }
     if (d.settings.deadline && d.settings.deadline <= Date.now()) { toast('交卷时间已过期，请重新设置'); return; }
-    d.status = 'sent'; d.sentAt = Date.now(); d.answers = [];
+    d.status = 'sent'; d.sentAt = Date.now(); d.answers = []; d.doneMsgAt = 0;
     surveySave(d);
     try { window.chatAddSystem('你向TA发出了一份问卷（' + d.qs.length + ' 题）。', { special: 'ask-msg' }); } catch (e) {}
+    // v3.33.x #521：问卷本体以长卡片插入聊天（ask-survey）——与单题 ask-card 同层级观感；
+    // 题列表快照随消息持久化，作答进度由 surveySyncCard→chatSyncSurveyCard 回写
+    try {
+      window.chatAddSystem('问卷（' + d.qs.length + ' 题）', {
+        special: 'ask-survey',
+        surveyTs: d.sentAt,
+        surveyQs: JSON.parse(JSON.stringify(d.qs)),
+        surveyStatus: 'sent',
+        surveyAnswers: []
+      });
+    } catch (e) {}
     surveyRender();
     toast('问卷已发出，TA 开始作答');
+    // v3.33.x #523：发出后自动关闭批量设置页、回聊天看问卷卡片（用户报「点了发出没返回聊天页」）
+    surveyGoChat();
   }
   function surveyRender() {
     const d = surveyLoad();
     const txt = document.getElementById('ta-survey-text');
     if (txt && document.activeElement !== txt && txt.value !== d.text) txt.value = d.text;
     const dl = document.getElementById('ta-survey-deadline');
-    if (dl && document.activeElement !== dl) dl.value = d.settings.deadline ? fmtDeadlineLocal(d.settings.deadline) : '';
+    if (dl) dl.textContent = d.settings.deadline ? fmtDeadlineText(d.settings.deadline) : '未设置';
     const prob = document.getElementById('ta-survey-prob');
     if (prob && document.activeElement !== prob) prob.value = d.settings.prob;
     const pv = document.getElementById('ta-survey-prob-val');
     if (pv) pv.textContent = d.settings.prob + '%';
+    const schatEl = document.getElementById('ta-survey-chat');
+    if (schatEl) schatEl.checked = d.settings.sendToChat !== false;
     const st = document.getElementById('ta-survey-status');
     if (st) {
       if (d.status === 'draft') {
         const nS = d.qs.filter(q => q.type === 'single').length;
         st.innerHTML = '当前状态：草稿 —— 已解析 <b>' + d.qs.length + '</b> 题' + (d.qs.length ? '（单选 ' + nS + ' 题 / 文字 ' + (d.qs.length - nS) + ' 题）' : '') + '。填好后点「发出问卷给TA」。';
       } else if (d.status === 'sent') {
-        st.innerHTML = '当前状态：TA 作答中 —— 已答 <b>' + d.answers.length + '</b> / ' + d.qs.length + ' 题' + (d.settings.deadline ? '；交卷时间 ' + fmtDeadlineLocal(d.settings.deadline) : '；未设交卷时间') + '；每 30 秒按 ' + d.settings.prob + '% 概率提前交卷。';
+        st.innerHTML = '当前状态：TA 作答中 —— 已答 <b>' + d.answers.length + '</b> / ' + d.qs.length + ' 题' + (d.settings.deadline ? '；交卷时间 ' + fmtDeadlineText(d.settings.deadline) : '；未设交卷时间') + '；每 30 秒按 ' + d.settings.prob + '% 概率提前交卷。';
       } else {
-        st.innerHTML = '当前状态：已交卷 —— 共 ' + d.qs.length + ' 题。可修改题目/时间后再次发出。';
+        st.innerHTML = '当前状态：已交卷 —— 共 ' + d.qs.length + ' 题。可直接再点「发出问卷给TA」重新提交一轮（清空上一轮作答、在聊天里插入新的问卷卡片）。';
       }
     }
   }
@@ -3880,6 +4017,39 @@ window.openTCPanel = openTCPanel;
     surveyPage.hidden = false;
     surveyRender();
   };
+  // v3.33.x #523：只读「问卷详情」弹窗（点聊天里的问卷卡片打开）——题干/选项/TA 逐题作答，
+  // 不再跳批量设置问卷页（用户报「点已交卷卡片却打开了批量设置问卷的页面」）。
+  window.openSurveyDetail = function (rec) {
+    try {
+      const qs = Array.isArray(rec && rec.surveyQs) ? rec.surveyQs : [];
+      const answers = Array.isArray(rec && rec.surveyAnswers) ? rec.surveyAnswers : [];
+      const done = !!(rec && rec.surveyStatus === 'done');
+      const nDone = answers.filter(a => typeof a === 'string' && a.trim()).length;
+      const lines = [];
+      lines.push('你发出的问卷 · ' + qs.length + ' 题');
+      lines.push('状态：' + (done ? '已交卷' : 'TA 作答中（已答 ' + nDone + '/' + qs.length + '）'));
+      if (rec && rec.surveyTs) lines.push('发出时间：' + fmtDeadlineText(rec.surveyTs));
+      lines.push('');
+      qs.forEach((q, i) => {
+        lines.push((i + 1) + '. ' + (q.text || ''));
+        if (Array.isArray(q.options) && q.options.length) lines.push('   选项：' + q.options.join(' / '));
+        let a = answers[i];
+        a = (typeof a === 'string' && a.trim()) ? (window.taFit ? window.taFit(a) : a) : '（未作答）';
+        lines.push('   TA：' + a);
+      });
+      if (window.openModal) window.openModal('问卷详情', '', () => {}, { noInput: true, big: true, staticText: lines.join('\n') });
+      else toast('问卷详情加载失败');
+    } catch (e) {}
+  };
+  // v3.33.x #523：关闭批量问卷页并回到聊天页（「发出后自动返回」与返回键共用；
+  // enterChat 兜底缺失时回 TA 询问页，防 #472「全 .page 隐藏→底栏飞到最顶」复发）
+  function surveyGoChat() {
+    surveyOpenFromChat = false;
+    document.querySelectorAll('.page').forEach(p => p.hidden = true);
+    if (window.enterChat) { window.enterChat(); return; }
+    const home = document.getElementById('page-ta-ask');
+    if (home) home.hidden = false;
+  }
   if (surveyPage) {
     const surveyOpen = document.getElementById('ta-ask-survey-open');
     if (surveyOpen) surveyOpen.addEventListener('click', () => {
@@ -3889,14 +4059,8 @@ window.openTCPanel = openTCPanel;
     });
     const backS = document.getElementById('ta-survey-back');
     if (backS) backS.addEventListener('click', () => {
-      document.querySelectorAll('.page').forEach(p => p.hidden = true);
-      // v3.26.x：若从「聊天页 · 问问TA 半框的批量设置问卷」进入，这里要回到聊天页而非 TA 的询问设置页。
-      // #472 修复：此前只回显桌面聊天图标（chatApp.hidden=false），全部 .page 仍隐藏→.phone 弹性列
-      // 只剩 statusbar+tabbar，底部导航栏直接飞到最顶、桌面内容全空。改调 window.enterChat()
-      //（chat.js 导出）恢复聊天页本体，与从桌面点聊天图标进入的形态一致；enterChat 兜底缺失时回 TA 询问页。
-      if (surveyOpenFromChat) { surveyOpenFromChat = false; if (window.enterChat) { window.enterChat(); return; } }
-      const home = document.getElementById('page-ta-ask');
-      if (home) home.hidden = false;
+      // v3.26.x：#472 修复统一收进 surveyGoChat（恢复聊天页本体，防「全 .page 隐藏→底栏飞到最顶」）
+      surveyGoChat();
     });
     const stxt = document.getElementById('ta-survey-text');
     if (stxt) {
@@ -3910,20 +4074,24 @@ window.openTCPanel = openTCPanel;
       bindTaInpClears(stxt.parentElement);
     }
     const sdl = document.getElementById('ta-survey-deadline');
-    if (sdl) sdl.addEventListener('change', () => {
-      const d = surveyLoad();
-      const t = sdl.value ? new Date(sdl.value).getTime() : 0;
-      d.settings.deadline = (t && !isNaN(t)) ? t : 0;
-      surveySave(d);
-      toast(d.settings.deadline ? '交卷时间已设置：' + sdl.value.replace('T', ' ') : '交卷时间已清除');
-      surveyRender();
+    // v3.33.x #523：整行可点（用户可能点「交卷时间（到点TA自动交卷）」文字而不是右侧小按钮）
+    const sdlRow = sdl ? sdl.closest('.gs-row') : null;
+    if (sdlRow) sdlRow.addEventListener('click', (e) => {
+      if (e.target.closest('#ta-survey-deadline-clear')) return;
+      openDeadlinePicker('交卷时间', surveyLoad().settings.deadline, (ts) => {
+        const d = surveyLoad();
+        d.settings.deadline = ts > 0 ? ts : 0;
+        surveySave(d);
+        toast(d.settings.deadline ? '交卷时间已设置：' + fmtDeadlineText(d.settings.deadline) : '交卷时间已清除');
+        surveyRender();
+      });
     });
     const sdlClear = document.getElementById('ta-survey-deadline-clear');
     if (sdlClear) sdlClear.addEventListener('click', () => {
       const d = surveyLoad();
       d.settings.deadline = 0;
       surveySave(d);
-      if (sdl) sdl.value = '';
+      if (sdl) sdl.textContent = '未设置';
       toast('交卷时间已清除');
       surveyRender();
     });
@@ -3934,6 +4102,14 @@ window.openTCPanel = openTCPanel;
       surveySave(d);
       const v = document.getElementById('ta-survey-prob-val');
       if (v) v.textContent = sprob.value + '%';
+    });
+    // v3.33.x #523：TA 的作答是否逐条发到聊天（默认开＝与单题一致；题多怕刷屏可在发出前关掉）
+    const schat = document.getElementById('ta-survey-chat');
+    if (schat) schat.addEventListener('change', () => {
+      const d = surveyLoad();
+      d.settings.sendToChat = schat.checked;
+      surveySave(d);
+      toast(schat.checked ? 'TA 的每条作答都会发送到聊天消息' : 'TA 的作答只写入问卷卡片，不再逐条发到聊天消息');
     });
     const ssend = document.getElementById('ta-survey-send');
     if (ssend) ssend.addEventListener('click', surveySend);

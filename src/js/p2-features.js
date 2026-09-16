@@ -1652,6 +1652,8 @@ if (ckRefresh) {
       html += '<div class="loc-sec-value loc-empty">这天没有位置记录</div>';
     }
     html += '</div>';
+    // #558 功能说明补全：光点落点规则原先只在代码注释里（用户问「再远一点会不会跑到屏幕右侧」）
+    html += '<div class="loc-sec-sub" style="padding:10px 2px 0;line-height:1.7">光点落在哪儿，就是 TA 在哪儿：方位卡落在画面对应方向；距离卡、状态卡跟着最近一张方位卡的方位走——「再近一点」朝屏幕中心靠、「再远一点」朝屏幕边缘退开（上一张说的是「在你右边」时，光点贴屏幕右侧属正常）。</div>';
     // 问 TA 一声
     html += '<button class="loc-ask-btn" id="loc-ask-btn">问 TA 一声「你在哪？」</button>';
 
@@ -4119,7 +4121,7 @@ if (ckRefresh) {
       if (!window.getPool) return '';
       const t = window.getPool().text || [];
       // 排除空串与拍一拍（getPool 已过滤拍一拍），也排除媒体 dataURL
-      const arr = t.filter(s => typeof s === 'string' && s.trim() && s.indexOf('data:') !== 0 && !(window.mochiMediaIsToken && window.mochiMediaIsToken(s))); // FIX 2026-09-13 #394 令牌卡不进悬浮伴侣话术
+      const arr = t.filter(s => typeof s === 'string' && s.trim() && s.indexOf('data:') !== 0 && !/^https?:\/\//i.test(s) && !(window.mochiMediaIsToken && window.mochiMediaIsToken(s))); // FIX 2026-09-13 #394 令牌卡不进悬浮伴侣话术；FIX 2026-09-15 #533 URL 媒体卡同款排除
       return (arr.length && Math.random() < 0.7) ? arr[Math.floor(Math.random() * arr.length)] : '';
     } catch (e) { return ''; }
   }
