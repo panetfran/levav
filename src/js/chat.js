@@ -303,7 +303,7 @@ let old = [];
 try { old = JSON.parse(store.get('chat-msgs') || '[]'); } catch (e) { old = []; }
 if (!Array.isArray(old)) old = [];
 const seen = new Set(msgsNow.map(lsMergeSig));
-// FIX 2026-09-16 #590：再补一层「媒体两种存法」互补判定（媒体池冷载时 lsMergeSig 展开不出
+// FIX 2026-09-16 #594：再补一层「媒体两种存法」互补判定（媒体池冷载时 lsMergeSig 展开不出
 // 原文）——否则写侧照样把同一条的旧形态副本存进 LS，下次进页读侧再翻倍（#511 同款半修）
 const kinds = recKindIndex(msgsNow);
 const merged = msgsNow.concat(old.filter(m => m && !seen.has(lsMergeSig(m)) && !recKindCovers(kinds, m))).sort((a, b) => (((a && a.ts) || 0) - ((b && b.ts) || 0)));
@@ -649,6 +649,18 @@ const ICON_ENV = '<svg class="st-ico" viewBox="0 0 24 24" fill="none" stroke="cu
 const ICON_CQ_FIX = { '再等等，会遇到我': '再等等，会遇到你', '你身边': '我身边', '只给我看': '只给你看' };
 const NORM_CHUNK = 2500;
 let normTimer = null, normPrefix = null;
+// FIX 2026-09-16 #624 多图消息守卫：parts 里 ≥2 张图的记录不得被下面「text 以 data:image/
+// 开头 → 升级成 type:'image'」的存量规则折叠——升级后渲染走单图类型分支（renderMsg 的类型
+// 分支先于 parts 分支），第二张起全部丢失＝用户 / TA 的「一条消息两张图」刷新或重进后只剩一张。
+function hasMultiImgParts(r) {
+  if (!r || !Array.isArray(r.parts)) return false;
+  let n = 0;
+  for (let i = 0; i < r.parts.length; i++) {
+    const p = r.parts[i];
+    if (p && p.k === 'img' && ++n > 1) return true;
+  }
+  return false;
+}
 function normCell(r) {
   let c = false;
   if (!r) return false;
@@ -658,7 +670,7 @@ function normCell(r) {
       const t = r.text.replace(/✉️\s*/g, '').replace(/✉\s*/g, '');
       if (t !== r.text) { r.text = ICON_ENV + t; c = true; }
     }
-    if ((r.type === 'text' || !r.type) && typeof r.text === 'string' && (r.text.indexOf('data:image/') === 0 || chatIsImageUrlCard(r.text) || (window.mochiMediaIsToken && window.mochiMediaIsToken(r.text)))) { r.type = 'image'; c = true; }
+    if ((r.type === 'text' || !r.type) && !hasMultiImgParts(r) && typeof r.text === 'string' && (r.text.indexOf('data:image/') === 0 || chatIsImageUrlCard(r.text) || (window.mochiMediaIsToken && window.mochiMediaIsToken(r.text)))) { r.type = 'image'; c = true; }
 // FIX 2026-09-12 #383 存量乱码自愈：#383 前令牌卡曾以 type:text 入库（气泡直出 @@m:hash 串），
 // 归一化补认裸令牌→type='image'（与上行 data:image 升级同口径），刷新后历史乱码消息变回图片
 // FIX 2026-09-10 #283 语音型归一：裸 data:audio 文本与「|||@@m:令牌」（pass 令牌化后的无主
@@ -706,14 +718,14 @@ c = true;
 // 60s 内重发同图属合法行为不吞）；②mediaTxtEq 展开池令牌后再比对（内容寻址，令牌展开即原
 // 数据）——addRec 实时去重与刷新归一化共用，屏上所见即刷新后所见，不再翻饼。
 const DUP_GAP_TEXT = 2500, DUP_GAP_MEDIA = 60000;
-// FIX 2026-09-16 #590（用户：切换桌面联系人→打开聊天，所有消息变 2 条再回弹恢复）：
+// FIX 2026-09-16 #594（用户：切换桌面联系人→打开聊天，所有消息变 2 条再回弹恢复）：
 // 媒体「同一内容、不同存储形态」的唯一归一化入口。令牌化竞态（#142/#256/#283）下同一条消息
 // 在一处是原文（data:image base64，或语音的「名称|||data:audio」）、另一处已是 @@m: 令牌，
 // 任何「这是同一条吗」的判定直接比原文都判成两条。本函数把两形态收敛成同一份原文
 // （池未热载 mochiMediaExpand 返回 null 时退化为原文，与 #256/#511 同款不误判口径）。
 // 四个计入口共用本函数，杜绝「修了读侧、写侧/IDB 侧仍按旧口径各存一份」的半修：
 //   · mediaTxtEq（addRec 实时去重）· dupSig（刷新归一化/相邻重复合并）
-//   · lsMergeSig（LS 快照 ↔ 内存合并，#511）· loadMsgs 权威合并签名 sigOf（#590 本轮补漏）
+//   · lsMergeSig（LS 快照 ↔ 内存合并，#511）· loadMsgs 权威合并签名 sigOf（#594 本轮补漏）
 function mediaFormText(s) {
   const raw = (s == null) ? '' : String(s);
   if (!raw) return raw;
@@ -749,11 +761,11 @@ function mediaTxtEq(a, b) {
   const x = (a == null) ? '' : String(a);
   const y = (b == null) ? '' : String(b);
   if (x === y) return true;
-  // FIX 2026-09-16 #590：跨形态比对统一走 mediaFormText（原先只认「整串令牌」，语音的
+  // FIX 2026-09-16 #594：跨形态比对统一走 mediaFormText（原先只认「整串令牌」，语音的
   // 「名称|||令牌」形态漏在窗外＝同一条语音在两处判不同）
   return mediaFormText(x) === mediaFormText(y);
 }
-// FIX 2026-09-16 #590 后半段（不依赖媒体池热载的兜底判定）：
+// FIX 2026-09-16 #594 后半段（不依赖媒体池热载的兜底判定）：
 // mediaFormText 要靠 mochiMediaExpand 展开令牌，而它是**纯 map 热缓存查询**——冷启动/换桌面
 // 时池里什么都没热载（音频按 #283 内存纪律更是永不进热缓存）⇒ 展开恒 null ⇒ 上一条比较
 // 仍判「两条」。快照合并必须与池温无关，故这里补一条形态判定：
@@ -930,7 +942,7 @@ msgs.forEach(r => {
 // FIX 2026-09-15 #534 存量图片直链消息补 type='image'——#533 前链接导入的字卡
 // （裸 http(s) 图链）曾被当文字卡抽出、以 type:'text' 落库，气泡直出整段链接；
 // 与 normCell / 渲染端自愈同口径（只认带图片扩展名的单条直链，普通链接不受影响）。
-if (r && (r.type === 'text' || !r.type) && typeof r.text === 'string' && (r.text.indexOf('data:image/') === 0 || chatIsImageUrlCard(r.text))) {
+if (r && (r.type === 'text' || !r.type) && !hasMultiImgParts(r) && typeof r.text === 'string' && (r.text.indexOf('data:image/') === 0 || chatIsImageUrlCard(r.text))) {
 r.type = 'image';
 migrated = true;
 }
@@ -955,7 +967,7 @@ const normT = (m.type === 'text' || !m.type) ? '' : String(m.type || '');
 // #256：x 跨形式归一——令牌化竞态下同一内容一处 @@m:令牌、一处 data:base64，
 // 直比不等＝相邻重复漏判。池令牌内容寻址，展开即原数据；池未热载 expand null 时
 // 回退原文（退化为旧行为，不引入误判）。
-// FIX 2026-09-16 #590：跨形态归一收口到 mediaFormText（原先只展开「整串令牌」，
+// FIX 2026-09-16 #594：跨形态归一收口到 mediaFormText（原先只展开「整串令牌」，
 // 语音的「名称|||令牌」形态漏判；与合并签名/实时去重共用同一函数＝三处口径不再分叉）
 const x = mediaFormText(m.text);
 return JSON.stringify({ s: m.side || '', t: normT, sp: sp, x: x, im: !!m.img, vc: !!m.voice, e: extra });
@@ -972,7 +984,7 @@ return JSON.stringify({ s: m.side || '', t: normT, sp: sp, x: x, im: !!m.img, vc
 // 长度+头部随内容变化，对「跨形式同一条」判别力足够（池未热载 expand 返回 null 时退化为旧行为，不误判）。
 function lsMergeSig(m) {
 if (!m) return '';
-// FIX 2026-09-16 #590：展开逻辑收口到 mediaFormText（同一入口，#511 的「整串令牌」口径
+// FIX 2026-09-16 #594：展开逻辑收口到 mediaFormText（同一入口，#511 的「整串令牌」口径
 // 加上语音「名称|||令牌」形态，与 dupSig/sigOf 完全同源）
 const x = mediaFormText(m.text);
 return ((m.ts || 0) + '|' + (m.side || '') + '|' + (m.special || '') + '|' + (m.type || '') + '|' + x.length + '|' + x.slice(0, 96));
@@ -1018,7 +1030,7 @@ if (lsArr.length && msgs.length) {
 // 签名统一走 lsMergeSig（与 dupSig 同口径：展开媒体令牌 + 含 special/type）——两处合并点
 // 共用同一函数，避免「修了读侧、写侧仍按旧口径在 LS 里存两份」的半修。
 const seen = new Set(lsArr.map(lsMergeSig));
-// FIX 2026-09-16 #590：快照与内存同一条的「媒体两种存法」互补判定（冷池下 expand 不可用，
+// FIX 2026-09-16 #594：快照与内存同一条的「媒体两种存法」互补判定（冷池下 expand 不可用，
 // 见 recKindCovers 注释）——缺了这一步，快照侧旧形态副本会被当新消息 concat 回来＝消息翻倍
 const lsKinds = recKindIndex(lsArr);
 const extra = msgs.filter(m => m && !seen.has(lsMergeSig(m)) && !recKindCovers(lsKinds, m));
@@ -1132,7 +1144,7 @@ __prof('ch0_enter');
 const idbArr = typeof v === 'string' ? JSON.parse(v) : v;
 __prof('ch1_parsed');
 if (!Array.isArray(idbArr)) { chatDbReady = true; chatKnownEmpty = false; return; }
-// FIX 2026-09-16 #590（用户报障：切换桌面联系人→打开聊天，所有消息变 2 条再回弹恢复；
+// FIX 2026-09-16 #594（用户报障：切换桌面联系人→打开聊天，所有消息变 2 条再回弹恢复；
 // 无头实测精确复现——种 12 条表情包字卡的桌面，切过去开聊天 msgs/DOM 双双变 24，每条
 // 一份 @@m: 令牌 + 一份原文 base64 相邻成对）：
 // 根因＝权威合并这里的去重签名只比「原文」：LS 兜底快照里同一条是原文 base64、IndexedDB
@@ -1144,7 +1156,7 @@ if (!Array.isArray(idbArr)) { chatDbReady = true; chatKnownEmpty = false; return
 // 修复：签名与 lsMergeSig/dupSig 同口径，统一走 mediaFormText + mediaSigPart（展开 @@m:
 // 令牌与语音尾形态，长 base64 只取长度+前 96 字符，不再整串进 Set）。与 #511 同一族——
 // #511 收口了 LS 侧合并（lsMergeSig），权威合并这侧当时漏网，本条补齐＝四处口径同源。
-// 媒体「同一条」判定从此只有一处实现，任何一侧被改回原文直比都会重新翻倍（哨兵 #590a~c 守）。
+// 媒体「同一条」判定从此只有一处实现，任何一侧被改回原文直比都会重新翻倍（哨兵 #594a~c 守）。
 const sigOf = (m) => { try { return JSON.stringify({ t: mediaSigPart(m && m.text), s: m && m.side, ts: m && m.ts, i: (m && m.img) ? mediaSigPart(m.img) : 0 }); } catch (e) { return ''; } };
 const hasLocal = !!((pendingLocal && pendingLocal.length) || (msgs && msgs.length));
 let merged, curArr = pendingLocal || msgs || [];
@@ -1159,7 +1171,7 @@ if (!hasLocal) {
   const idbTsSide = new Set(idbArr.map(x => (((x && x.ts) || 0) + '|' + ((x && x.side) || ''))));
   __prof('ch3_tsside');
   const liteResidue = (m) => !!(m && (m._lsLite || m.img === '' || m.voice === ''));
-  // FIX 2026-09-16 #590：权威侧媒体形态索引——「同一条记录在快照里是原文、在库里是令牌」
+  // FIX 2026-09-16 #594：权威侧媒体形态索引——「同一条记录在快照里是原文、在库里是令牌」
   // （令牌化竞态；池冷载时 sigOf 展开不出原文）时，快照副本不得当新消息 append 回来
   const idbKinds = recKindIndex(idbArr);
   __prof('ch3b_kinds');
@@ -1390,6 +1402,11 @@ return segs.join('');
 }
 function sysNickSweepable(r) {
 if (!r || typeof r.text !== 'string' || !r.text) return false;
+// FIX 2026-09-16 #616（昵称池）：nickKeep 的消息是**事件记录**——正文里带引号的昵称
+//（如「我把昵称换成了「小满」」）是当时发生的事实，不能跟随后续改名一起被清扫成 {ta}
+//（否则第二次改名后旧记录会谎报成「换成了当前名」，两条记录看起来一模一样）。
+// 放在 mailNotice 之前：nickKeep 是显式豁免，优先级高于其它可清扫类型。
+if (r.nickKeep) return false;
 if (r.mailNotice) return true;
 return r.special === 'poke' || r.special === 'ask-msg' || r.special === 'call' ||
 r.special === 'call-reply' || r.special === 'invite-reply' || r.special === 'pong' ||
@@ -1443,12 +1460,27 @@ if (!data && key === 'cs-avatar-user') data = store.get('avatar-user');
 if (avatarBatchCache) avatarBatchCache[key] = data || null;
 }
 if (data && data.length > 500 * 1024) data = null;
+// FIX 2026-09-16 #617 头像「闪一下重新加载」（红米 K80 Chrome 等多机型，用户明说其他设备型号
+//   也有）：原实现无条件 el.innerHTML='' + 新建 img + 赋 src，于是每一次 fillAvatar 调用都会
+//   把该位置的头像节点整块换成新节点——新节点从零解码，且旧节点先被清空＝该位置空一帧再出现。
+//   触发面最广的一处是「头像互动里点一张换头像」：它走 refreshChatAvatars()，把**全部**已渲染
+//   消息的头像（实测 16 条气泡 + 顶栏 + 一条系统行＝17 个 img 节点，17 次 load）连同没变的那
+//   一侧一起重建＝整列头像一起闪、一起重新加载。回前台 / 切桌面 / 跨上下文 storage 变更
+//   （convergeAvatars）走同一条路，所以真机（常切前后台、解码位图易被回收）比无头更容易看见。
+//   收口：①值没变＝DOM 一律不碰（__avApplied 记录已落地的值）；②值变了也只改现有 img 的 src，
+//   不再拆节点——浏览器会继续画旧图直到新图解好，不出现空帧。零机型分支、零视觉改动。
+if (el.__avApplied === (data || '')) return;
+el.__avApplied = data || '';
 if (data) {
+const cur = el.querySelector('img');
+if (cur) { cur.src = data; cur.alt = ''; }
+else {
 const img = document.createElement('img');
 img.src = data;
 img.alt = '';
 el.innerHTML = '';
 el.appendChild(img);
+}
 } else {
 el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#999999" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.5-6 8-6s8 2 8 6"/></svg>';
 }
@@ -2474,22 +2506,54 @@ else if (type === 'ask' && window.openAskReply) window.openAskReply(idx);
 }
 });
 }
-// FIX 2026-09-16 #572 点开撤回原文「全部聊天消息都会弹和闪」（用户报，明说以前没有这个问题
-// ＝回归）：展开＝把原文写回这条气泡本身，而撤回提示只有一行（实测 45px）、任何真实原文都更高
-// ⇒ 该气泡当场变高，.chat-body 是纵向 flex 列表，它下面的每条消息都要重新排位＝整列被顶走。
-// 浏览器本来有原生滚动锚定会把这份高度差补掉（#199 之前一直开着），但 base.css 的
-// .chat-body{overflow-anchor:none}（#199 为治滚动抖动关掉）把它关了，#316 只在「解钉」期动态
-// 挂 .scroll-anchor-auto 开回——而轻点撤回提示是 touchstart 解钉、touchend 又回钉（scrollChatBottom
-// 摘类），展开发生在回钉之后＝锚定恰好是关的，补偿无人做（无头实测：视口内 8 条各下移 55px；
-// 同场景把锚定打开只剩被点那条动）。这里按本文件 inplacePatchIfSameWindow 的既有补偿口径自己补：
-// 贴底态回钉（与内核锚定在贴底时的结果一致），非贴底态按高度差把视口钉回，其它消息原地不动。
+// FIX 2026-09-16 #572d（用户点名：要「我原来的模式」）：查看原文恢复原来的「点一下在气泡里就地
+// 展开、再点收回」。浮层版（#572b/#572c）用户不要——不管浮层内容怎么还原排版，它本质还是弹窗，
+// 不是「那条消息在聊天流里变回原文」。故 #572b/#572c 的浮层实现与 #572 的滚动补偿一并撤销，交互与
+// 观感回到原样。
+// 唯一保留的改动是兜底渲染：原来无快照的存量消息走 rec.orig → rec.text 的裸文本直出，会把整屏 base64
+// 铺进气泡（语音那条实测气泡 45px→1599px、列表高度 1492→3038）、字卡里的 HTML 还会被当标签执行
+//（群聊 #244 已按安全口径修，单聊这里对齐）。有快照的常规路径一字未动。
+// 另注：就地展开＝该气泡当场变高，纵向列表必然被推动（下面消息下移 dH；开内核滚动锚定时改成上面
+// 上移 dH）——这是「就地展开」自带的语义，不是回归，用户明确要这个模式，故不再做任何滚动补偿。
+function retractSafeHtml(rec) {
+const raw = String(rec && rec.text != null ? rec.text : '');
+const parts = (rec && Array.isArray(rec.parts)) ? rec.parts : null;
+const isImgSrc = (s) => typeof s === 'string' && s && (s.indexOf('data:image/') === 0 || (window.mochiMediaIsToken && window.mochiMediaIsToken(s)));
+let text = raw;
+const imgs = [];
+if (parts && parts.length) {
+text = parts.filter(p => p && p.k === 'text').map(p => p.v).join(' ');
+parts.forEach(p => { if (p && p.k === 'img' && p.v) imgs.push(p.v); });
+}
+const textIsImg = isImgSrc(text);
+if (!imgs.length && textIsImg) imgs.push(text);
+const isVoice = (rec && rec.type === 'voice') || raw.indexOf('|||') >= 0;
+// FIX 2026-09-16 #572e（用户点检「原内容和 tag 能不能正常显示」）：无快照兜底也要把情绪字卡 tag 渲染出来
+// ——有快照时 tag 随 rec.orig 那份气泡 HTML 一起回来（快照是撤回瞬间的 innerHTML，情绪块就在里面），
+// 但无快照的老消息走本兜底，旧口径只给文本 ⇒ tag 会凭空消失。此处按 renderMsg 的情绪块同款标记渲染
+//（.msg-moods > .msg-mood[.msg-intent] > .msg-mood-tag + 文案），并跳过已被撤回的那几条
+//（rec.retractedMood，与 partialRetractMsg 的口径一致），口径与群聊/收藏同源。
+let html = '';
+if (imgs.length) html += imgs.slice(0, 3).map(s => '<img class="msg-img msg-img-sm" src="' + attrEsc(s) + '" alt="撤回的图片">').join('');
+if (isVoice) html += '<span style="opacity:.85">[语音] ' + escTxt(raw.split('|||')[0] || '') + '</span>';
+else if (!textIsImg && text.trim()) html += '<span style="opacity:.85;word-break:break-word">' + escTxtBr(quoteDisplayFit(text, rec.side)) + '</span>';
+const moods = (rec && Array.isArray(rec.mood)) ? rec.mood : [];
+const liveMoods = moods.filter((md, mi) => md && String(md.tag || '').trim() && !(rec.retractedMood && rec.retractedMood.indexOf(mi) >= 0));
+if (liveMoods.length) {
+html += '<div class="msg-moods">' + liveMoods.map(md => {
+const tg = escTxt(String(md.tag == null ? '' : md.tag));
+const lb = md.label == null ? '' : String(md.label);
+const dup = lb !== '' && lb === String(rec.text == null ? '' : rec.text);
+const cls = (md.tag === '交流意图') ? 'msg-mood msg-intent' : 'msg-mood';
+return '<div class="' + cls + '"><span class="msg-mood-tag">' + tg + '</span>' + (dup || lb === '' ? '' : '<span>' + escTxt(quoteDisplayFit(lb, rec.side)) + '</span>') + '</div>';
+}).join('') + '</div>';
+}
+return html || '<span style="opacity:.5;font-size:12px">（这条消息没有可显示的原文）</span>';
+}
 function bindToggle(b, side) {
 const who = side === 'out' ? '我' : '对方';
 b.style.cursor = 'pointer';
 b.onclick = function () {
-const prevTop = body.scrollTop;
-const prevH = body.scrollHeight;
-const wasBottom = chatAtBottom();
 if (b.dataset.showing === '1') {
 b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + who + '撤回了一条消息</span>';
 b.dataset.showing = '0';
@@ -2497,8 +2561,6 @@ b.dataset.showing = '0';
 b.innerHTML = b.dataset.orig;
 b.dataset.showing = '1';
 }
-const dH = body.scrollHeight - prevH;
-if (dH) { if (wasBottom) scrollChatBottom(); else body.scrollTop = prevTop + dH; }
 };
 }
 let batchRendering = false;
@@ -3164,9 +3226,13 @@ return m;
 }
 if (rec.special === 'poke' || rec.special === 'ask-msg') {
 m.className = 'msg-poke' + (rec.mailNotice ? ' mail-notice' : '');
+// FIX 2026-09-16 #616：昵称事件消息（nickKeep）**原样呈现**，不走 pokePersonMap——
+// 那样会把「我把 TA 的昵称换成了「小满」」里的泛指 TA 也回填成新昵称，整句变成
+// 「我把 小满 的昵称换成了「小满」」（自己说自己，用户读不出发生了什么）。
+// 这类消息的正文本身就是「谁把昵称改成了什么」的记录，泛指词保持泛指才不歧义。
 // v3.30.x：拍一拍人称昵称制——不再走 T()（taFit 称呼替换），改用 pokePersonMap：
 // {ta}/{me} 与字卡里写死的 TA/ta/他/她 一律按 我的昵称/联系人昵称 回填
-m.innerHTML = '<span>' + pokeIconHtml(pokePersonMap(rec.text, __taNm, __meNm)) + '</span>' +
+m.innerHTML = '<span>' + (rec.nickKeep ? escTxt(rec.text) : pokeIconHtml(pokePersonMap(rec.text, __taNm, __meNm))) + '</span>' +
 (rec.img ? '<img class="msg-poke-img" src="' + attrEsc(rec.img) + '" alt="新头像">' : '');
 if (rec.mailNotice) {
 m.addEventListener('click', () => { if (window.openMailPage) window.openMailPage(); });
@@ -3420,7 +3486,7 @@ m.dataset.pendingRead = '1';
 // v3.16.x：撤回分支必须先于 sticker/image/voice/parts 类型分支——
 // 否则表情包/图片/语音被撤回后任何全量重渲染（renderWindow/loadMsgs/切会话）
 // 都会命中类型分支，把原内容（表情包 img 等）重新渲染出来，撤回形同失效
-b.dataset.orig = rec.orig || rec.text;
+b.dataset.orig = rec.orig || retractSafeHtml(rec); // FIX #572d：仍是「快照优先」，无快照才走安全兜底（不再裸直出 rec.text）
 b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + (rec.side === 'out' ? '我' : '对方') + '撤回了一条消息</span>';
 bindToggle(b, rec.side);
 } else if (rec.type === 'sticker' || rec.type === 'image') {
@@ -3803,7 +3869,8 @@ let text = rec.text || '';
 // （renderMsg 走 T() 替换，此处同义；不走 taFit 称呼改写，避免昵称被改成 他/她）
 // v3.30.x：拍一拍人称昵称制——poke/ask-msg 整体走 pokePersonMap（{ta}/{me} 与字卡写死的
 // TA/ta/他/她 一律按昵称回填，与聊天内渲染一致；须在回填前整体替换，防昵称含 TA/他/她 被二次改写）
-if ((rec.special === 'poke' || rec.special === 'ask-msg') && typeof text === 'string') {
+// FIX 2026-09-16 #616：nickKeep 的昵称事件消息除外——桌面横幅预览与聊天内渲染同口径原样呈现
+if ((rec.special === 'poke' || rec.special === 'ask-msg') && !rec.nickKeep && typeof text === 'string') {
 text = pokePersonMap(text, chatPartnerName(), chatUserName());
 } else {
 if (typeof text === 'string' && text.indexOf('{ta}') >= 0) text = text.split('{ta}').join(chatPartnerName());
@@ -4039,7 +4106,7 @@ opts = opts || {};
   // 正文本身就是一张完整字卡，label 再渲染一遍会上下两行内容重复）
   const _tagMood = opts.tag ? [{ tag: String(opts.tag), label: opts.tagNoDup ? '' : String(text) }] : null;
   // v3.16.x：gInv = 联系人主动邀请的游戏类型（pong/snake/rps），随消息持久化供小游戏记录识别
-	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, dedupExempt: opts.dedupExempt, mood: opts.mood || _tagMood || undefined });
+	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, dedupExempt: opts.dedupExempt, nickKeep: opts.nickKeep, mood: opts.mood || _tagMood || undefined });
 }
 // v3.27.x：对话型回复补「正在输入」过渡——TA 回应先 showTyping 再落地，消除气泡凭空冒出的突兀感。
 // items 可为单条文本或数组（数组=逐条连发，条与条之间再出一次 typing）。仅当前桌面生效：期间切走
@@ -4097,7 +4164,8 @@ try { if (chatVisible()) renderWindow(true); } catch (e) {}
 };
 window.chatAddSystem = function (text, opts) {
 opts = opts || {};
-return addIn(text, { special: opts.special || 'poke', img: opts.img, mailNotice: opts.mailNotice, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, roastText: opts.roastText, roastCat: opts.roastCat, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers });
+// #616：nickKeep 透传（见 sysNickSweepable——昵称池的「换成了「XXX」」是事件记录，豁免改名清扫）
+return addIn(text, { special: opts.special || 'poke', img: opts.img, mailNotice: opts.mailNotice, nickKeep: opts.nickKeep, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, roastText: opts.roastText, roastCat: opts.roastCat, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers });
 };
 window.chatAddIn = function (text, opts) {
 // FIX 2026-09-15 #492：opts.follow = 用户主动通道（帮我决定/多人决定结果发到聊天）——落聊天
@@ -4497,7 +4565,7 @@ chatTailDrop(msgs[idx]); // #180：撤回消息从尾巴日志摘除，防刷新
 saveMsgs();
 if (msgs[idx].side === 'out') syncLastMineText();
 }
-b.dataset.orig = b.innerHTML;
+b.dataset.orig = b.innerHTML; // FIX #572d：撤回瞬间把渲染快照留住（原行为），点开就地展开这份快照
 b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + (side === 'out' ? '我' : '对方') + '撤回了一条消息</span>';
 bindToggle(b, side);
 }
@@ -4608,11 +4676,24 @@ return (typeof v === 'string' && v.trim()) ? v : '';
 function genReplyText(c) {
 const pool = getPool();
 let reply = '', type = 'text';
-if (pool.sticker.length && hit(c['sticker-prob'])) {
+// FIX 2026-09-16 #624 表情包概率与图片概率独立判定（原为 if/else if 互斥）：两者同时命中时
+// 不再只出其一，而是同一条消息里带「表情包 + 图片」两张图（来源＝字卡库 公用+专属 的
+// 【表情包】/【图片】池，getMediaCards 本就合并双作用域）。仅命中其一时行为与旧版逐个分支
+// 完全一致（整条媒体消息）；两者都未命中时才继续 emoji/语音/文字优先级链。
+const stHit = !!(pool.sticker.length && hit(c['sticker-prob']));
+const imHit = !!(pool.image.length && hit(c['image-prob']));
+if (stHit && imHit) {
+const _st = pickNonBlank(pool.sticker), _im = pickNonBlank(pool.image);
+if (_st && _im) return { text: _st, type: 'text', parts: [
+{ k: 'img', v: _st, sub: 'sticker' },
+{ k: 'img', v: _im, sub: 'image' }
+] };
+}
+if (stHit) {
 reply = pickNonBlank(pool.sticker); type = 'sticker';
 } else if (pool.emoji.length && hit(c['emoji-prob'])) {
 reply = pickNonBlank(pool.emoji); type = 'emoji';
-} else if (pool.image.length && hit(c['image-prob'])) {
+} else if (imHit) {
 reply = pickNonBlank(pool.image); type = 'image';
 } else if (pool.voice.length && hit(c['voice-prob'])) {
 reply = pickNonBlank(pool.voice); type = 'voice';
@@ -4681,7 +4762,9 @@ try { await ensureReplyCardsReady(); } catch (e) {}
 const myCid = window.__activeCid || 'default';
 const sameCid = () => (window.__activeCid || 'default') === myCid;
 let rep = genOneReply(c);
-if (rep && rep.type === 'text' && typeof rep.text === 'string' && window.periodWarmText) {
+// FIX 2026-09-16 #624 多图消息（parts 里是图片、text 为媒体载荷）不参与经期温柔语态改写——
+// 否则会给 data: 串加上前后缀，污染 rec.text（气泡仍走 parts，但横幅/引用/通知文本变乱）。
+if (rep && rep.type === 'text' && typeof rep.text === 'string' && rep.text.indexOf('data:') !== 0 && window.periodWarmText) {
 try { const _w = window.periodWarmText(rep.text); if (_w) rep.text = _w; } catch (e) {}
 }
 // #298 词典拼字：开关开启时按「拼字概率」把本条回复换成「语录字卡抽卡拼字」；
@@ -5003,6 +5086,9 @@ t = pickN(nbTextPool.length ? nbTextPool : pool.text, n).join(' ');
 const r = genReplyText(c);
 t = r.text;
 type = r.type;
+// FIX 2026-09-16 #624 表情包+图片概率同时命中时 genReplyText 已组好「两张图一条消息」的
+// parts，直接原样返回——不再走下方默认字卡覆盖（会把文本换掉）与单图追加（会再叠一张）。
+if (r.parts && r.parts.length) return { text: t, type: 'text', parts: r.parts };
 }
 if (type === 'sticker' || type === 'image' || type === 'voice') {
 return { text: t, type: type };
@@ -5050,8 +5136,10 @@ const _sp = (window.quoteSpellPick && window.quoteSpellPick(cfg())) || null;
 const segs = _sp && Array.isArray(_sp.segs) ? _sp.segs : (Array.isArray(_sp) ? _sp : null);
 if (segs && segs.length) return segs.join(' ');
 } catch (e) {}
+// FIX 2026-09-16 #624 多图消息（text 是图片载荷 + parts）没有可当文字用的正文——
+// 不把 data: 串当「聊天字卡文本」返回（否则 ta-ask 会把它当文本发出）。
 const t = rep && typeof rep.text === 'string' ? rep.text.trim() : '';
-return t || null;
+return (t && !(rep && rep.parts && rep.parts.length && t.indexOf('data:') === 0)) ? t : null;
 };
 let autoTimer = null;
 function scheduleAutoSend() {

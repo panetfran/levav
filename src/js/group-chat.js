@@ -678,21 +678,19 @@
       // 撤回图片可看 #248：媒体记录即时从 rec.text/rec.parts 重拼缩略图视图（优先于
       // 存量占位快照 rec.orig——老数据撤回时只存了 [图片] 占位也能看图）
       b.dataset.orig = gcRetractMediaHtml(rec) || rec.orig || gcRetractFallbackHtml(rec);
+      // FIX #572e：媒体分支（gcRetractMediaHtml）只给图 ⇒ 展开后情绪 tag 会消失；这里只在「选中视图里
+      // 没有情绪块」时补上（快照分支自带、兜底分支已在函数内补过，都不会重复）。
+      // 注意：上一行是哨兵 #276 的锚（媒体 > 快照 > 兜底的优先级），逐字保留不动。
+      if (b.dataset.orig.indexOf('msg-moods') < 0) b.dataset.orig += gcRetractMoodHtml(rec);
       const who = rec.side === 'out' ? '我' : memberName(rec.cid);
       b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + who + '撤回了一条消息</span>';
       b.style.cursor = 'pointer';
-      // FIX 2026-09-16 #572 点开撤回原文「全部聊天消息都会弹和闪」（用户报，明说以前没有＝回归，
-      // 单聊群聊都有）：展开＝把原文写回这条气泡本身，提示只有一行、原文必更高 ⇒ 该气泡当场变高，
-      // .chat-body（#gc-body 同挂该类）是纵向 flex 列表，下面每条消息都要重新排位＝整列被顶走。
-      // 内核原生滚动锚定本会补掉这份高度差（#199 之前一直开着），但 base.css 的
-      // .chat-body{overflow-anchor:none}（#199 治滚动抖动）关了它，#316 只在解钉期动态挂
-      // .scroll-anchor-auto 开回——轻点撤回提示是 touchstart 解钉、touchend 又回钉，展开发生在回钉
-      // 之后＝锚定正关着，补偿无人做。此处按单聊 bindToggle 同口径自己补：贴底回钉、非贴底按高度差
-      // 把视口钉回，其它消息原地不动。
+      // FIX 2026-09-16 #572d（用户点名：要「我原来的模式」）：群聊恢复原来的「点一下在气泡里就地
+      // 展开、再点收回」——#572b 的浮层版用户不要（浮层再像也是弹窗，不是「那条消息在聊天流里变回
+      // 原文」）。就地展开＝气泡当场变高、列表必然被推动（这是该模式自带语义，非回归），故本处不加
+      // 滚动补偿，交互/观感与原来逐行一致（安全兜底 gcRetractMediaHtml/gcRetractFallbackHtml 是 #244
+      // 就有的，保留）。
       b.onclick = function () {
-        const prevTop = body.scrollTop;
-        const prevH = body.scrollHeight;
-        const wasBottom = gcAtBottom();
         if (b.dataset.showing === '1') {
           b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + who + '撤回了一条消息</span>';
           b.dataset.showing = '0';
@@ -700,8 +698,6 @@
           b.innerHTML = b.dataset.orig;
           b.dataset.showing = '1';
         }
-        const dH = body.scrollHeight - prevH;
-        if (dH) { if (wasBottom) scrollToBottom(); else body.scrollTop = prevTop + dH; }
       };
     } else if (rec.type === 'sticker' || rec.type === 'image' || (rec.type !== 'voice' && window.mochiMediaIsToken && window.mochiMediaIsToken(rec.text))) {
       // FIX 2026-09-12 #383 存量乱码自愈：修复前令牌卡曾以 type:text 入群聊库（气泡直出
@@ -1304,17 +1300,39 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
   // 媒体给占位、文本走转义，绝不 innerHTML 直出原始 rec.text
   function gcRetractFallbackHtml(rec) {
     const ph = (t) => '<span style="opacity:.6;font-size:12px">' + t + '</span>';
-    if (rec.type === 'image') return ph('[图片]');
-    if (rec.type === 'sticker') return ph('[表情包]');
-    if (rec.type === 'voice') return ph('[语音]');
-    if (rec.parts && rec.parts.length) {
+    let html = '';
+    if (rec.type === 'image') html = ph('[图片]');
+    else if (rec.type === 'sticker') html = ph('[表情包]');
+    else if (rec.type === 'voice') html = ph('[语音]');
+    else if (rec.parts && rec.parts.length) {
       const imgs = rec.parts.filter(p => p.k === 'img').length;
       const txt = rec.parts.filter(p => p.k === 'text').map(p => p.v).join(' ');
-      return (imgs ? ph('[图片]') : '') +
+      html = (imgs ? ph('[图片]') : '') +
         // FIX 2026-09-13 #394 群聊撤回段文本走内嵌令牌助手（同 #385 单聊撤回段口径）
         (txt ? '<span style="opacity:.85;word-break:break-word">' + (window.mochiInlineTextHtml ? window.mochiInlineTextHtml(txt) : escTxtBr(txt)) + '</span>' : '');
+    } else {
+      html = '<span style="opacity:.85;word-break:break-word">' + (window.mochiInlineTextHtml ? window.mochiInlineTextHtml(rec.text || '') : escTxtBr(rec.text || '')) + '</span>';
     }
-    return '<span style="opacity:.85;word-break:break-word">' + (window.mochiInlineTextHtml ? window.mochiInlineTextHtml(rec.text || '') : escTxtBr(rec.text || '')) + '</span>';
+    return html + gcRetractMoodHtml(rec);
+  }
+  // FIX 2026-09-16 #572e（用户点检「原内容和 tag 能不能正常显示」）：撤回消息点开后看到的「原文视图」
+  // 必须和撤回态一样带情绪字卡 tag——撤回态下 tag 渲染在提示行下方（本文件 renderMsg 的情绪块没有
+  // !retracted 闸），可一点开就把整个气泡内容换成兜底视图/媒体视图，tag 就凭空消失。口径：快照分支
+  // （rec.orig，撤回瞬间的 innerHTML）自带情绪块不再追加（防重复）；兜底与媒体分支补上；已被撤回的
+  // 那几条（rec.retractedMood）按 partialRetract 口径剔除。与单聊 retractSafeHtml 同源。
+  function gcRetractMoodHtml(rec) {
+    try {
+      const moods = (rec && Array.isArray(rec.mood)) ? rec.mood : [];
+      const live = moods.filter((md, mi) => md && String(md.tag || '').trim() && !(rec.retractedMood && rec.retractedMood.indexOf(mi) >= 0));
+      if (!live.length) return '';
+      return '<div class="msg-moods">' + live.map(md => {
+        const tag = md.tag || '情绪';
+        const label = md.label == null ? '' : String(md.label);
+        const dup = label !== '' && label === String(rec.text == null ? '' : rec.text);
+        return '<div class="msg-mood' + (md.tag === '交流意图' ? ' msg-intent' : '') + '"><span class="msg-mood-tag">' + escTxt(tag) + '</span>' +
+          (dup || label === '' ? '' : '<span>' + escTxt(label) + '</span>') + '</div>';
+      }).join('') + '</div>';
+    } catch (e) { return ''; }
   }
   // 撤回图片可看 #248：媒体消息的「点击查看」视图即时从记录数据生成缩略图——
   // 图片/表情/含图组合的 src 本就持久化在 rec.text / rec.parts 里，渲染时重拼 img
