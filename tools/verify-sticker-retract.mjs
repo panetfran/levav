@@ -9,7 +9,8 @@ import { createServer } from 'node:http';
 import { readFileSync, statSync } from 'node:fs';
 import { join, normalize, extname, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-const root = normalize(dirname(fileURLToPath(import.meta.url)) + '/..');
+// VERIFY_ROOT：可选，指向隔离构建目录（用于「修复前 RED / 隔离副本 GREEN」对照）
+const root = process.env.VERIFY_ROOT ? normalize(process.env.VERIFY_ROOT) : normalize(dirname(fileURLToPath(import.meta.url)) + '/..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
