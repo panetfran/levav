@@ -38,9 +38,11 @@
   transition: filter .6s ease;
 }
 /* 简易场景整体光照（JS 按亮灯数实时刷新 --room-bright）：
-   夜间无灯 ≈0 很暗，每点一盏灯 +0.12；白天基础 1，加灯可到 1.3 高亮 */
+   基础亮度恒 1、每点一盏灯 +0.12、封顶 1.3（#546：基础不得为 0——brightness(0)
+   会把整个场景打成纯黑＝「进房间黑屏」）；max(...) 兜底保证任何来源的 0 值
+   也至少渲染到 .45 可见，结构性杜绝同类回归 */
 .r-scene {
-  filter: saturate(calc(var(--room-bright, 1) * .86 + .14)) brightness(var(--room-bright, 1));
+  filter: saturate(calc(var(--room-bright, 1) * .86 + .14)) brightness(max(var(--room-bright, 1), .45));
 }
 .r-wall {
   position: absolute; left: 0; right: 0; top: 0; height: 44%;
@@ -251,10 +253,11 @@
 #room-ta.r-faint .r-ta-av { opacity: .16; filter: blur(1.5px) grayscale(.5); }
 #room-ta.r-faint .r-ta-glow { animation-duration: 5s; background: radial-gradient(circle, rgba(200,205,255,.4) 0%, rgba(200,205,255,.12) 45%, transparent 70%); }
 
-/* 走路颠步（动画作用在头像 margin 上，不与定位 transform 冲突） */
+/* 走路颠步。FIX 2026-09-16 发热收口：margin-top→transform 合成器路径（走路期间每帧不再重排）；
+   关键帧自带 translateX(-50%) 与基础定位完全一致，仍不与定位 transform 冲突 */
 #room-ta.walking .r-ta-av { animation: rBob .46s ease-in-out infinite; }
 #room-ta.walking .r-ta-glow { animation-duration: 1.6s; }
-@keyframes rBob { 0%,100% { margin-top: 0; } 50% { margin-top: -4px; } }
+@keyframes rBob { 0%,100% { transform: translateX(-50%); } 50% { transform: translateX(-50%) translateY(-4px); } }
 /* 坐/躺等安顿姿态：略缩小下沉，显得"坐进去了" */
 #room-ta.seated .r-ta-av { width: 29px; height: 29px; margin-top: 7px; opacity: .95; }
 #room-ta.seated .r-ta-glow { width: 40px; height: 40px; top: 62%; }

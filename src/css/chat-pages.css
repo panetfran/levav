@@ -142,6 +142,37 @@
 .cc-empty {
   text-align:center; color:#c0c0c0; font-size:13px; padding:40px 0; letter-spacing:1px;
 }
+/* #574：字卡库首屏加载态——本机读不到数据、要等 IDB 取回时先出的占位行
+   （此前是列表空白干等数秒、页面内无任何加载反馈＝「点开字卡库卡住、没有加载缓冲」）。
+   颜色走 --muted 随明暗主题自适应；grid-column 横跨整行（#cc-list 是网格容器）。 */
+.cc-lib-loading {
+  grid-column:1/-1; display:flex; align-items:center; justify-content:center; gap:8px;
+  padding:48px 0; color:var(--muted,#999); font-size:13px; letter-spacing:.5px;
+}
+.cc-lib-loading .cc-spin {
+  width:14px; height:14px; flex-shrink:0; border-radius:50%;
+  border:2px solid currentColor; border-top-color:transparent; opacity:.75;
+  animation:ccSpin .8s linear infinite;
+}
+@keyframes ccSpin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .cc-lib-loading .cc-spin { animation-duration:2.4s; } }
+/* #575：共用「正在取回数据」加载行——表情包面板 / 拍一拍面板 / 我的表情包 等处在等
+   IndexedDB 取回时统一用它替换「暂无…」空态（#574 字卡库加载行的同一观感）。
+   与 .cc-lib-loading 同款：只有真在取回时才出现，取回完成后由各自 render 覆写。 */
+.mochi-load-row {
+  grid-column:1/-1; display:flex; align-items:center; justify-content:center; gap:8px;
+  padding:40px 0; color:var(--muted,#999); font-size:13px; letter-spacing:.5px;
+}
+.mochi-load-row .mochi-spin {
+  width:14px; height:14px; flex-shrink:0; border-radius:50%;
+  border:2px solid currentColor; border-top-color:transparent; opacity:.75;
+  animation:ccSpin .8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) { .mochi-load-row .mochi-spin { animation-duration:2.4s; } }
+/* #575：字卡库列表页两行角标在取回中的脉冲态（此时显示「…」而非 0——0 会被当成「字卡丢了」） */
+.cc-cnt-loading { animation:ccPulse 1.2s ease-in-out infinite; opacity:.55; }
+@keyframes ccPulse { 0%,100% { opacity:.35; } 50% { opacity:.85; } }
+@media (prefers-reduced-motion: reduce) { .cc-cnt-loading { animation-duration:2.4s; } }
 
 /* 批量导入弹窗顶部「确定」按钮（v3.6.x）——
    安卓下多行输入被转成可自动增高的 ce-box，导入内容多时弹窗变高、
@@ -2962,7 +2993,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .pong-start-ctrl { font-size:11px; color:rgba(255,255,255,.7); }
 .pong-end-score { font-size:22px; font-weight:700; color:#fff; margin-bottom:4px; }
 .pong-end-stat { font-size:11px; color:rgba(255,255,255,.75); }
-.pong-overlay-btn { padding:8px 24px; border-radius:20px; border:none; background:#3a7fd5; color:#fff; font-size:14px; font-weight:600; cursor:pointer; }
+.pong-overlay-btn { padding:8px 24px; border-radius:20px; border:none; background:#3a7fd5; color:#fff; font-size:14px; font-weight:600; cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent; } /* FIX 2026-09-16：补 touch-action——快速连点「再来一局/开始」可能触发 iOS 双击缩放（snake-btn 同款） */
 .pong-overlay-btn:active { transform:scale(.96); }
 .pong-foot { font-size:11px; color:var(--muted); text-align:center; padding-top:2px; }
 
@@ -2980,7 +3011,8 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .pong-overlay-btns { display:flex; gap:10px; }
 .pong-overlay-btn2 { background:rgba(255,255,255,.16); }
 /* Pong 全屏模式：面板占满视口，游戏区域 + UI 全部放大，flex 撑满无滚动无空白 */
-#chat-pong-panel.pong-fs { position:fixed !important; top:0 !important; right:0 !important; bottom:0 !important; left:0 !important; z-index:9999; border-radius:0; max-height:none !important; height:100vh; background:#0f1420; padding:0; }
+/* FIX 2026-09-16：补 100dvh 与安全区兜底——iPhone 全面屏底部按钮贴手势条、动态工具栏下内容被裁（brick-fs/snake-fs 同款写法） */
+#chat-pong-panel.pong-fs { position:fixed !important; top:0 !important; right:0 !important; bottom:0 !important; left:0 !important; z-index:9999; border-radius:0; max-height:none !important; height:100vh; height:100dvh; background:#0f1420; padding-left:0; padding-right:0; padding-top:max(env(safe-area-inset-top,0px),8px); padding-bottom:max(var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)),8px); overscroll-behavior:none; }
 #chat-pong-panel.pong-fs .poke-card-scroll { max-height:none; flex:1; overflow:hidden; display:flex; flex-direction:column; padding:0; }
 #chat-pong-panel.pong-fs .poke-card-head { background:transparent; color:#fff; border-bottom-color:rgba(255,255,255,.12); padding:12px 18px; flex-shrink:0; }
 #chat-pong-panel.pong-fs .poke-card-head b { color:#fff; font-size:20px; }
@@ -4332,6 +4364,14 @@ select.mochi-custom-select-native { display:none; }
 }
 #au-overlay.au-ov-fs .pong-overlay-body { flex:1; min-height:0; overflow-y:auto; }
 #au-overlay.au-ov-fs[hidden] { display:none; }
+/* FIX 2026-09-16 #547 拍卖会「页面显示不全」（多机型同发，#381 只转了背包/记录全屏，结果类漏了）：
+   成交/TA拍得/流拍/扣款失败/本场结算等浮层弹在 .au-stage 内（高度=拍品卡 ~160px），而
+   .pong-overlay 是 overflow:hidden + justify-content:center —— 内容一超高就上下两端同时被裁、
+   无法滚动（实测 384×752 裁 10px×2；真实内容含成色标签/心愿行/系统大字体可达几十 px，
+   「下一件/再来一场」按钮被切一半）。修法＝装得下照旧居中；装不下 safe center（退化成顶对齐）
+   + 浮层自身可滚，任何字体缩放/矮视口下按钮都够得着。不支持 safe center 的老内核整条声明
+   失效、回落到上一行 center＝维持原状不变差。零机型分支。 */
+#au-overlay:not(.au-ov-fs) { overflow-y:auto; justify-content:center; justify-content:safe center; }
 .au-intro-title { font-size:19px; font-weight:800; color:#fff; letter-spacing:.5px; }
 .au-intro-steps { width:100%; max-width:340px; text-align:left; font-size:13.5px; line-height:2; color:rgba(255,255,255,.93); max-height:58vh; overflow-y:auto; padding:0 4px; box-sizing:border-box; }
 .au-intro-steps b { color:#ffd479; }
@@ -4350,6 +4390,9 @@ select.mochi-custom-select-native { display:none; }
 [data-theme="dark"] #au-wallet-hint { color:#ffb37a; }
 /* #346 矮屏（横屏手机）68% 半框太矮、竞价区挤 → 提到 82% */
 @media (max-height:500px) { #chat-auction-panel:not(.game-fs) { min-height:82%; max-height:82%; } }
+/* #547 开场教学/详细玩法全屏层同族兜底：横屏矮视口/系统大字体下整体内容超高时不再被
+   justify-content:center + overflow 裁掉两端（steps 已自滚，这是容器级保底），行为同上条 */
+#au-intro, #au-help { overflow-y:auto; justify-content:center; justify-content:safe center; }
 /* #349 成色评级标签（普通/稀有/SSR，暗色反向） */
 .au-rare { display:inline-block; font-size:10px; padding:1px 6px; border-radius:8px; margin-right:2px; vertical-align:1px; }
 .au-r0 { background:rgba(0,0,0,.08); color:var(--ink,#222); }
@@ -4366,8 +4409,12 @@ select.mochi-custom-select-native { display:none; }
 /* v3.36.x：我贴贴纸位置自定义——点照片选位置模式（TA 回贴仍随机） */
 .feed-imgs.feed-sticker-picking { cursor: crosshair; }
 .feed-imgs.feed-sticker-picking::after { content: ''; position: absolute; inset: 0; z-index: 1; background: rgba(255, 107, 157, .08); pointer-events: none; }
-.feed-pick-hint { position: absolute; left: 0; right: 0; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 12px; border-radius: 8px 8px 0 0; pointer-events: auto; }
-.feed-pick-hint button { border: 0; background: none; color: #fff; font-size: 12px; padding: 2px 6px; }
+/* v3.26.x FIX 2026-09-16 #593：提示条改文档流里的独立一行（由 feed.js 插在 .feed-imgs 之前）——**不得再回到绝对定位压照片**：
+   旧版 position:absolute;top:0 盖住照片顶部约 1/3（实测 104px 高的照片被占 33px），点那一带被提示条接走
+   ＝被当成「取消」，一张都贴不上；系统字号越大压得越多＝多机型同现象。
+   双保险：即便被改回覆盖式，pointer-events:none 也保证点得穿到照片（照片必须能点）。 */
+.feed-pick-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 0; padding: 7px 10px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 12px; border-radius: 8px; pointer-events: none; }
+.feed-pick-hint button { border: 0; background: none; color: #fff; font-size: 12px; padding: 4px 6px; cursor: pointer; pointer-events: auto; }
 .feed-mem-card { position: relative; margin: 0 0 12px; padding: 12px 30px 12px 14px; border-radius: 14px; cursor: pointer; }
 .feed-mem-label { font-size: 12px; font-weight: 600; color: #ff6b9d; margin-bottom: 6px; }
 .feed-mem-body { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #444; }
@@ -4420,13 +4467,10 @@ select.mochi-custom-select-native { display:none; }
 .m3-tile.m3-line { box-shadow:inset 0 0 0 2px #6fb7ff; }
 /* 游乐室 */
 .arc-wrap { padding:4px 2px; display:flex; flex-direction:column; gap:10px; }
-/* 主页页游乐室入口卡（v3.26.x：点击进独立全屏游乐室页） */
-.arc-home-entry { cursor:pointer; transition:transform .12s, box-shadow .12s; }
-.arc-home-entry:active { transform:scale(.985); }
-.arc-home-entry-top { display:flex; align-items:center; justify-content:space-between; }
-.arc-home-entry-name { font-size:14px; font-weight:700; }
-.arc-home-entry-go { font-size:12px; color:var(--muted); }
-.arc-home-entry-sub { margin-top:3px; font-size:11px; color:var(--muted); }
+/* 主页标题栏「游乐室」入口按钮（v3.26.x：从 tab 记录区移到标题栏，常驻但不占记录首屏，避免遮挡其他 tag） */
+.arc-home-entry { flex:none; display:inline-flex; align-items:center; gap:4px; padding:7px 13px; border:1px solid rgba(0,0,0,.1); border-radius:99px; background:rgba(255,255,255,.92); font:inherit; font-size:12px; font-weight:600; color:var(--ink,#111); cursor:pointer; white-space:nowrap; -webkit-tap-highlight-color:transparent; transition:transform .12s; }
+.arc-home-entry:active { transform:scale(.96); }
+[data-theme="dark"] .arc-home-entry { background:var(--dark-card-92,rgba(30,30,34,.92)); border-color:var(--dark-border,rgba(255,255,255,.12)); color:var(--ink,#e8e8e8); }
 .arc-lucky { font-size:13px; background:rgba(255,179,71,.14); border:1px solid rgba(255,179,71,.4); border-radius:10px; padding:8px 12px; text-align:center; }
 .arc-lucky.done { opacity:.66; }
 .arc-sec { font-size:13px; font-weight:600; margin-top:2px; }

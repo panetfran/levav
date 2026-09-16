@@ -3,8 +3,12 @@
 :root {
   --widget-bg:#ffffff;
   --widget-border:rgba(0,0,0,.1);
-  --widget-btn:#111111;
-  --widget-btn-text:#ffffff;
+  /* FIX 2026-09-16 #562：桌面小组件按钮默认跟随「主题色」(--btn-bg/--btn-ink) 而非写死纯黑——
+     原来默认写死 #111111，用户在「边看边调」里点主题色时桌面（按钮是桌面上唯一用强调色的
+     可见部件）纹丝不动＝用户报「点击主题色没有任何变化」。用户单独设「按钮颜色/按钮文字颜色」
+     时仍是内联变量覆盖本默认；恢复默认＝移除内联变量即重新跟随主题色。 */
+  --widget-btn:var(--btn-bg,#111111);
+  --widget-btn-text:var(--btn-ink,#ffffff);
   --widget-heart:#111111;
   --widget-opacity:1;
   --app-ico-radius:18px;
@@ -339,10 +343,18 @@
 .dots {
   position:absolute; left:0; right:0; bottom:6px;
   display:flex; justify-content:center; gap:8px; padding:0;
+  /* v3.27.x（#580）：圆点跟随手指改成每帧切换（desktop-slider.js），而 active 是
+     「宽度 7px→20px」的变形——width 动画每帧都会触发一次布局。圆点是 #page-phone
+     的绝对定位子元素，不加隔离时这段布局脏标会波及整个桌面壳（几十个图标/组件）。
+     尺寸由 left/right 内定，隔离后子元素变化不会外泄，滚动的每一帧都省下这笔重排。
+     不支持 contain 的旧内核直接忽略该行，无副作用。 */
+  contain:layout;
 }
 .dot {
   width:7px; height:7px; border-radius:99px; background:rgba(0,0,0,.18); cursor:pointer;
-  transition:width .25s ease, background .25s ease;
+  /* v3.27.x（#580）：.25s → .16s。圆点现在贴着手指走，变形尾巴就是「不同步感」的
+     后半段（用户反馈「反应慢」）；缩短后仍在松手前收完，观感是跟手而非迟到。 */
+  transition:width .16s ease, background .16s ease;
 }
 .dot.active { width:20px; background:var(--ink); }
 /* 桌面内容底部留白：滚动到底时最后一项不被悬浮圆点盖住 */
@@ -597,10 +609,10 @@
   background:radial-gradient(circle at 50% 50%, #2a2a2a 0%, #1a1a1a 55%, #3a3a3a 56%, #2e2e2e 100%);
   display:flex; align-items:center; justify-content:center;
   box-shadow:0 6px 14px rgba(0,0,0,.30), inset 0 0 0 1px rgba(255,255,255,.08);
-  animation:spin 14s linear infinite;
 }
 .mw-vinyl svg { width:26px; height:26px; stroke:#fff; }
-@keyframes spin { to { transform:rotate(360deg); } }
+/* FIX 2026-09-16 发热收口：删除死样式 spin（含 @keyframes）——.mw-vinyl 仅存在于
+   #mw-cover 内，一直被其 animation:none 覆盖从未转过；留着会诱使后来者「恢复」成常驻旋转 */
 
 .mw-info { flex:1; min-width:0; }
 .mw-song { font-size:16px; font-weight:700; letter-spacing:.5px; }
