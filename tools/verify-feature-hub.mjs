@@ -75,7 +75,7 @@ const A = (name, ok, extra) => { console.log((ok ? 'PASS' : 'FAIL') + ' ' + name
 const r1 = await ev(`(()=>{ const gs=document.querySelectorAll('#fhub-body .gs-title').length; const rows=document.querySelectorAll('#fhub-body .set-row').length; return gs+'|'+rows; })()`);
 const [gCount, rowCount] = String(r1).split('|').map(Number);
 A('A1 分组数=9', gCount === 9, '实际 ' + gCount);
-A('A1 条目数=198', rowCount === 198, '实际 ' + rowCount);
+A('A1 条目数=203（#561 补新手引导/字卡图去重后；2026-09-16 #581 补「调整图标图片位置」+1）', rowCount === 203, '实际 ' + rowCount);
 
 // A2 设置行进入功能大全页
 await ev(`document.getElementById('row-featurehub').click()`);
@@ -92,7 +92,7 @@ A('A3 搜索红包→3 条', vis === 3, '实际 ' + vis);
 await ev(`(()=>{const i=document.getElementById('fhub-search'); i.value=''; i.dispatchEvent(new Event('input')); })()`);
 await sleep(80);
 const vis2 = await ev(`[...document.querySelectorAll('#fhub-body .set-row')].filter(r=>r.style.display!=='none').length`);
-A('A4 清空恢复 198 条', vis2 === 198, '实际 ' + vis2);
+A('A4 清空恢复 203 条', vis2 === 203, '实际 ' + vis2);
 
 // A5 链式跳转·桌面图标类（花园）——按首行名称精确匹配（描述里含「花园」的字卡行不应误命中）
 await ev(`[...document.querySelectorAll('#fhub-body .set-row')].find(r=>{const t=r.querySelector('.txt'); return t&&t.firstChild&&t.firstChild.textContent.trim()==='花园';}).click()`);
@@ -117,6 +117,26 @@ A('A7 where 条目出 toast', await ev(`(()=>{ const t=document.getElementById('
 await ev(`document.getElementById('fhub-back').click()`);
 await sleep(80);
 A('A8 返回设置页', await ev(`!document.getElementById('page-setting').hidden`));
+
+// A9 #543 桌面不再有功能大全图标——#542 曾提为桌面一级入口，用户反馈「影响我原本的布局」，
+// 撤出桌面仅保留 设置 → 聊天 → 功能大全（A2~A8 已覆盖设置入口与返回）；此处反向断言防回流
+await ev(`document.querySelector('.tab[data-page="page-phone"]').click()`);
+await sleep(100);
+A('A9 桌面已无功能大全图标（#543）', await ev(`!document.querySelector('.app[data-app="featurehub"]')`));
+
+// A10 #542 设置页搜索：输入「功能大全」→ 只剩命中行；清空 → 恢复全部行显隐
+await ev(`document.querySelector('.tab[data-page="page-setting"]').click()`);
+await sleep(100);
+const sBefore = await ev(`[...document.querySelectorAll('#page-setting .set-row')].filter(r=>r.style.display!=='none').length`);
+await ev(`(()=>{const i=document.getElementById('set-search-input'); i.value='功能大全'; i.dispatchEvent(new Event('input'));})()`);
+await sleep(100);
+const sShown = await ev(`[...document.querySelectorAll('#page-setting .set-row')].filter(r=>r.style.display!=='none').length`);
+const sAllHit = await ev(`[...document.querySelectorAll('#page-setting .set-row')].filter(r=>r.style.display!=='none').every(r=>{const t=r.querySelector('.txt'); return !t || t.textContent.indexOf('功能大全')>=0;})`);
+A('A10 设置搜索过滤（有命中且均含关键词）', sShown > 0 && sShown < sBefore && sAllHit, 'before=' + sBefore + ' shown=' + sShown);
+await ev(`(()=>{const i=document.getElementById('set-search-input'); i.value=''; i.dispatchEvent(new Event('input'));})()`);
+await sleep(100);
+const sRestored = await ev(`[...document.querySelectorAll('#page-setting .set-row')].filter(r=>r.style.display!=='none').length`);
+A('A10b 清空恢复全部行显隐', sRestored >= sBefore, 'restored=' + sRestored);
 
 console.log(fail === 0 ? '== 冒烟全部通过 ==' : ('== 失败 ' + fail + ' 项 =='));
 process.exit(fail === 0 ? 0 : 1);
