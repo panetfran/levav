@@ -681,7 +681,18 @@
       const who = rec.side === 'out' ? '我' : memberName(rec.cid);
       b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + who + '撤回了一条消息</span>';
       b.style.cursor = 'pointer';
+      // FIX 2026-09-16 #572 点开撤回原文「全部聊天消息都会弹和闪」（用户报，明说以前没有＝回归，
+      // 单聊群聊都有）：展开＝把原文写回这条气泡本身，提示只有一行、原文必更高 ⇒ 该气泡当场变高，
+      // .chat-body（#gc-body 同挂该类）是纵向 flex 列表，下面每条消息都要重新排位＝整列被顶走。
+      // 内核原生滚动锚定本会补掉这份高度差（#199 之前一直开着），但 base.css 的
+      // .chat-body{overflow-anchor:none}（#199 治滚动抖动）关了它，#316 只在解钉期动态挂
+      // .scroll-anchor-auto 开回——轻点撤回提示是 touchstart 解钉、touchend 又回钉，展开发生在回钉
+      // 之后＝锚定正关着，补偿无人做。此处按单聊 bindToggle 同口径自己补：贴底回钉、非贴底按高度差
+      // 把视口钉回，其它消息原地不动。
       b.onclick = function () {
+        const prevTop = body.scrollTop;
+        const prevH = body.scrollHeight;
+        const wasBottom = gcAtBottom();
         if (b.dataset.showing === '1') {
           b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + who + '撤回了一条消息</span>';
           b.dataset.showing = '0';
@@ -689,6 +700,8 @@
           b.innerHTML = b.dataset.orig;
           b.dataset.showing = '1';
         }
+        const dH = body.scrollHeight - prevH;
+        if (dH) { if (wasBottom) scrollToBottom(); else body.scrollTop = prevTop + dH; }
       };
     } else if (rec.type === 'sticker' || rec.type === 'image' || (rec.type !== 'voice' && window.mochiMediaIsToken && window.mochiMediaIsToken(rec.text))) {
       // FIX 2026-09-12 #383 存量乱码自愈：修复前令牌卡曾以 type:text 入群聊库（气泡直出
@@ -1019,6 +1032,36 @@
   }
   window.gcSendDecisionText = gcSendDecisionText;
   window.gcIsVisible = gcIsVisible;
+  // v3.36.x #582：把某个群的历史写回本地（供设置页「导入数据 → 仅聊天记录」一次性恢复全部群聊，
+  // data-backup.js importChatAllGo 调用；本文件是群聊键 xy-home-v2:gc-msgs-<gid> /
+  // xy-home-v2:group-chat-msgs 的唯一写入方，gcLiteSnapArray/gcWriteMsgs 的规矩都由这里守）。
+  // 写入与 gcWriteMsgs 同路：lite 快照（条数不变、只剥大负载）进 LS + 全量数组进 IDB（权威）。
+  // 当前群额外同步内存与界面（否则屏上还是导入前的旧记录，切走再回来才刷新）；非当前群只落盘。
+  window.gcWriteGroupMsgs = function (gid, arr) {
+    try {
+      if (!Array.isArray(arr)) return false;
+      const g = gid || 'default';
+      const key = groupMsgKey(g);
+      try {
+        const snap = JSON.stringify(gcLiteSnapArray(arr));
+        // 快照与全量条数一致，loadMsgs 的「IDB 条目更多才覆盖」判定不会让旧快照压住这次导入；
+        // 超过 LS 上限就整键删掉（宁可没有快照，也不留一份会把新导入顶回去的旧快照）
+        if (snap.length <= GC_SNAP_LIMIT) localStorage.setItem(key, snap);
+        else localStorage.removeItem(key);
+      } catch (e) { try { localStorage.removeItem(key); } catch (e2) {} }
+      if (g === curGid) {
+        gFlushPersistNow();
+        msgs = arr.filter(m => m && typeof m === 'object');
+        saveNow();
+        renderAll();
+        return true;
+      }
+      // 返回 idbSet 的 promise：调用方要按「写盘完成」串链（#582 修复前 data-backup 侧自造的
+      // thenable 永不 settle，排在后面的桌面/群聊/媒体池根本轮不到执行）
+      if (window.idbSet) return window.idbSet(key, arr);
+      return true;
+    } catch (e) { return false; }
+  };
   // 表情包直接发送（复用聊天页表情包面板的插入模式回调，见下方 gc-emoji-btn）
   function sendGcSticker(src) {
     if (!src) return;
@@ -1100,6 +1143,10 @@
         // FIX 2026-09-12 #383 群聊同款：#377 令牌化后裸 @@m:hash 卡体无 |||、非 data:，
         // 旧两道守卫漏过＝令牌卡入群聊文字池被当文字直出（与 chat.js getPool 同批修复）
         if (c && window.mochiMediaIsToken && window.mochiMediaIsToken(c)) return;
+        // FIX 2026-09-15 #533 群聊同款：链接导入的媒体字卡（裸 http(s) 图链，存于字卡库
+        // 【表情包/图片】分类）不进文字池——否则群成员抽中即把链接当文字发进群（与
+        // chat.js getPool / mail.js mailCardPool 同批修复）
+        if (/^https?:\/\//i.test(c)) return; // 图链卡不进群聊文字池
         if (/[\uD800-\uDBFF]/.test(c) || /^[😀-🙏🌀-🫿]/u.test(c)) emoji.push(c);
         else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) kaomoji.push(c);
         else text.push(c);

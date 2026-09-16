@@ -563,6 +563,9 @@
       if (typeof c === 'string' && c.indexOf('|||') >= 0) return;
       // FIX 2026-09-13 #386 裸 @@m:hash 令牌卡不进文字池（与 chat.js getPool #383 同款第三道守卫）
       if (c && window.mochiMediaIsToken && window.mochiMediaIsToken(c)) return;
+      // FIX 2026-09-15 #533 同款第四道守卫：链接导入的媒体字卡（裸 http(s) 图链）是图片
+      // 载荷不是文字，进池会被拼进朋友圈动态/评论正文（与 chat.js getPool / mail.js 同批修复）
+      if (/^https?:\/\//i.test(c)) return; // 图链卡不进朋友圈文字池
       if (/[\uD800-\uDBFF]/.test(c) || /^[😀-🙏🌀-🫿]/u.test(c)) emoji.push(c);
       else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) kaomoji.push(c);
       else text.push(c);
@@ -605,7 +608,29 @@
         if (dq) text.push(dq);
       }
     } catch (eDictFeed) {}
+    // FIX 2026-09-15 #534 朋友圈内容类型总开关（设置→回复设置→朋友圈「内容类型开关」）：
+    //   关闭的类型在这里【整体清池】——生成器全是「池非空才抽」的写法，清池即该类型在
+    //   朋友圈彻底消失，不可能被任何一条路径绕过。修前只有「TA 发布内容类型」概率管得住
+    //   TA 发动态；TA 评论/回复走 pickReplyContent 把颜文字/emoji 写死 15%、表情包/图片走
+    //   「使用表情包概率」，用户在朋友圈把颜文字与表情包关掉后评论里照样出现（多机型同报）。
+    //   开关按【该联系人桌面】读（与 feedCfgFor 同口径：各联系人朋友圈设置独立），
+    //   缺省（键不存在）＝开，存量用户行为不变。零机型分支＝纯设置读取。
+    if (!feedTypeOn(cid, 'kaomoji')) kaomoji.length = 0;
+    if (!feedTypeOn(cid, 'emoji')) emoji.length = 0;
+    if (!feedTypeOn(cid, 'sticker')) mediaSticker.length = 0;
+    if (!feedTypeOn(cid, 'image')) mediaImage.length = 0;
     return { text: text, kaomoji: kaomoji, emoji: emoji, sticker: mediaSticker, image: mediaImage };
+  }
+  // #534：朋友圈某内容类型是否启用（读该联系人桌面的 reply-fd-<kind>-en；缺失＝开）。
+  //   kind ∈ kaomoji | emoji | sticker | image。与 chat.js/mail.js 的场景开关同读法：
+  //   存储键统一 reply- 前缀 + 当前桌面命名空间，避免「设置页关了、生成端读别处」。
+  function feedTypeOn(cid, kind) {
+    try {
+      const s = window.storeFor ? window.storeFor(cid || 'default') : null;
+      if (!s) return true;
+      const v = s.get('reply-fd-' + kind + '-en');
+      return v === null || v === undefined || v === '' ? true : Number(v) !== 0;
+    } catch (e) { return true; }
   }
   // v3.6.x：完整 HTML 转义（昵称/评论/点赞列表/分组名是用户输入，直拼 innerHTML 可注入）
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
@@ -950,7 +975,7 @@
     listEl.innerHTML = memHtml + (posts.length
       ? posts.slice(0, feedShownMain).map(p => postCardHtml(p, name)).join('') +
         (posts.length > feedShownMain ? feedMoreBtnHtml(posts.length - feedShownMain) : '')
-      : '<div class="ta-empty">还没有动态，TA 会不定期分享生活</div>');
+      : '<div class="ta-empty">还没有动态，TA 会不定期分享生活<br><button class="memo-send-btn" id="feed-empty-pub" style="margin-top:8px">我来发第一条</button></div>');
     const clearBtn = document.getElementById('feed-head-clear');
     if (clearBtn) clearBtn.hidden = !posts.length;
     bindEvents(listEl);
@@ -1045,17 +1070,19 @@
   }
   // v3.36.x：我贴的贴纸位置可自定义——选完贴纸进入「点照片选位置」模式，点哪里贴哪里；
   // 找不到配图（数据被并发删掉等）时退回随机落位；TA 回贴仍走 feedRandStickerPos
+  // FIX 2026-09-16 #593：提示条一律不压照片——改成配图区前面独立一行（文档流内，照片上没有任何覆盖层）。
+  //   旧实现把提示条绝对定位钉在照片顶部：照片高约 104px 时它占掉 33px（≈顶部 1/3），
+  //   点那一带全被提示条接走＝被当成「取消」（一张都贴不上、模式还退出了），
+  //   系统字号越大压得越多——「其他设备型号也有」即此（零机型分支，只与提示条高度有关）。
   let feedPickCtx = null;
   function feedCancelPickSticker() {
     if (!feedPickCtx) return;
     const ctx = feedPickCtx;
     feedPickCtx = null;
+    if (ctx.timer) clearInterval(ctx.timer);
     ctx.box.removeEventListener('click', ctx.onPick, true);
-    if (ctx.box.isConnected) {
-      ctx.box.classList.remove('feed-sticker-picking');
-      const hint = ctx.box.querySelector('.feed-pick-hint');
-      if (hint) hint.remove();
-    }
+    ctx.box.classList.remove('feed-sticker-picking');
+    if (ctx.hint && ctx.hint.parentNode) ctx.hint.parentNode.removeChild(ctx.hint);
   }
   function feedPickStickerPos(pid, src) {
     feedCancelPickSticker();
@@ -1068,10 +1095,10 @@
     hint.className = 'feed-pick-hint';
     hint.innerHTML = '<span>📍 点击照片选贴纸位置</span><button type="button">取消</button>';
     hint.querySelector('button').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); feedCancelPickSticker(); });
-    box.appendChild(hint);
+    // 提示条插在配图区「之前」：自己占一行、不覆盖照片，照片任意位置（含最顶部）点下去都按落点贴
+    box.parentNode.insertBefore(hint, box);
     const onPick = (e) => {
       e.preventDefault(); e.stopPropagation();
-      if (e.target.closest('.feed-pick-hint')) { feedCancelPickSticker(); return; }
       if (!box.isConnected) { feedCancelPickSticker(); return; }
       const r = box.getBoundingClientRect();
       const x = Math.round(Math.min(90, Math.max(4, ((e.clientX - r.left) / Math.max(1, r.width)) * 100)));
@@ -1080,7 +1107,11 @@
       addFeedSticker(pid, { src, x, y });
     };
     box.addEventListener('click', onPick, true);
-    feedPickCtx = { box, onPick };
+    // FIX 2026-09-16 #593：选位期间卡片被局部/全量重渲染（评论/点赞/TA 回贴/换列表都是换节点）会让监听器跟着旧节点作废，
+    //   原实现只在「用户再点一下」时才发现，提示条会一直挂在页面上；4 次/秒的轻量看门狗主动收尾，
+    //   任何机型都不会卡在选位态（改成不用看门狗时，verify-feed-sticker-pos 的 E4 会红）
+    const timer = setInterval(() => { if (!box.isConnected) feedCancelPickSticker(); }, 250);
+    feedPickCtx = { box, onPick, hint, timer };
   }
   // 我贴一张：每条动态上限 5 张；贴完 TA 有概率（评论回应概率同源）回贴一张并进通知
   function addFeedSticker(pid, st) {

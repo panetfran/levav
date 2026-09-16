@@ -303,7 +303,10 @@ let old = [];
 try { old = JSON.parse(store.get('chat-msgs') || '[]'); } catch (e) { old = []; }
 if (!Array.isArray(old)) old = [];
 const seen = new Set(msgsNow.map(lsMergeSig));
-const merged = msgsNow.concat(old.filter(m => m && !seen.has(lsMergeSig(m)))).sort((a, b) => (((a && a.ts) || 0) - ((b && b.ts) || 0)));
+// FIX 2026-09-16 #590：再补一层「媒体两种存法」互补判定（媒体池冷载时 lsMergeSig 展开不出
+// 原文）——否则写侧照样把同一条的旧形态副本存进 LS，下次进页读侧再翻倍（#511 同款半修）
+const kinds = recKindIndex(msgsNow);
+const merged = msgsNow.concat(old.filter(m => m && !seen.has(lsMergeSig(m)) && !recKindCovers(kinds, m))).sort((a, b) => (((a && a.ts) || 0) - ((b && b.ts) || 0)));
 performLsSnapWrite(merged, prefix);
 } catch (e) {}
 }
@@ -655,7 +658,7 @@ function normCell(r) {
       const t = r.text.replace(/✉️\s*/g, '').replace(/✉\s*/g, '');
       if (t !== r.text) { r.text = ICON_ENV + t; c = true; }
     }
-    if ((r.type === 'text' || !r.type) && typeof r.text === 'string' && (r.text.indexOf('data:image/') === 0 || (window.mochiMediaIsToken && window.mochiMediaIsToken(r.text)))) { r.type = 'image'; c = true; }
+    if ((r.type === 'text' || !r.type) && typeof r.text === 'string' && (r.text.indexOf('data:image/') === 0 || chatIsImageUrlCard(r.text) || (window.mochiMediaIsToken && window.mochiMediaIsToken(r.text)))) { r.type = 'image'; c = true; }
 // FIX 2026-09-12 #383 存量乱码自愈：#383 前令牌卡曾以 type:text 入库（气泡直出 @@m:hash 串），
 // 归一化补认裸令牌→type='image'（与上行 data:image 升级同口径），刷新后历史乱码消息变回图片
 // FIX 2026-09-10 #283 语音型归一：裸 data:audio 文本与「|||@@m:令牌」（pass 令牌化后的无主
@@ -703,16 +706,106 @@ c = true;
 // 60s 内重发同图属合法行为不吞）；②mediaTxtEq 展开池令牌后再比对（内容寻址，令牌展开即原
 // 数据）——addRec 实时去重与刷新归一化共用，屏上所见即刷新后所见，不再翻饼。
 const DUP_GAP_TEXT = 2500, DUP_GAP_MEDIA = 60000;
-function mediaTxtEq(a, b) {
-  a = a || ''; b = b || '';
-  if (a === b) return true;
+// FIX 2026-09-16 #590（用户：切换桌面联系人→打开聊天，所有消息变 2 条再回弹恢复）：
+// 媒体「同一内容、不同存储形态」的唯一归一化入口。令牌化竞态（#142/#256/#283）下同一条消息
+// 在一处是原文（data:image base64，或语音的「名称|||data:audio」）、另一处已是 @@m: 令牌，
+// 任何「这是同一条吗」的判定直接比原文都判成两条。本函数把两形态收敛成同一份原文
+// （池未热载 mochiMediaExpand 返回 null 时退化为原文，与 #256/#511 同款不误判口径）。
+// 四个计入口共用本函数，杜绝「修了读侧、写侧/IDB 侧仍按旧口径各存一份」的半修：
+//   · mediaTxtEq（addRec 实时去重）· dupSig（刷新归一化/相邻重复合并）
+//   · lsMergeSig（LS 快照 ↔ 内存合并，#511）· loadMsgs 权威合并签名 sigOf（#590 本轮补漏）
+function mediaFormText(s) {
+  const raw = (s == null) ? '' : String(s);
+  if (!raw) return raw;
   try {
     if (window.mochiMediaIsToken && window.mochiMediaExpand) {
-      if (a && window.mochiMediaIsToken(a)) { const x = window.mochiMediaExpand(a); if (x && x === b) return true; }
-      if (b && window.mochiMediaIsToken(b)) { const x = window.mochiMediaExpand(b); if (x && x === a) return true; }
+      const bar = raw.indexOf('|||');
+      // 语音尾形态「名称|||令牌」：只展开尾部，名称段原样保留（#283）
+      if (bar >= 0) {
+        const tail = raw.slice(bar + 3);
+        if (tail && window.mochiMediaIsToken(tail)) {
+          const ex = window.mochiMediaExpand(tail);
+          if (ex) return raw.slice(0, bar + 3) + ex;
+        }
+      } else if (window.mochiMediaIsToken(raw)) {
+        const ex = window.mochiMediaExpand(raw);
+        if (ex) return ex;
+      }
     }
   } catch (e) {}
-  return false;
+  return raw;
+}
+// 合并/去重签名用的内容片段：短串整串入签名（与旧口径逐字节一致，零判别力损失）；
+// 长串（base64 可达数百 KB）只取「长度 + 前 96 字符」——整串进 Set 哈希会让切桌面/开聊天
+// 白白烧 CPU（#511 同口径；长度+头部随内容变化，对「跨形态同一条」判别力足够）
+function mediaSigPart(v) {
+  if (v == null || v === '') return '';
+  if (typeof v !== 'string') { try { return String(v.length); } catch (e) { return ''; } }
+  const x = mediaFormText(v);
+  if (x.length <= 256) return x;
+  return x.length + '|' + x.slice(0, 96);
+}
+function mediaTxtEq(a, b) {
+  const x = (a == null) ? '' : String(a);
+  const y = (b == null) ? '' : String(b);
+  if (x === y) return true;
+  // FIX 2026-09-16 #590：跨形态比对统一走 mediaFormText（原先只认「整串令牌」，语音的
+  // 「名称|||令牌」形态漏在窗外＝同一条语音在两处判不同）
+  return mediaFormText(x) === mediaFormText(y);
+}
+// FIX 2026-09-16 #590 后半段（不依赖媒体池热载的兜底判定）：
+// mediaFormText 要靠 mochiMediaExpand 展开令牌，而它是**纯 map 热缓存查询**——冷启动/换桌面
+// 时池里什么都没热载（音频按 #283 内存纪律更是永不进热缓存）⇒ 展开恒 null ⇒ 上一条比较
+// 仍判「两条」。快照合并必须与池温无关，故这里补一条形态判定：
+// 同一 ts|side|special|type 的记录在一侧是原文（data:image/data:audio）、另一侧是 @@m: 令牌
+// ＝同一条记录的两种存法（ts 精确到毫秒且同侧，本文件 idbTsSide 的 lite 残留过滤早已用这个
+// 身份口径），快照侧那份是旧形态副本，丢弃。
+// 只对「媒体形态互补」的组合生效：普通文本、令牌↔令牌、原文↔原文一律不受影响（编辑后的
+// 新文本、两张不同表情包的合法重复都不会被误吞）。
+function mediaKindOf(v) {
+  if (typeof v !== 'string' || !v) return '';
+  try {
+    if (window.mochiMediaIsToken && window.mochiMediaIsToken(v)) return 'tok';
+    const bar = v.indexOf('|||');
+    if (bar >= 0) {
+      const tail = v.slice(bar + 3);
+      if (tail.indexOf('data:') === 0) return 'raw';
+      if (window.mochiMediaIsToken && window.mochiMediaIsToken(tail)) return 'tok';
+      return '';
+    }
+    if (v.indexOf('data:image/') === 0 || v.indexOf('data:audio/') === 0) return 'raw';
+  } catch (e) {}
+  return '';
+}
+function recMediaKind(m) { return m ? (mediaKindOf(m.text) || mediaKindOf(m.img)) : ''; }
+function recMediaKey(m) {
+  return ((m.ts || 0) + '|' + (m.side || '') + '|' + (m.special || '') + '|' + (m.type || ''));
+}
+// 权威侧形态索引：去重键 -> { raw, tok }（同键下两种存法都记下来）
+function recKindIndex(arr) {
+  const idx = new Map();
+  try {
+    for (let i = 0; i < arr.length; i++) {
+      const m = arr[i];
+      if (!m) continue;
+      const k = recMediaKind(m);
+      if (!k) continue;
+      const key = recMediaKey(m);
+      let rec = idx.get(key);
+      if (!rec) { rec = { raw: false, tok: false }; idx.set(key, rec); }
+      rec[k] = true;
+    }
+  } catch (e) {}
+  return idx;
+}
+// 快照侧这条是否已被权威侧以「另一种存法」收录（互补形态 ⇒ 同一条记录）
+function recKindCovers(kindIndex, m) {
+  if (!kindIndex || !m) return false;
+  const k = recMediaKind(m);
+  if (!k) return false;
+  const rec = kindIndex.get(recMediaKey(m));
+  if (!rec) return false;
+  return k === 'tok' ? rec.raw : rec.tok;
 }
 function dupGapMs(m) {
   if (!m) return DUP_GAP_TEXT;
@@ -747,6 +840,7 @@ function normCollapseRange(from, to) {
       const a = msgs[i], b = msgs[i - 1];
       if (!a || !b || !a.side || a.side !== b.side) continue;
       if (dupSig(a) !== dupSig(b)) continue;
+      if (a.dedupExempt || b.dedupExempt) continue; // FIX 2026-09-15 #544 决定答案豁免相邻合并（刷新侧与 addRec 实时侧同口径，屏上所见即刷新后所见）
       const hasContent = (a.text && a.text.length) || a.img || a.voice || !!a.special || (a.parts && a.parts.length);
       if (!hasContent) continue;
       const dts = (a.ts || 0) - (b.ts || 0);
@@ -833,7 +927,10 @@ function runDeferredNormalization() {
 function migrateLegacyMediaMsgs() {
 let migrated = false;
 msgs.forEach(r => {
-if (r && (r.type === 'text' || !r.type) && typeof r.text === 'string' && r.text.indexOf('data:image/') === 0) {
+// FIX 2026-09-15 #534 存量图片直链消息补 type='image'——#533 前链接导入的字卡
+// （裸 http(s) 图链）曾被当文字卡抽出、以 type:'text' 落库，气泡直出整段链接；
+// 与 normCell / 渲染端自愈同口径（只认带图片扩展名的单条直链，普通链接不受影响）。
+if (r && (r.type === 'text' || !r.type) && typeof r.text === 'string' && (r.text.indexOf('data:image/') === 0 || chatIsImageUrlCard(r.text))) {
 r.type = 'image';
 migrated = true;
 }
@@ -858,8 +955,9 @@ const normT = (m.type === 'text' || !m.type) ? '' : String(m.type || '');
 // #256：x 跨形式归一——令牌化竞态下同一内容一处 @@m:令牌、一处 data:base64，
 // 直比不等＝相邻重复漏判。池令牌内容寻址，展开即原数据；池未热载 expand null 时
 // 回退原文（退化为旧行为，不引入误判）。
-let x = m.text || '';
-try { if (x && window.mochiMediaIsToken && window.mochiMediaIsToken(x) && window.mochiMediaExpand) { const ex = window.mochiMediaExpand(x); if (ex) x = ex; } } catch (e) {}
+// FIX 2026-09-16 #590：跨形态归一收口到 mediaFormText（原先只展开「整串令牌」，
+// 语音的「名称|||令牌」形态漏判；与合并签名/实时去重共用同一函数＝三处口径不再分叉）
+const x = mediaFormText(m.text);
 return JSON.stringify({ s: m.side || '', t: normT, sp: sp, x: x, im: !!m.img, vc: !!m.voice, e: extra });
 }
 // FIX 2026-09-15 #511 进聊天气泡「先变 2 条再恢复」（用户：桌面点开【聊天】进页面，
@@ -874,13 +972,9 @@ return JSON.stringify({ s: m.side || '', t: normT, sp: sp, x: x, im: !!m.img, vc
 // 长度+头部随内容变化，对「跨形式同一条」判别力足够（池未热载 expand 返回 null 时退化为旧行为，不误判）。
 function lsMergeSig(m) {
 if (!m) return '';
-let x = String(m.text || '');
-try {
-if (x && window.mochiMediaIsToken && window.mochiMediaIsToken(x)) {
-const ex = window.mochiMediaExpand && window.mochiMediaExpand(x);
-if (ex) x = ex;
-}
-} catch (e) {}
+// FIX 2026-09-16 #590：展开逻辑收口到 mediaFormText（同一入口，#511 的「整串令牌」口径
+// 加上语音「名称|||令牌」形态，与 dupSig/sigOf 完全同源）
+const x = mediaFormText(m.text);
 return ((m.ts || 0) + '|' + (m.side || '') + '|' + (m.special || '') + '|' + (m.type || '') + '|' + x.length + '|' + x.slice(0, 96));
 }
 try { window.__lsMergeSig = lsMergeSig; } catch (e) {} // 回归脚本可测性出口（只读纯函数）
@@ -924,7 +1018,10 @@ if (lsArr.length && msgs.length) {
 // 签名统一走 lsMergeSig（与 dupSig 同口径：展开媒体令牌 + 含 special/type）——两处合并点
 // 共用同一函数，避免「修了读侧、写侧仍按旧口径在 LS 里存两份」的半修。
 const seen = new Set(lsArr.map(lsMergeSig));
-const extra = msgs.filter(m => m && !seen.has(lsMergeSig(m)));
+// FIX 2026-09-16 #590：快照与内存同一条的「媒体两种存法」互补判定（冷池下 expand 不可用，
+// 见 recKindCovers 注释）——缺了这一步，快照侧旧形态副本会被当新消息 concat 回来＝消息翻倍
+const lsKinds = recKindIndex(lsArr);
+const extra = msgs.filter(m => m && !seen.has(lsMergeSig(m)) && !recKindCovers(lsKinds, m));
 msgs = lsArr.concat(extra).sort((a, b) => (((a && a.ts) || 0) - ((b && b.ts) || 0)));
 } else if (lsArr.length) {
 msgs = lsArr;
@@ -1035,7 +1132,20 @@ __prof('ch0_enter');
 const idbArr = typeof v === 'string' ? JSON.parse(v) : v;
 __prof('ch1_parsed');
 if (!Array.isArray(idbArr)) { chatDbReady = true; chatKnownEmpty = false; return; }
-const sigOf = (m) => { try { return JSON.stringify({ t: m && m.text, s: m && m.side, ts: m && m.ts, i: m && m.img ? (typeof m.img === 'string' ? m.img.slice(0, 32) : String(m.img.length)) : 0 }); } catch (e) { return ''; } };
+// FIX 2026-09-16 #590（用户报障：切换桌面联系人→打开聊天，所有消息变 2 条再回弹恢复；
+// 无头实测精确复现——种 12 条表情包字卡的桌面，切过去开聊天 msgs/DOM 双双变 24，每条
+// 一份 @@m: 令牌 + 一份原文 base64 相邻成对）：
+// 根因＝权威合并这里的去重签名只比「原文」：LS 兜底快照里同一条是原文 base64、IndexedDB
+// 权威副本已令牌化（#142/#256/#283 令牌化竞态，大历史/常用表情包桌面必然命中），原文不等
+// ⇒ 判成两条 ⇒ localNew 把快照副本当"新消息"append 回 merged ⇒ msgs = 权威 + 旧形态副本，
+// 两边 ts 相同 ⇒ 按 ts 排序后成对相邻 ⇒ 首屏「所有消息都变 2 个」；随后后台归一化
+// （dupSig 会展开令牌）按相邻重复把它们合并回 1＝用户看到的「回弹一下恢复正常」；
+// 归一化没赶上/未覆盖时更糟：重复被整包落盘固化成真重复。
+// 修复：签名与 lsMergeSig/dupSig 同口径，统一走 mediaFormText + mediaSigPart（展开 @@m:
+// 令牌与语音尾形态，长 base64 只取长度+前 96 字符，不再整串进 Set）。与 #511 同一族——
+// #511 收口了 LS 侧合并（lsMergeSig），权威合并这侧当时漏网，本条补齐＝四处口径同源。
+// 媒体「同一条」判定从此只有一处实现，任何一侧被改回原文直比都会重新翻倍（哨兵 #590a~c 守）。
+const sigOf = (m) => { try { return JSON.stringify({ t: mediaSigPart(m && m.text), s: m && m.side, ts: m && m.ts, i: (m && m.img) ? mediaSigPart(m.img) : 0 }); } catch (e) { return ''; } };
 const hasLocal = !!((pendingLocal && pendingLocal.length) || (msgs && msgs.length));
 let merged, curArr = pendingLocal || msgs || [];
 let changed = false;
@@ -1049,7 +1159,12 @@ if (!hasLocal) {
   const idbTsSide = new Set(idbArr.map(x => (((x && x.ts) || 0) + '|' + ((x && x.side) || ''))));
   __prof('ch3_tsside');
   const liteResidue = (m) => !!(m && (m._lsLite || m.img === '' || m.voice === ''));
+  // FIX 2026-09-16 #590：权威侧媒体形态索引——「同一条记录在快照里是原文、在库里是令牌」
+  // （令牌化竞态；池冷载时 sigOf 展开不出原文）时，快照副本不得当新消息 append 回来
+  const idbKinds = recKindIndex(idbArr);
+  __prof('ch3b_kinds');
   const localNew = curArr.filter(m => m && !idbSigs.has(sigOf(m))).filter(m => {
+    if (recKindCovers(idbKinds, m)) return false;
     if (!liteResidue(m)) return true;
     return !idbTsSide.has((((m && m.ts) || 0)) + '|' + ((m && m.side) || ''));
   });
@@ -1590,6 +1705,17 @@ return /[｡◕‿・▽´｀￣﹏◠◡≧≦ω＾￢¬^•˙˘๑٩۶ฅヽ�
 function chatHasReadableTextCard(arr) {
 return arr.some(s => typeof s === 'string' && CHAT_READABLE_RE.test(s));
 }
+// FIX 2026-09-15 #534 图片直链识别——存量消息自愈用。只认「整条消息就是一张图片直链」
+// 的形态：单个 http(s) token、无空格引号、带图片扩展名（可带 query/hash）。用户聊天里真
+// 发的普通链接（无图片扩展名）保持原文本显示，不误判成图（避免换成裂图反而更糟）。
+// 背景：链接导入的字卡（图床不允许跨域时按链接存原图 URL，位于字卡库【表情包/图片】）
+// 曾被 getPool 的 data:/|||/@@m: 三道守卫漏过、当文字卡抽出并以 type:'text' 落库，
+// 气泡直出「https://…/IMG_2343.png」整段链接（用户报「联系人发送的消息应该是图片，
+// 会变成图上的乱码」）。#533 已堵住入库口，这里补上已落库历史消息的渲染自愈。
+function chatIsImageUrlCard(s) {
+if (typeof s !== 'string') return false;
+return /^https?:\/\/[^\s"'<>]+\.(?:png|jpe?g|gif|webp|bmp|avif|svg)(?:[?#][^\s"'<>]*)?$/i.test(s.trim());
+}
 function getPool() {
 const cards = (window.getCustomCards && window.getCustomCards()) || [];
 const pokeSet = (function () {
@@ -1611,6 +1737,12 @@ if (typeof c === 'string' && c.indexOf('|||') >= 0) return;
 // 回复池里是裸 @@m:hash（无 |||、非 data:），旧两道守卫全漏过＝令牌卡被当文字卡入池，
 // 抽中即把令牌串当文字直出（「联系人消息乱码 @@m:…」，公用库共享故多机型全现）
 if (typeof c === 'string' && window.mochiMediaIsToken && window.mochiMediaIsToken(c)) return;
+// FIX 2026-09-15 #533 链接导入的媒体卡（图床不允许跨域时按链接保存的裸 http(s) URL）
+// 同样不是文字载荷——旧三道守卫只挡 data:/|||/@@m: 令牌，URL 形态漏进文字池：TA 抽中
+// 即以 type:'text' 发出、气泡直出「http://…png」链接（用户报「一个对话框里发两个表情，
+// 另一个会变成文字 URL，信箱里也是这样」——该卡就存在字卡库【表情包/图片】分类里）。
+// 媒体池（getMediaCards）此前已按 isMediaImg 收 URL 当图片载荷，这里只是不再当文本抽。
+if (typeof c === 'string' && /^https?:\/\//i.test(c)) return;
 if (chatIsEmojiCard(c)) emoji.push(c);
 else if (chatIsKaomojiCard(c)) kaomoji.push(c);
 else text.push(c);
@@ -1794,6 +1926,11 @@ window.__replyPoolDiag = function () {
       '自定义占比=' + (rc['csp-cust'] !== undefined ? rc['csp-cust'] : '?'),
       '媒体概率=' + ['sticker', 'emoji', 'image', 'voice', 'kaomoji'].map(k => k + ':' + (rc[k + '-prob'] !== undefined ? rc[k + '-prob'] : '?')).join(','),
       '多字卡py=' + (rc['py-en'] === 1 ? (rc['py-prob'] + '%') : '关'),
+      // FIX 2026-09-16 #571：回复延迟现场——设定值（回复速度最短~最长，秒）+ 最近实测落地耗时。
+      // 「字卡延迟反应卡顿N秒」类报障：实测≈设定=设定即此延迟（回复速度设置所致）；实测≫设定=真卡顿。
+      '回复时间=' + (rc['rs-min'] !== undefined ? rc['rs-min'] : 1) + '~' + (rc['rs-max'] !== undefined ? rc['rs-max'] : 40) + 's',
+      '回复实测=' + (window.__replyLatLog && window.__replyLatLog.length ? window.__replyLatLog.map(m => (m / 1000).toFixed(1) + 's').join('|') : '无记录'),
+      '无回应概率rn=' + (rc['rn-prob'] !== undefined ? rc['rn-prob'] + '%' : '?'),
       'text样本=' + sample(P.text),
       'kaomoji样本=' + sample(P.kaomoji),
       'emoji样本=' + sample(P.emoji)
@@ -2288,11 +2425,16 @@ setTimeout(() => addIn('你领取了红包' + amtTxt, { special: 'poke' }), rand
 return;
 }
 if (e.target.closest('.msg-inplace')) return;
-// v3.33.x #521：批量问卷卡片点击 → 打开问卷详情页（openAskSurvey 自带「返回回聊天页」逻辑）
+// v3.33.x #523：批量问卷卡片点击 → 打开只读「问卷详情」（题干+选项+TA 的作答），
+// 不再跳批量设置问卷页（用户报「点已交卷卡片却打开了批量设置问卷的页面」）
 const surveyCard = e.target.closest('.msg-survey-card');
 if (surveyCard) {
 e.stopPropagation(); // 不冒泡触发气泡操作菜单
-if (window.openAskSurvey) window.openAskSurvey();
+const sItem = surveyCard.closest('.msg-survey');
+const sIdx = sItem && sItem.dataset.idx !== undefined ? Number(sItem.dataset.idx) : -1;
+const sRec = sIdx >= 0 ? msgs[sIdx] : null;
+if (window.openSurveyDetail && sRec) window.openSurveyDetail(sRec);
+else if (window.openAskSurvey) window.openAskSurvey();
 return;
 }
 const card = e.target.closest('.msg-ask-card, .msg-choose-card');
@@ -2332,10 +2474,22 @@ else if (type === 'ask' && window.openAskReply) window.openAskReply(idx);
 }
 });
 }
+// FIX 2026-09-16 #572 点开撤回原文「全部聊天消息都会弹和闪」（用户报，明说以前没有这个问题
+// ＝回归）：展开＝把原文写回这条气泡本身，而撤回提示只有一行（实测 45px）、任何真实原文都更高
+// ⇒ 该气泡当场变高，.chat-body 是纵向 flex 列表，它下面的每条消息都要重新排位＝整列被顶走。
+// 浏览器本来有原生滚动锚定会把这份高度差补掉（#199 之前一直开着），但 base.css 的
+// .chat-body{overflow-anchor:none}（#199 为治滚动抖动关掉）把它关了，#316 只在「解钉」期动态
+// 挂 .scroll-anchor-auto 开回——而轻点撤回提示是 touchstart 解钉、touchend 又回钉（scrollChatBottom
+// 摘类），展开发生在回钉之后＝锚定恰好是关的，补偿无人做（无头实测：视口内 8 条各下移 55px；
+// 同场景把锚定打开只剩被点那条动）。这里按本文件 inplacePatchIfSameWindow 的既有补偿口径自己补：
+// 贴底态回钉（与内核锚定在贴底时的结果一致），非贴底态按高度差把视口钉回，其它消息原地不动。
 function bindToggle(b, side) {
 const who = side === 'out' ? '我' : '对方';
 b.style.cursor = 'pointer';
 b.onclick = function () {
+const prevTop = body.scrollTop;
+const prevH = body.scrollHeight;
+const wasBottom = chatAtBottom();
 if (b.dataset.showing === '1') {
 b.innerHTML = '<span style="opacity:.6;font-size:12px;cursor:pointer">' + who + '撤回了一条消息</span>';
 b.dataset.showing = '0';
@@ -2343,6 +2497,8 @@ b.dataset.showing = '0';
 b.innerHTML = b.dataset.orig;
 b.dataset.showing = '1';
 }
+const dH = body.scrollHeight - prevH;
+if (dH) { if (wasBottom) scrollChatBottom(); else body.scrollTop = prevTop + dH; }
 };
 }
 let batchRendering = false;
@@ -2917,7 +3073,7 @@ const a = answers[i] || '';
 rows += '<div class="msg-survey-item' + (a ? ' answered' : '') + '">' +
 '<div class="msg-survey-q">' + (i + 1) + '. ' + escTxt(q.text || '') + '</div>' +
 (Array.isArray(q.options) && q.options.length
-? '<div class="msg-survey-opts">' + q.options.map(o => '<span class="msg-survey-opt">' + escTxt(o) + '</span>').join('') + '</div>'
+? '<div class="msg-survey-opts">' + q.options.map(o => '<span class="msg-survey-opt' + (a && String(o) === String(a) ? ' sel' : '') + '">' + escTxt(o) + '</span>').join('') + '</div>'
 : '') +
 (a ? '<div class="msg-survey-a">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(a) : a) + '</div>' : '') +
 '</div>';
@@ -3350,12 +3506,22 @@ if (d) d.style.display = d.style.display === 'block' ? 'none' : 'block';
 // 旧逻辑渲染成空壳气泡；改为显示占位，已存空白记录的设备更新后也能看出消息非空壳丢失
 const __rawText = typeof rec.text === 'string' ? rec.text : '';
 const __blankMsg = !__rawText.trim();
+// FIX 2026-09-15 #534 存量图片直链自愈：一条只有图片 URL 的历史消息（#533 前被当文字卡
+// 抽中、以 type:'text' 落库）不再把整段链接糊在气泡里，就地按图片渲染；渲染端不等归一化
+// 跑完（首屏原始数据也能正确显示），点击看大图与 type:'image' 消息同款。零机型分支。
+const __urlImg = !__blankMsg && chatIsImageUrlCard(__rawText);
 const __bodyHtml = __blankMsg
 ? '<span style="opacity:.5;font-size:12px">（空白消息）</span>'
-: '<span style="opacity:.85;word-break:break-word">' + window.mochiInlineTextHtml(T(__rawText)) + '</span>';
+: (__urlImg
+? '<img class="msg-img msg-img-big" src="' + attrEsc(__rawText.trim()) + '" alt="图片" loading="lazy" decoding="async">'
+: '<span style="opacity:.85;word-break:break-word">' + window.mochiInlineTextHtml(T(__rawText)) + '</span>');
 b.innerHTML = rec.quote
 ? quoteHtml(rec.quote, rec.qside) + __bodyHtml
 : __bodyHtml;
+if (__urlImg) {
+const __uImg = b.querySelector('.msg-img-big');
+if (__uImg) __uImg.addEventListener('click', (e) => { e.stopPropagation(); if (window.viewChatImage) window.viewChatImage(__uImg.src); });
+}
 }
 if (rec.mood && rec.mood.length && !rec.retracted) {
 const mm = document.createElement('div');
@@ -3784,7 +3950,12 @@ const len = msgs.length;
 // #256：实时去重改与刷新归一化同口径——mediaTxtEq 跨形式比对 + dupGapMs 统一窗口
 // （sticker/image/voice 型收件侧 60000ms，覆盖多字卡回复条间隔 randInt(1200,2800)；
 // 旧 1200ms 窗整体漏过该间隔＝同款表情包一批两张，刷新后才被归一化删掉一张）。
-for (let i = len - 1; i >= Math.max(0, len - 5); i--) {
+// FIX 2026-09-15 #544：rec.dedupExempt＝用户主动触发的决定答案（帮我决定/多人决定发到聊天）
+// 豁免本扫描——同一问题快速重跑且抽中同结果时，答案带【帮我决定】前缀同文撞进 in 侧 2500ms
+// 窗被静默吞（in 侧无 toast 反馈＝用户视角「联系人消息被吞了几条」），且扫描只看最近 5 条的
+// 时间差，第 1 条被吞后窗口不闭合会连锁吞掉后续同文答案。豁免只对带标记的决定答案生效，
+// TA 批次/用户消息的 #256/#437 去重契约零改动（normCollapseRange 刷新侧同口径豁免）。
+for (let i = len - 1; i >= Math.max(0, len - 5) && !rec.dedupExempt; i--) {
 const p = msgs[i];
 if (!p || p.special || rec.special) continue;
 if ((p.side || '') !== (rec.side || '')) continue;
@@ -3800,6 +3971,18 @@ return null;
 }
 }
 msgs.push(rec);
+// FIX 2026-09-16 #571 实测回复延迟遥测：只记「我方发送触发的回复链」第一条收件卡落地耗时，
+// 与 __rsDrawS（本次掷到的设定延迟）一并进诊断——实测≈设定＝回复速度就是设定值（非卡顿）；
+// 实测明显大于设定＝回复链有额外等待，报障时按现场定位。零行为改动。
+try {
+if ((rec.side || '') === 'in' && !rec.special && window.__replyWaitT0) {
+const __ms = Date.now() - window.__replyWaitT0;
+window.__replyLatLog = window.__replyLatLog || [];
+window.__replyLatLog.push(__ms);
+if (window.__replyLatLog.length > 6) window.__replyLatLog.shift();
+window.__replyWaitT0 = null;
+}
+} catch (eRL) {}
 chatTailAppend(rec); // #180：同步尾巴日志先落 LS，再交低频整包落盘
 saveMsgs();
 	const notable = rec.side === 'in' && (!rec.special || rec.special === 'poke' || rec.special === 'gift');
@@ -3856,7 +4039,7 @@ opts = opts || {};
   // 正文本身就是一张完整字卡，label 再渲染一遍会上下两行内容重复）
   const _tagMood = opts.tag ? [{ tag: String(opts.tag), label: opts.tagNoDup ? '' : String(text) }] : null;
   // v3.16.x：gInv = 联系人主动邀请的游戏类型（pong/snake/rps），随消息持久化供小游戏记录识别
-	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, mood: opts.mood || _tagMood || undefined });
+	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, dedupExempt: opts.dedupExempt, mood: opts.mood || _tagMood || undefined });
 }
 // v3.27.x：对话型回复补「正在输入」过渡——TA 回应先 showTyping 再落地，消除气泡凭空冒出的突兀感。
 // items 可为单条文本或数组（数组=逐条连发，条与条之间再出一次 typing）。仅当前桌面生效：期间切走
@@ -4260,7 +4443,8 @@ try { if (window.dcfGet) _dkP = window.dcfGet('deskcheck'); } catch (e) {}
 const pool = (window.getDeskCheckPool ? window.getDeskCheckPool(dir) : []).concat(
   (window.getCustomCardsFor ? window.getCustomCardsFor(window.__activeCid || 'default') : []).filter(function (c) {
     // FIX 2026-09-13 #388 媒体池令牌卡不进查岗回应文字池（同 chat.js #383 第三道守卫）
-    return typeof c === 'string' && c.trim() && c.indexOf('data:') !== 0 && !(window.mochiMediaIsToken && window.mochiMediaIsToken(c));
+    // FIX 2026-09-15 #533 链接导入的媒体字卡（裸 http(s) 图链）同款排除
+    return typeof c === 'string' && c.trim() && c.indexOf('data:') !== 0 && !/^https?:\/\//i.test(c) && !(window.mochiMediaIsToken && window.mochiMediaIsToken(c));
   })
 );
 if (dir === 'meToTa' && /不要|不用|下次|不了|算了|no/i.test(String(answer))
@@ -4449,11 +4633,17 @@ const quoteSrc = lastMineQuote;
 const quoteSrcIdx = lastMineIdx;
 const quoteKey = quoteSrc && typeof quoteSrc === 'object' ? String(quoteSrc.t || '') + '\n' + (quoteSrc.imgs || []).join() : String(quoteSrc || '');
 const c = cfg();
+// FIX 2026-09-16 #571 字卡回复延迟遥测：用户报「字卡延迟反应卡顿5、6秒/3、4秒」（iPhone 14 Pro
+//   Safari 等多 iOS 机型）——现场诊断 63fps/无长任务/字卡库仅 11KB，回复等待全部来自本函数
+//   的「回复速度」设定随机（默认 rs-min=1~rs-max=40 秒），把设定值与实测落地耗时打进
+//   设置→复制诊断信息，下次报障可一眼区分「设定即此延迟」与「真处理卡顿」。零行为改动。
+try { window.__replyWaitT0 = Date.now(); } catch (eRW) {}
 if (hit(c['rn-prob'])) {
 setTimeout(() => { if (!sameCid()) return; addIn('', { special: 'read' }); }, randInt(1000, 4000));
 return;
 }
 const delay = (c['rs-min'] + Math.random() * Math.max(1, c['rs-max'] - c['rs-min'])) * 1000;
+try { window.__rsDrawS = Math.round(delay / 100) / 10; } catch (eRD) {} // #571 本次掷到的设定延迟（秒）
 showTyping();
 setTimeout(() => {
 if (!sameCid()) { hideTyping(); return; }
@@ -4542,6 +4732,14 @@ let m = null;
 // #349/#350 tag 规则：单气泡＝按抽到的字卡长度（全部 >4 字完整句→「词典」；含 1~4 字短卡→「词典拼字」）；
 // 多回复逐卡连发＝固定「词典逐卡连发」（每条气泡都带，一眼区分这是逐卡连发玩法）
 const dictTag = (rep.spell && rep.spell.every(t => (t || '').length > 4)) ? '词典' : '词典拼字';
+// FIX 2026-09-16 #553 撤回先掷签后投递（#345 同族收口②：回复链）——rc-prob 原在 addIn 之后
+// 才掷：桌面横幅/系统通知已把内容承诺给用户（如「早安」），900ms 后 partialRetractMsg 撤回＝
+// 进聊天只剩撤回墓碑/缺段正文＋同批其它字卡＝「弹窗说的那句话压根没有，是别的字卡」（OPPO
+// Reno6 雨见/红米 K80 等多机型同现，与设备无关；scheduleReply/continueChat/拍一拍追问共经此
+// 路径）。对齐 tryAutoSend #345 口径：投递前定生死——命中撤回的本条 silent 静默落地（不弹
+// 横幅/系统通知、不播音效，未读角标照增——墓碑也是未读事件），900ms 后照常撤回；rc-refix
+// 补发保持正常投递（此刻弹通知名正言顺，内容不会再消失）。
+const willRetractR = hit(c['rc-prob']);
 if (rep.spell && rep.spellOne) {
 m = addIn(rep.spell.join(' '), {
 quote: quote,
@@ -4549,7 +4747,7 @@ qside: 'out',
 qidx: quote ? quoteIdx : undefined,
 type: 'text',
 parts: rep.parts,
-silent: silent,
+silent: silent || willRetractR,
 tag: dictTag,
 tagNoDup: true
 });
@@ -4567,7 +4765,7 @@ qside: 'out',
 qidx: (si === 0 && quote) ? quoteIdx : undefined,
 type: 'text',
 parts: si === rep.spell.length - 1 ? spellPartsSync(rep.spell[si], spellImgParts) : null,
-silent: si > 0 ? true : silent,
+silent: si > 0 ? true : (silent || willRetractR),
 // #350：逐卡连发的每条气泡挂「词典逐卡连发」tag（与单气泡的词典/词典拼字区分，
 // tagNoDup 不重复正文，chip 随消息持久化重进聊天仍在）
 tag: '词典逐卡连发',
@@ -4582,12 +4780,12 @@ qside: 'out',
 qidx: quote ? quoteIdx : undefined,
 type: 'text',
 parts: rep.parts,
-silent: silent,
+silent: silent || willRetractR,
 tag: '梦角自由造句',
 tagNoDup: true
 });
 } else {
-m = addIn(rep.text, { quote: quote, qside: 'out', qidx: quote ? quoteIdx : undefined, type: rep.type, parts: rep.parts, silent: silent });
+m = addIn(rep.text, { quote: quote, qside: 'out', qidx: quote ? quoteIdx : undefined, type: rep.type, parts: rep.parts, silent: silent || willRetractR });
 }
 const _favProbMsg = (window.favCfg ? window.favCfg().taMsg : 30);
 if (lastMineText && Math.random() * 100 < _favProbMsg) {
@@ -4661,7 +4859,7 @@ saveMsgs();
 // v3.14.x：移除 20% 预掷门控——与 checkCare 内部概率叠加后第 2 天起触发率仅 ~12%，体感「只有第一天会关心」；防刷屏由其内部同日一条冷却兜底
 try { window.periodCheckCare && window.periodCheckCare(); } catch (e) {}
 }
-if (hit(c['rc-prob'])) {
+if (willRetractR) {
 	setTimeout(() => {
 	// FIX 2026-09-13 #412 同源守卫：m 为 null（去重命中）时 partialRetractMsg 读 dataset 也会崩
 	if (!sameCid() || !m) return;
@@ -5483,8 +5681,12 @@ setTimeout(() => {
 hideTyping();
 if (hit(c2['touch-prob'])) { performPoke(); return; }
 const r = genOneReply(c2);
-const m2 = addIn(r.text, { type: r.type });
-if (hit(c2['rc-prob'])) {
+// FIX 2026-09-16 #553 撤回先掷签（#345 同族收口③：拍一拍追问）——原与 #345 修复前的
+// tryAutoSend 同病：addIn 弹横幅/系统通知后才掷 rc-prob，900ms 后 retractMsg＝通知已承诺的
+// 内容进聊天没有。投递前定生死：命中撤回的本条静默落地（未读角标照增），900ms 后照常撤回。
+const willRetractP = hit(c2['rc-prob']);
+const m2 = addIn(r.text, { type: r.type, silent: willRetractP });
+if (willRetractP && m2) {
 setTimeout(() => { retractMsg(m2, 'in'); }, 900);
 }
 }, randInt(800, 2000));
@@ -5638,20 +5840,26 @@ renderPokeGroupsBar(groups);
 if (!pokeList) return;
 pokeList.innerHTML = '';
 if (!groups.length) {
-pokeList.innerHTML = pokeMode === 'public'
+// FIX 2026-09-16 #575：字卡还在从 IDB 取回（iOS 挂后台杀连接时 6~14s）→ 出加载占位，
+// 不把「暂无拍一拍字卡」空态挂上去（会被当成字卡丢了）；取回完成由 done 回调重渲替换
+pokeList.innerHTML = ccPanelsFetching
+? ccLoadRowHtml('正在加载拍一拍字卡…')
+: (pokeMode === 'public'
 ? '<div class="cc-empty">暂无公用拍一拍<br>请到 字卡库 → 公用字卡 → 拍一拍 添加</div>'
 : pokeMode === 'ta'
 ? '<div class="cc-empty">暂无拍一拍字卡<br>请到 字卡库 → 专属字卡 → 拍一拍 添加</div>'
-: '<div class="cc-empty">暂无拍一拍字卡<br>在下方输入文字，点「存入」添加</div>';
+: '<div class="cc-empty">暂无拍一拍字卡<br>在下方输入文字，点「存入」添加</div>');
 return;
 }
 const cur = groups.find(g => g.key === pokeCurGroup) || groups[0];
 if (!cur.cards.length) {
-pokeList.innerHTML = pokeMode === 'public'
+pokeList.innerHTML = ccPanelsFetching
+? ccLoadRowHtml('正在加载该分组拍一拍…')
+: (pokeMode === 'public'
 ? '<div class="cc-empty">该分组暂无公用拍一拍<br>请到 字卡库 → 公用字卡 → 拍一拍 添加</div>'
 : pokeMode === 'ta'
 ? '<div class="cc-empty">该分组暂无拍一拍字卡<br>请到 字卡库 → 专属字卡 → 拍一拍 添加</div>'
-: '<div class="cc-empty">该分组暂无拍一拍<br>在下方输入文字，点「存入」添加到该分组</div>';
+: '<div class="cc-empty">该分组暂无拍一拍<br>在下方输入文字，点「存入」添加到该分组</div>');
 return;
 }
 cur.cards.forEach((c, i) => {
@@ -5949,9 +6157,11 @@ const k = RP_DAILY_PREFIX + new Date().toISOString().slice(0, 10);
 store.set(k, String((Number(store.get(k)) || 0) + 1));
 }
 // v3.15.x：小游戏联动心意币——按日封顶发放（fen），返回实际入账分值（0=今日已到顶）
+// FIX 2026-09-16：日封顶键 UTC 日期改本地日期（UTC 口径下北京时间 0-8 点的奖励记到前一天）
+function rpLocalDay() { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
 function rpGameCoinGrant(gameKey, fen, capFen) {
 if (!fen || fen <= 0) return 0;
-const k = 'ml2_coin_' + gameKey + '_' + new Date().toISOString().slice(0, 10);
+const k = 'ml2_coin_' + gameKey + '_' + rpLocalDay();
 const cur = Number(store.get(k)) || 0;
 if (cur >= capFen) return 0;
 const real = Math.min(fen, capFen - cur);
@@ -6714,6 +6924,7 @@ chatAskType = btn.dataset.atype === 'single' ? 'single' : 'text';
 typeRow.querySelectorAll('.chat-ask-type-btn').forEach(b => b.classList.toggle('sel', b === btn));
 syncOptsHidden();
 askBoxes().forEach(({ box }) => {
+if (!askBoxNeedsLayerFix(box)) return; // #538：原生输入框不进整页 reflow
 try {
 box.style.transform = '';
 void box.offsetHeight;
@@ -6743,19 +6954,35 @@ function askBoxes() {
 const arr = [chatAskInput, document.getElementById('chat-ask-opts')];
 return arr.filter(Boolean).map(el => ({ inp: el, box: el.__ceBox || el }));
 }
+// FIX 2026-09-15 #538 合成层补救是「安卓 ce-box 专用」，iOS 不得参与。
+// 用户报障（iPhone 17 Safari，明说其他设备型号也有）：「向他提问板块的输入框一直上弹，
+// 无法直接拉到顶部停留输入问题」+「信件板块输入框输入文字后一直上弹，每个字符输入都会闪字」。
+// 根因：mobile-adapt 只在安卓把文本输入框转成 contenteditable .ce-box（iOS 保留原生输入框）；
+// 半框被键盘平移时 ce-box 的**文字合成层**会停在旧位（文字与框分离），故这里给 box 贴
+// transform:translateZ(0) 建层、并在 vv.resize/.phone 高度变化时反复 `transform='' →
+// 强制 offsetHeight 整页 reflow → 再贴回`。这套手段对安卓 ce-box 是对的，但它没有任何
+// 平台/能力判定，iOS 也照跑：被反复 toggle 的是**聚焦中的原生 input**，每次触发一次同步
+// 整页重排、并把它提成独立合成层与布局脱同步 → 肉眼就是「输入框一直上弹、逐字闪」。
+// 判定不靠机型：原生输入框（无 __ceBox）本来就没有「合成层文字与框分离」问题——只有
+// ce-box 才需要这套补救，无 ce-box 时整段为 no-op，其所属设备行为完全不变。
+function askBoxNeedsLayerFix(box) { try { return !!(box && box.__ceInp); } catch (e) { return false; } }
 function applyAskComposeLayers() {
 askBoxes().forEach(({ box }) => {
+if (!askBoxNeedsLayerFix(box)) return;
 try { box.style.transform = 'translateZ(0)'; box.style.willChange = 'transform'; } catch (e) {}
 });
 }
 function clearAskComposeLayers() {
 askBoxes().forEach(({ box }) => {
+if (!askBoxNeedsLayerFix(box)) return;
 try { box.style.transform = ''; box.style.willChange = ''; } catch (e) {}
 });
 }
 let askKbRefreshStop = null;
 function startAskKbRefresh() {
 if (askKbRefreshStop) return;
+// 没有需要救的 ce-box 就不装监听/定时器（iOS 原生输入框场景＝零开销、零 reflow）
+if (!askBoxes().some(({ box }) => askBoxNeedsLayerFix(box))) return;
 const vv = window.visualViewport;
 if (!vv) return;
 let t = null;
@@ -6764,6 +6991,7 @@ if (t) clearTimeout(t);
 t = setTimeout(() => {
 t = null;
 askBoxes().forEach(({ box }) => {
+if (!askBoxNeedsLayerFix(box)) return; // #538：原生输入框不进整页 reflow
 try {
 box.style.transform = '';
 void box.offsetHeight; // 强制 reflow，浏览器按新位置重建合成层
@@ -7677,7 +7905,9 @@ addRec({ side: 'in', special: 'snake', snkResult: d.result, snkPLen: d.pLen, snk
 // v3.16.x：贪吃蛇改为双方同步同额入账（不再只给赢家），记赚钱流水「贪吃蛇」
 try {
 const snkWinFen = Math.random() < 0.2 ? 5200 : 1314;
-const real = rpGameCoinGrant('snake', d.result === 'draw' ? 520 : snkWinFen, 10400);
+// FIX 2026-09-16：幸运日（游乐室）奖励 ×2，仍受日封顶约束
+const snkMult = (window.arcadeMult && window.arcadeMult('snake')) || 1;
+const real = rpGameCoinGrant('snake', (d.result === 'draw' ? 520 : snkWinFen) * snkMult, 10400);
 if (real > 0) {
 const w = rpWalletGet();
 w.myBalance += real; w.systemBalance += real;
@@ -7724,11 +7954,26 @@ try {
 if (window.libScopesDeferred && window.hydrateLibScopes &&
 window.libScopesDeferred(['public', 'own'])) {
 try { toast('字卡较多，正在加载…'); } catch (e) {}
-window.hydrateLibScopes(['public', 'own'], done);
+// FIX 2026-09-16 #575：取回期间给面板「加载占位」，不再让「暂无表情包／暂无拍一拍字卡」
+//   空态挂着——iOS 挂后台杀 IDB 连接时这段要等 6~14s，空态会被用户当成「我的字卡丢了」
+//   （#574 字卡库同族）。ccPanelsFetching 让 renderEmojiPanel/renderPokeCard 改出占位行；
+//   done 回来（或取回失败）即清标记并重渲一次，占位行必被真实内容/真空态替换。
+ccPanelsFetching = true;
+window.hydrateLibScopes(['public', 'own'], function () {
+ccPanelsFetching = false;
+try { if (done) done(); } catch (e) {}
+});
+try { if (done) done(); } catch (e) {} // 立即重渲一次：把当前空态换成加载占位
 return true;
 }
 } catch (e) {}
 return false;
+}
+// #575：取回中的统一占位行（.mochi-load-row 见 chat-pages.css，与字卡库 #574 同观感）
+var ccPanelsFetching = false; // var：避开「函数先于 let 执行」的 TDZ 风险（历史事故族）
+var myeLoading = false;
+function ccLoadRowHtml(txt) {
+return '<div class="mochi-load-row"><span class="mochi-spin"></span>' + txt + '</div>';
 }
 function openPokeCard(fromGesture) {
 if (!pokeCard) return;
@@ -8822,9 +9067,14 @@ return true;
 }
 function myeHydrateFallback() {
 if (!window.idbHydrateKey) return;
+// FIX 2026-09-16 #575：取回期间保持等待态（面板开着已出占位行）；无论取回成功/失败/无值，
+//   落定时都要重渲一次——否则占位行会永远挂在那里盖住真空态。
+myeLoading = true;
+try { if (emojiPanel && !emojiPanel.hidden && emojiMode === 'mine') renderEmojiPanel(); } catch (e) {}
 window.idbHydrateKey(MYE_KEY()).then(ok => {
-if (ok !== true) return;
-try { const raw = myEmojiStore().get('my-emoji-groups'); if (raw) myeApplyIdb(raw); } catch (e) {}
+myeLoading = false;
+try { const raw = myEmojiStore().get('my-emoji-groups'); if (ok === true && raw) myeApplyIdb(raw); } catch (e) {}
+try { if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel(); } catch (e) {}
 });
 }
 function myeSaveJson() { try { return JSON.stringify(myGroups || []); } catch (e) { return '[]'; } }
@@ -9089,10 +9339,20 @@ function emojiWarmGroupTokens(arr) {
 // 新建→每次都重载（低端机解码风暴、流量机型重复请求）。短路=算本次目标内容指纹，与上次成功
 // 渲染一致且 DOM 仍在→跳过重建复用现有 img（零机型分支，懒加载/预热/批量管理能力不删）。
 let emojiRenderSig = '';
+let emojiRecNow = null; // #558 最近使用：renderEmojiPanel 每次渲染先解析一份，签名函数/分组条共用（#457 哨兵锚定本函数签名，参数不扩）
 function emojiRenderSigTarget(hts, pn) {
   try {
+    var rec = emojiRecNow;
     var grp = emojiMode === 'public' ? pubCurGroup : (emojiMode === 'ta' ? emojiCurGroup : myCurGroup);
     var sig = emojiMode + '|' + grp + '|' + (myBatchMode ? '1' : '0') + '|' + (hts ? '1' : '0') + '|' + (pn || '') + '|';
+    var _ident = (typeof window.ccMediaCardIdent === 'function') ? window.ccMediaCardIdent : null;
+    if (grp === '__recent__') { // #558 最近使用虚拟分组：内容=按身份回查三池的解析结果
+      var rs = (rec && rec.srcs) ? rec.srcs : [];
+      if (!rs.length) return sig + 'empty';
+      var rl = 0;
+      for (var r = 0; r < rs.length; r++) rl += (_ident ? _ident(rs[r]) : rs[r]).length;
+      return sig + rs.length + '|' + rl + '|' + (_ident ? _ident(rs[0]) : rs[0]) + '|' + (_ident ? _ident(rs[rs.length - 1]) : rs[rs.length - 1]);
+    }
     var arr = null;
     if (emojiMode !== 'mine') {
       var isPub = emojiMode === 'public';
@@ -9102,12 +9362,68 @@ function emojiRenderSigTarget(hts, pn) {
       for (var j = 0; j < myGroups.length; j++) { if (myGroups[j][0] === grp) { arr = myGroups[j][1]; break; } }
     }
     if (!arr || !arr.length) return sig + 'empty';
+    // FIX 2026-09-16 #547 签名按「令牌稳定身份」算：池视图卡被后台令牌化（dataURL→@@m:token）后
+    // 原文变了但显示内容没变，按原文签名会误判内容变化→整面板重建→图片全部重新解析（#457 短路
+    // 被翻转账废掉＝「每次开表情包都重新加载」复发）。ccMediaCardIdent（chatcard.js 提供）对两种
+    // 形态算同一身份；缺失时退回原文，行为同旧版。
     var sumLen = 0;
-    for (var k = 0; k < arr.length; k++) sumLen += (arr[k] || '').length;
-    return sig + arr.length + '|' + sumLen + '|' + (arr[0] || '') + '|' + (arr[arr.length - 1] || '');
+    for (var k = 0; k < arr.length; k++) sumLen += (_ident ? _ident(arr[k] || '') : (arr[k] || '')).length;
+    var _f = _ident ? _ident(arr[0] || '') : (arr[0] || '');
+    var _l = _ident ? _ident(arr[arr.length - 1] || '') : (arr[arr.length - 1] || '');
+    return sig + arr.length + '|' + sumLen + '|' + _f + '|' + _l;
   } catch (e) { return ''; }
 }
-function renderEmojiGroupsBar() {
+// ===== #558 表情面板「最近使用」=====
+// 点击表情（发送/插入信纸）时按「令牌稳定身份」（ccMediaCardIdent，#547 提供：原始大图卡与
+// @@m: 令牌卡同一短指纹）记录最近用过的 N 张，全局根键 emoji-recent（跨桌面共享，同
+// my-emoji-groups 口径；contacts.js EXCLUDE 已登记防 migrateLegacy 误迁进 default 并删根键）。
+// 渲染时按身份回查三池（TA 专属/公用/我的）还原真实 src——令牌化翻转/换桌面后身份不变，
+// 当前面板解析不到的表情自动跳过（不显示死项）。
+const EMOJI_RECENT_KEY = 'emoji-recent';
+const EMOJI_RECENT_MAX = 8;
+function emojiRecentIdents() {
+try {
+const v = JSON.parse(myEmojiStore().get(EMOJI_RECENT_KEY) || '[]');
+if (Array.isArray(v)) return v.filter(x => typeof x === 'string' && x).slice(0, EMOJI_RECENT_MAX);
+} catch (e) {}
+return [];
+}
+function emojiRecentSave(ids) {
+try { myEmojiStore().set(EMOJI_RECENT_KEY, JSON.stringify(ids.slice(0, EMOJI_RECENT_MAX))); } catch (e) {}
+}
+function emojiRecordRecent(src) {
+if (typeof src !== 'string' || !src) return;
+const id = (typeof window.ccMediaCardIdent === 'function') ? window.ccMediaCardIdent(src) : src.slice(0, 120);
+const ids = emojiRecentIdents().filter(x => x !== id);
+ids.unshift(id);
+emojiRecentSave(ids);
+}
+// 最近使用解析：身份集合 → 三池扫描还原（ident 是常数级切片，全库扫描成本可控）；
+// 同内容在多分组重复出现时只取首个，防最近区重复占位。
+function emojiRecentResolved() {
+const ids = emojiRecentIdents();
+const srcs = [];
+if (ids.length && typeof window.ccMediaCardIdent === 'function') {
+const want = {};
+ids.forEach((x, i) => { want[x] = i; });
+const found = [];
+const scan = (arr) => {
+(arr || []).forEach(src => {
+if (typeof src !== 'string' || !src) return;
+const id = window.ccMediaCardIdent(src);
+const oi = want[id];
+if (oi !== undefined && oi >= 0) { found.push([oi, src]); want[id] = -1; }
+});
+};
+((window.getScopedGroups && window.getScopedGroups('sticker', 'own')) || []).forEach(g => scan(g[1]));
+((window.getScopedGroups && window.getScopedGroups('sticker', 'public')) || []).forEach(g => scan(g[1]));
+(myGroups || []).forEach(g => scan(g[1]));
+found.sort((a, b) => a[0] - b[0]);
+found.forEach(x => srcs.push(x[1]));
+}
+return { ids: ids, srcs: srcs.slice(0, EMOJI_RECENT_MAX) };
+}
+function renderEmojiGroupsBar(rec) {
 if (!emojiGroupsBar) return;
 emojiGroupsBar.innerHTML = '';
 let list = [];
@@ -9122,8 +9438,13 @@ cur = emojiCurGroup;
 list = myGroups;
 cur = myCurGroup;
 }
-if (cur && !list.some(g => g[0] === cur)) cur = '';
-const chips = list.filter(g => emojiMode === 'mine' ? true : g[1].length).map(g => [g[0], g[0] + g[1].length]);
+// #558 「⏱最近使用」chip 排最前；可解析到内容的才显示；我的批量管理模式不显示
+//（批量勾选只对分组原卡有意义，最近区走直发路径）；上次停在最近分组但本次不可解析时回落。
+const recChipShow = !!(rec && rec.srcs.length) && !(emojiMode === 'mine' && myBatchMode);
+if (cur === '__recent__' && !recChipShow) cur = '';
+if (cur && cur !== '__recent__' && !list.some(g => g[0] === cur)) cur = '';
+const chips = (recChipShow ? [['__recent__', '⏱最近使用']] : [])
+.concat(list.filter(g => emojiMode === 'mine' ? true : g[1].length).map(g => [g[0], g[0] + g[1].length]));
 chips.forEach(([val, label]) => {
 const c = document.createElement('span');
 c.className = 'emoji-g-chip' + (cur === val ? ' sel' : '');
@@ -9175,6 +9496,7 @@ const img = emojiNewImg(src); // #435：统一创建（decoding=async + 懒加�
 	d.appendChild(img);
 	emojiAttachLazy(img);
 	d.addEventListener('click', () => {
+	try { emojiRecordRecent(src); } catch (e0) {} // #558 最近使用：点击即记录（发送/插入都算）
 	if (emojiInsertCb) {
 if (!/^data:/i.test(src) && !emojiInsertAllowUrl) { toast('链接保存的表情暂不支持插入信纸，请发送消息使用'); return; }
 const cb = emojiInsertCb;
@@ -9204,7 +9526,9 @@ const taTabEl = document.querySelector('#emoji-panel .emoji-tab[data-etab="ta"]'
 if (taTabEl) taTabEl.textContent = chatPartnerName() + ' 的表情包';
 if (emojiTools) emojiTools.hidden = emojiMode !== 'mine';
 if (emojiBatch) emojiBatch.hidden = !(emojiMode === 'mine' && myBatchMode);
-renderEmojiGroupsBar();
+var rec = emojiRecentResolved(); // #558：每次渲染解析一次最近使用（身份回查三池），bar 与最近分组/签名共用
+emojiRecNow = rec;
+renderEmojiGroupsBar(rec);
 	// FIX 2026-09-14 #457 内容指纹短路：目标与上次成功渲染一致且 DOM 仍在→跳过重建复用现有 img
 	var _sigTarget = emojiRenderSigTarget(hts, taTabEl ? taTabEl.textContent : '');
 	if (_sigTarget && _sigTarget === emojiRenderSig && emojiList.firstElementChild) return;
@@ -9219,10 +9543,22 @@ const emptyAll = isPub
 ? '<div class="emoji-empty">暂无公用表情包<br>请到 字卡库 → 公用字卡 → 表情包 上传</div>'
 : '<div class="emoji-empty">暂无表情包<br>请到 字卡库 → 专属字卡 → 表情包 上传</div>';
 if (!groups.length) {
-emojiList.innerHTML = emptyAll;
+// FIX 2026-09-16 #575：正在从 IDB 取回字卡（iOS 挂后台杀连接时 6~14s）→ 出加载占位，
+// 不要把「暂无表情包」空态挂上去（用户会当成字卡丢了）。取回完成由 done 回调重渲替换。
+emojiList.innerHTML = ccPanelsFetching ? ccLoadRowHtml('正在加载表情包…') : emptyAll;
+if (ccPanelsFetching) { emojiRenderSig = null; return; } // 占位行在 DOM 里：作废 #457 指纹短路，防重渲被跳过
 return;
 }
 const curn = isPub ? pubCurGroup : emojiCurGroup;
+if (curn === '__recent__') { // #558 最近使用虚拟分组（渲染走 'ta' 直发路径，不进批量勾选）
+if (!rec.srcs.length) {
+emojiList.innerHTML = '<div class="emoji-empty">最近使用的表情不在当前桌面了<br>去分组里发一次就会出现在这里</div>';
+return;
+}
+renderEmojiGroup('__recent__', rec.srcs, 'ta');
+emojiRenderSig = _sigTarget; // #457 渲染成功保存指纹，下次同内容跳过重建
+return;
+}
 if (!curn || !groups.some(x => x[0] === curn)) {
 emojiList.innerHTML = '<div class="emoji-empty">点击上方分组查看表情包</div>';
 return;
@@ -9237,8 +9573,23 @@ return;
 renderEmojiGroup(g[0], g[1], 'ta');
 emojiRenderSig = _sigTarget; // #457 渲染成功保存指纹，下次同内容跳过重建
 } else {
+// #558 最近使用放在「我的表情包是否为空」之前——最近区能解析 TA 专属/公用池的卡，
+// 我的库为空时点它也该出内容（放后面会被「暂无我的表情包」早返回挡掉）
+if (myCurGroup === '__recent__' && !myBatchMode) {
+if (!rec.srcs.length) {
+emojiList.innerHTML = '<div class="emoji-empty">最近使用的表情不在当前桌面了<br>去分组里发一次就会出现在这里</div>';
+return;
+}
+renderEmojiGroup('__recent__', rec.srcs, 'ta');
+emojiRenderSig = _sigTarget;
+return;
+}
 if (!myGroups.length) {
-emojiList.innerHTML = '<div class="emoji-empty">暂无我的表情包<br>点击上方「添加」上传，或「新建分组」</div>';
+// FIX 2026-09-16 #575：我的表情包大键（18MB 级、只进 IDB）取回中 → 同上出加载占位
+emojiList.innerHTML = myeLoading
+? ccLoadRowHtml('正在加载我的表情包…')
+: '<div class="emoji-empty">暂无我的表情包<br>点击上方「添加」上传，或「新建分组」</div>';
+if (myeLoading) { emojiRenderSig = null; return; }
 return;
 }
 if (!myCurGroup) {
@@ -9279,10 +9630,28 @@ emojiInsertAllowUrl = false;
 }
 function reloadMyEmojiFromIdb() {
 if (!window.idbGet) return;
+// FIX 2026-09-16 #547 开门闸：本会话已应用过 IDB 权威值且内存非空就不再整包重读——
+// 大库设备（my-emoji-groups 18MB 级，只进 IDB 不进 LS）每次开面板都白付一次
+// idbGet+JSON.parse（主线程卡顿+堆抖动＝「每次打开都像在加载」）。内存即最新：
+// 写入路径（myEmojiSave/添加/删除）、切桌面（全局键不动）、启动链路（bootRestore/#281）
+// 各有自己的取回入口，这里只负责「本会话第一次把权威值拉进内存」。
+if (window.__myeIdbApplied === true && Array.isArray(myGroups) && myGroups.length) return;
+// FIX 2026-09-16 #575：本会话还没拿到权威值且内存为空＝马上要等 idbGet（大键还要等 hydrate，
+//    iOS 挂后台杀连接时合计 6~14s）。先进入等待态，面板若开着就出「正在加载我的表情包…」，
+//    不再让「暂无我的表情包」空态挂在那儿被当成数据丢了。
+if (!(Array.isArray(myGroups) && myGroups.length)) {
+myeLoading = true;
+try { if (emojiPanel && !emojiPanel.hidden && emojiMode === 'mine') renderEmojiPanel(); } catch (e) {}
+}
 window.idbGet(MYE_KEY()).then(v => {
 // #172：读空（大键挂起/事务超时）不再静默放弃 → hydrate 按需取回
 if (!v) { myeHydrateFallback(); return; }
+myeLoading = false;
 myeApplyIdb(v);
+try { if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel(); } catch (e) {}
+}).catch(() => {
+myeLoading = false;
+try { if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel(); } catch (e) {}
 });
 }
 document.addEventListener('contact-switched', function () {

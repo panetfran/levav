@@ -35,7 +35,7 @@
       { n: '批量发送', d: '一次编排多条消息（表情/图片/文字）按顺序发送', k: '批量 连发', go: ['.app[data-app="chat"]', '#chat-batch-btn'] },
       { n: '语音消息', d: '录音最长 60 秒，试听后发语音', k: '语音 录音 麦克风', go: ['.app[data-app="chat"]', '#chat-mic-btn'] },
       { n: '继续说', d: '让 TA 接着当前话题再说一段（输入栏「继续说」按钮）', k: '继续说 接着 续聊 续写', where: '聊天输入栏上的「继续说」按钮' },
-      { n: '表情包管理', d: '我的表情包分组/上传/批量删除（聊天表情面板）', k: '表情包 表情 管理 上传 分组 斗图', go: ['.app[data-app="chat"]', '#chat-emoji-btn'] },
+      { n: '表情包管理', d: '我的表情包分组/上传/批量删除（聊天表情面板；面板顶部有「⏱ 最近使用」分组，自动记最近发过的表情）', k: '表情包 表情 管理 上传 分组 斗图 最近使用 常用', go: ['.app[data-app="chat"]', '#chat-emoji-btn'] },
       { n: '批量提问问卷', d: '你批量出题，TA 限时作答交卷', k: '问卷 提问 批量 出题 考试 答题', go: ['.tab[data-page="page-chatcard"]', '#li-ta-ask', '#ta-ask-survey-open'] },
       { n: '拍一拍', d: '拍 TA 一下，TA 也会拍回来', k: '拍一拍 互动', go: ['.app[data-app="chat"]', '#more-poke'] },
       { n: '引用回复', d: '引用某条消息回复，可带表情包+文字', k: '引用 回复', where: '聊天里长按任意消息' },
@@ -66,8 +66,10 @@
       { n: '联系人气泡颜色', d: 'TA 发的消息气泡背景色', k: '气泡 颜色 联系人 TA 背景', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-in-bg'] },
       { n: '联系人消息文字颜色', d: 'TA 发的消息文字颜色', k: '文字 颜色 联系人 TA 消息', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-in-ink'] },
       { n: '气泡 CSS', d: '自定义 CSS 进一步美化气泡（进阶）', k: 'css 样式 美化 气泡 进阶', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-css'] },
-      { n: '联系人昵称', d: '改 TA 在聊天里的显示昵称', k: '昵称 名字 联系人 改名', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-lbl-partner'] },
-      { n: '我的昵称', d: '改我在聊天里的显示昵称', k: '昵称 名字 我的 改名', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-lbl-user'] },
+      // #577：昵称分「桌面 / 聊天」两套且互不同步——关键词补上「桌面昵称 / 不同步 / 不一样」，
+      // 用户搜「聊天里名字跟桌面不一样」「改了桌面聊天没变」能搜到这两条并直达设置行。
+      { n: '联系人昵称', d: '改 TA 在聊天里的显示昵称（桌面昵称与聊天昵称互不同步，要各自设置）', k: '昵称 名字 联系人 改名 聊天昵称 桌面昵称 不同步 不一样 没变 显示 TA', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-lbl-partner'] },
+      { n: '我的昵称', d: '改我在聊天里的显示昵称（桌面昵称与聊天昵称互不同步，要各自设置）', k: '昵称 名字 我的 改名 聊天昵称 桌面昵称 不同步 不一样 没变 显示', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-lbl-user'] },
       { n: '联系人头像', d: '换 TA 的头像（可上传/清空）', k: '头像 联系人 换 上传', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-avatar-partner'] },
       { n: '我的头像', d: '换我的头像（可上传/清空）', k: '头像 我的 换 上传', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-avatar-user'] },
       { n: '隐藏发送按钮', d: '隐藏聊天输入栏发送按钮（仍可回车发送）', k: '发送 按钮 隐藏 输入', go: ['.app[data-app="chat"]', '#chat-settings-btn', '#cs-send-show'] },
@@ -126,9 +128,11 @@
     ] },
     { g: '互动与心意', items: [
       { n: '红包', d: '双向红包：预设档/随机/自定义金额、留言与封面', k: '红包 转账 钱', go: ['.app[data-app="chat"]', '#more-rp'] },
-      { n: '心意币 · 心意市集', d: '220+ 件商品分 12 类，送礼给 TA（桌面有独立图标）', k: '市集 商店 礼物 购买 心意币', go: ['.app[data-app="market"]'] },
+      { n: '心意币 · 心意市集', d: '220+ 件商品分 12 类，送礼给 TA；也能许愿让 TA 挑一件送你（桌面有独立图标）', k: '市集 商店 礼物 购买 心意币 心愿单 许愿 TA送我 联系人送我礼物 概率', go: ['.app[data-app="market"]'] },
       { n: '心意柜', d: '收到/送出的礼物册与统计（桌面有独立图标）', k: '礼物柜 收藏 礼物', go: ['.app[data-app="giftbox"]'] },
-      { n: '头像互动', d: '换头像邀请、头像池、定时自动换头像', k: '头像 换头像', go: ['.app[data-app="chat"]', '#more-avatar'] },
+      // #577b：换聊天头像的两条路都要能被搜到——①聊天设置 → 形象（单张上传 / 清空）
+      // ②聊天页「更多功能」→ 头像互动（多张头像库 + 点图即换 + 定时随机换）；两条都只改聊天域
+      { n: '头像互动', d: '换聊天头像：上传多张头像库、点图即换，可开随机自动换头像（与桌面头像独立）', k: '头像 换头像 头像库 上传头像 随机换头像 自动换头像 主动给我换头像 桌面头像', go: ['.app[data-app="chat"]', '#more-avatar'] },
       { n: '漂流瓶', d: '两个世界之间的海：捡瓶子/放瓶子', k: '漂流瓶 海 瓶子', go: ['.app[data-app="chat"]', '#more-drift'] },
       { n: '帮我决定', d: '是/否或自定义选项随机决定，结果可发聊天', k: '决定 选择 纠结', go: ['.app[data-app="chat"]', '#more-decide'] },
       { n: '多人决定', d: '成员名单各自随机出结果，逐行发送', k: '多人 决定 抽签', go: ['.app[data-app="chat"]', '#more-gdecide'] },
@@ -183,6 +187,7 @@
       { n: '背景遮罩', d: '壁纸上的遮罩浓度（压暗/提亮便于看图标）', k: '壁纸 遮罩 遮罩浓度 压暗', go: ['#row-appearance', '#row-bg-mask-op'] },
       { n: '移除背景图片', d: '清除桌面壁纸恢复默认底色', k: '壁纸 背景 移除 删除 清除', go: ['#row-appearance', '#row-bg-remove'] },
       { n: '批量上传图标图片', d: '一次上传多张图批量替换桌面图标', k: '图标 批量 上传 替换', go: ['#row-appearance', '#row-icon-batch'] },
+      { n: '调整图标图片位置', d: '上传图标图片后单独调缩放/左右/上下，即时生效、不用重新上传', k: '图标 图片 位置 移动 缩放 调整 拖动 裁剪', go: ['#row-appearance', '#row-icon-fit'] },
       { n: '小组件颜色', d: '桌面小组件背景颜色自定义', k: '组件 小组件 颜色 背景', go: ['#row-appearance', '#row-widget-color'] },
       { n: '小组件边框颜色', d: '桌面小组件边框颜色自定义', k: '组件 边框 颜色', go: ['#row-appearance', '#row-widget-border'] },
       { n: '按钮颜色', d: '组件内按钮颜色自定义', k: '按钮 颜色 组件', go: ['#row-appearance', '#row-widget-btn'] },
@@ -220,9 +225,10 @@
       { n: '通话设置', d: '来电/接听/挂断等触发概率与通话背景', k: '通话设置 电话 概率', go: ['#row-call-settings'] },
       { n: '通话背景图片', d: '通话页面背景图自定义上传', k: '通话 背景 图片 上传 壁纸', go: ['#row-call-settings', '#call-bg-row'] },
       { n: '移除通话背景', d: '清除通话背景图恢复默认', k: '通话 背景 移除 删除 清除', go: ['#row-call-settings', '#call-bg-remove'] },
-      { n: '数据导出', d: '导出全部数据为备份文件（请定期备份）', k: '导出 备份 数据', go: ['#row-export'] },
-      { n: '数据导入', d: '从备份文件恢复，含预览与进度', k: '导入 恢复 数据', go: ['#row-import'] },
-      { n: '查看存储占用', d: '按功能看本地存储占用，可清诊断记录', k: '存储 占用 空间 清理', go: ['#row-storage-view'] },
+      { n: '数据导出', d: '导出全部数据为备份文件；点开可选「仅聊天记录」（各桌面联系人 + 群聊，换机只搬聊天）', k: '导出 备份 数据 可选 只导出 仅 聊天记录 全部桌面', go: ['#row-export'] },
+      { n: '数据导入', d: '从备份文件恢复（含预览与进度）；点开可选「仅聊天记录」（只恢复各桌面联系人与群聊）', k: '导入 恢复 数据 可选 只导入 仅 聊天记录 全部桌面', go: ['#row-import'] },
+      { n: '查看存储占用', d: '按功能看本地存储占用，可清诊断记录；页内「字卡图去重入库」做字卡库瘦身', k: '存储 占用 空间 清理', go: ['#row-storage-view'] },
+      { n: '字卡库瘦身 · 字卡图去重', d: '把字卡库里的内联图片转成媒体池令牌，同一张图全库只存一份（库键大幅缩小、减轻卡顿；图片显示与发送不变）', k: '字卡 去重 瘦身 存储 图片 卡顿 体积', go: ['#row-storage-view'] },
       { n: '卡顿自检 · 一键优化', d: '字卡库数据过大卡顿时，扫描分级并一键预热修复', k: '卡顿 优化 性能 流畅 预热', go: ['#row-perf-optimize'] },
       { n: '字卡使用状态自检', d: '自定义/系统预设字卡能不能被用到，一次看清（含二级锁、各开关/概率、分组停用）', k: '字卡 自检 状态 锁 概率 停用 分组 用不了', go: ['#row-card-audit'] },
       { n: '清除本地数据', d: '清空本机应用数据（重置前请先导出备份）', k: '清除 重置 清空 恢复出厂', go: ['#row-reset'] },
@@ -235,6 +241,8 @@
       { n: '设备兼容诊断', d: '一键复制本机环境信息发给开发者排查', k: '诊断 兼容 环境 报障', go: ['#row-diagnostics'] },
       { n: '屏幕适配诊断', d: '顶部空白/底部裁切/缩放异常一键定位', k: '屏幕 适配 诊断 顶部空白 裁切', go: ['#row-screen-diag'] },
       { n: '功能诊断', d: '逐个测试全部功能是否正常（约15秒）', k: '功能诊断 自检 测试', go: ['#row-func-diag'] },
+      { n: '新手引导', d: '3 步上手：设置「我」和「TA」→ 添加字卡 → 开始聊天（含桌面 / 聊天两套昵称的区别；全新环境首次打开会自动弹一次）', k: '新手 引导 上手 教程 怎么开始 不会用 从哪开始 昵称 桌面 聊天', go: ['#row-guidebook'] },
+      { n: '使用说明', d: '完整说明：快速开始 / 安装方式 / iPhone·iOS 限制 / 数据备份 / 常见问题', k: '使用说明 教程 帮助 安装 ios 限制 备份 常见问题', go: ['#row-guide'] },
       { n: '功能介绍与许可', d: '原创声明、二传二改许可、灵感来源', k: '介绍 许可 关于 版权', go: ['#row-about'] }
     ] }
   ];
@@ -388,23 +396,44 @@
       if (home) home.style.display = 'none';
       if (tags) tags.style.display = 'none';
       let hits = 0;
+      // FIX 2026-09-16 #573 搜索精准化：①多词空格 AND（每词都须命中；此前整串当单词条）；
+      // ②组内按 匹配质量（精确→开头→包含，window.mochiSearch.rank，原位次决胜）重排命中行。
+      // 首次搜索前快照原始行序 __fhubOrder：行序既供 item 对位（排序后 children 不再等于
+      // items 下标），也供清空搜索时还原非搜索视图。entryRow 点击闭包按 it 绑定＝重排安全。
+      // 注意：q 已被 norm() 去空格，多词必须从原始输入取词（否则「红包 经期」并成单串）
+      const raw = input ? input.value : '';
+      const terms = window.mochiSearch ? window.mochiSearch.terms(raw) : raw.trim().toLowerCase().split(/\s+/);
+      const kwRaw = raw.trim();
       HUB.forEach((grp, gi) => {
         let gHit = 0;
-        const rows = cardRows(gi);
+        const card = groups[gi] ? groups[gi].querySelector('.set-group') : null;
+        if (card && !card.__fhubOrder) card.__fhubOrder = Array.prototype.slice.call(card.children);
+        const base = (card && card.__fhubOrder) || cardRows(gi);
+        const rankByRow = new Map();
         grp.items.forEach((it, ii) => {
           const hay = norm(it.n + it.d + (it.k || '') + (it.g || ''));
-          const show = hay.indexOf(q) >= 0;
-          const el = rows[ii];
+          const show = terms.every(w => hay.indexOf(w) >= 0);
+          const el = base[ii];
           if (el) el.style.display = show ? '' : 'none';
-          if (show) { gHit++; hits++; }
+          if (show) { gHit++; hits++; rankByRow.set(ii, window.mochiSearch ? window.mochiSearch.rank(it.n, kwRaw) : 2); }
         });
+        if (card && card.__fhubOrder) {
+          card.__fhubOrder
+            .map((el, ii) => ({ el, ii, rk: rankByRow.has(ii) ? rankByRow.get(ii) : 9 }))
+            .sort((a, b) => a.rk - b.rk || a.ii - b.ii)
+            .forEach(o => card.appendChild(o.el));
+        }
         if (groups[gi]) groups[gi].style.display = gHit ? '' : 'none';
       });
       if (empty) empty.hidden = hits > 0;
       return;
     }
-    // 清空搜索 → 复位所有行显隐，再按当前视图显首页或单组
+    // 清空搜索 → 复位所有行显隐与原始行序，再按当前视图显首页或单组
     Array.prototype.forEach.call(body.querySelectorAll('.set-row'), r => { r.style.display = ''; });
+    groups.forEach((el) => {
+      const card = el ? el.querySelector('.set-group') : null;
+      if (card && card.__fhubOrder) card.__fhubOrder.forEach(node => card.appendChild(node));
+    });
     if (home) home.style.display = view === 'home' ? '' : 'none';
     if (tags) {
       tags.style.display = view === 'home' ? 'none' : '';
@@ -439,27 +468,61 @@
     toast('「' + it.n + '」的位置：' + (it.where || it.g));
   }
 
-  // ---- 返回设置页（与 row-about/about-back 同一导航模式） ----
+  // ---- 打开：两处入口共用（设置行 / 桌面图标），每次进入复位到宫格首页并清空搜索 ----
+  // hubFrom 记住来源，返回键据此回桌面或回设置页（原实现恒回设置页，桌面进入会迷路）
+  let hubFrom = 'setting';
+  function openHub(from, kw) {
+    document.querySelectorAll('.page').forEach(p => { p.hidden = true; });
+    page.hidden = false;
+    hubFrom = from;
+    if (input) input.value = kw ? String(kw) : '';
+    view = 'home';
+    update();
+    // 带关键词进入＝直接搜索态：聚焦搜索框方便改词（无键盘环境静默）
+    if (kw && input) { try { input.focus(); } catch (e) {} }
+  }
+
+  // ---- 返回：从设置进入回设置页，从桌面图标进入回桌面 ----
   const back = document.getElementById('fhub-back');
   if (back) {
     back.addEventListener('click', () => {
       document.querySelectorAll('.page').forEach(p => { p.hidden = true; });
-      const setPage = document.getElementById('page-setting');
-      if (setPage) setPage.hidden = false;
+      const target = document.getElementById(hubFrom === 'desktop' ? 'page-phone' : 'page-setting');
+      if (target) target.hidden = false;
     });
   }
 
-  // ---- 设置页入口行：每次进入复位到宫格首页并清空搜索 ----
+  // ---- 设置页入口行 ----
   const row = document.getElementById('row-featurehub');
-  if (row) {
-    row.addEventListener('click', () => {
-      document.querySelectorAll('.page').forEach(p => { p.hidden = true; });
-      page.hidden = false;
-      if (input) input.value = '';
-      view = 'home';
-      update();
-    });
-  }
+  if (row) row.addEventListener('click', () => openHub('setting'));
+
+  // #542 曾有「桌面图标点开即聚焦搜索框」入口，#543 按用户要求撤出桌面（挤占原布局网格）；
+  // hubFrom 恒为 'setting'，返回键固定回设置页，机制保留备用。
+
+  // ---- #549 全局入口：设置搜索「在功能大全中搜索『X』」跳这里并带入关键词（返回回设置页） ----
+  window.mochiFeatureHubOpen = function (kw) { openHub('setting', kw); };
+
+  // ---- #572 只读查询：按「入口选择器」取本目录的条目，供 page-coach.js 在页面内渲染
+  // 「这页还有什么」——说明文案与跳转链（go）单一事实源，页面提示与功能大全不会分叉成两套；
+  // 只读不改目录数据、不重复实现任何打开逻辑（调用方仍是链式 .click() 既有入口）。
+  window.mochiHubItemsFor = function (sels) {
+    try {
+      const want = Array.isArray(sels) ? sels : [sels];
+      const out = [];
+      HUB.forEach(function (g) {
+        (g.items || []).forEach(function (it) {
+          const go = it.go || [];
+          for (let i = 0; i < want.length; i++) {
+            if (want[i] && go.indexOf(want[i]) >= 0) {
+              out.push({ g: g.g, n: it.n, d: it.d, go: go.slice(), where: it.where || '' });
+              return;
+            }
+          }
+        });
+      });
+      return out;
+    } catch (e) { return []; }
+  };
 
   update();
 })();

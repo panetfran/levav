@@ -41,7 +41,7 @@
     // 群聊美化（gc-beauty）、开启开关（group-chat-enabled）都是群聊（全局功能）的
     // 根命名空间键，绝不能迁移进 default 桌面（否则切换桌面后设置读不到全局值、仿佛"丢失"）
     'gc-profiles', 'gc-beauty', 'group-chat-enabled',
-    '__last-backup', '__last-backup-remind', '__onboard-done', '__edge-backup-hint-done', '__auto-backup-snapshot',
+    '__last-backup', '__last-backup-remind', '__onboard-done', '__guide-done', '__edge-backup-hint-done', '__auto-backup-snapshot',
     // #260：__ka-hb（后台保活心跳取证键，bg-keep.js 隐藏期每 30s 写 IDB 根键）——
     // 全局取证键（跨桌面语义相同），绝不随联系人隔离迁移
     '__ka-hb',
@@ -61,6 +61,15 @@
     // 都是全局根键，绝不能被 migrateLegacy 当旧顶层业务键迁进 default 桌面
     // （否则全局键被搬走/删除：表情包"消失"+ 迁移标记丢失每次重跑）
     'my-emoji-groups', 'mye-global-migrated',
+    // #558（2026-09-16，AI-A chat.js 会话跨域登记 WORKLOG）：表情面板「最近使用」（chat.js
+    // emojiRecordRecent/emojiRecentResolved）——存最近点用表情的令牌稳定身份串（≤8 条、每条
+    // <100 字符的小 JSON），全局根键跨桌面共享（同 my-emoji-groups 口径）。漏排除会被
+    // migrateLegacy 当旧顶层业务键迁进 default 并删根键（最近区非 default 桌面清空）。
+    'emoji-recent',
+    // #572（2026-09-16，AI-A page-coach.js 会话跨域登记 WORKLOG）：页面内「先做这个」提示的
+    // 已看页标记（__coach-seen 存已提示过的页 id 数组）——全局根键，漏排除会被 migrateLegacy
+    // 当旧顶层业务键迁进 default 并删根键，提示在非 default 桌面反复弹。
+    '__coach-seen',
     // #424（2026-09-13）：媒体池自动体检节流状态（media-pool.js mochiMediaAutoCheck）——
     // {t,missing,snooze} 全局根键，丢/被迁走只会导致弹窗节奏错乱，但不排除会被 migrateLegacy
     // 当旧顶层业务键迁进 default 并删根键，照例登记。

@@ -117,6 +117,15 @@
   const ccTokMemo = new Map();
   let ccTokMemoChars = 0;
   const CC_TOK_MEMO_MAX_CHARS = 8 * 1024 * 1024;
+  // FIX 2026-09-16 #547 表情面板每次打开图片重载复发（多机型同发，#457 短路被令牌化翻转账废掉）：
+  // 面板签名（chat.js emojiRenderSigTarget）按卡原文算——池视图被本函数异步令牌化后（dataURL→@@m:token），
+  // 同一张卡签名变了 → 下次开面板被误判「内容变化」→ 整面板 innerHTML 重建 + 全部图走媒体池重新解析
+  // ＝用户视角「每次打开表情包都重新加载一遍」。大库令牌化 pass 要跑数秒，期间每次开面板都撞上翻转。
+  // 修法＝身份与令牌化解耦：ccTokMemoRev 登记(token→内容短指纹)，ccMediaCardIdent 对
+  // 「原始大图卡」与「已令牌化卡」算出同一个身份串；memo 有预算会淘汰，rev 不淘汰
+  //（token 内容寻址永不变，每条几十字符，量级=贴纸张数×50B）。
+  const ccTokMemoRev = new Map();
+  function ccMediaFrag(body) { return 'M' + body.length + ':' + body.slice(8, 48); }
   function ccTokenizeGiantMedia(g, slot) {
     if (!window.mochiMediaTokenize) return;
     const jobs = [];
@@ -145,6 +154,7 @@
           if (gen !== ccTokGen[sl]) return;
           if (tok) {
             ccTokMemo.set(j.body, tok); ccTokMemoChars += j.body.length;
+            ccTokMemoRev.set(tok, ccMediaFrag(j.body)); // #547：token→短指纹，供 ccMediaCardIdent 令牌化前后同身份
             while (ccTokMemoChars > CC_TOK_MEMO_MAX_CHARS && ccTokMemo.size) {
               const fk = ccTokMemo.keys().next().value;
               ccTokMemoChars -= fk.length; ccTokMemo.delete(fk);
@@ -203,6 +213,10 @@
   // 每次保存/读取对整库 JSON.stringify/parse 在 iOS WebKit 上是秒级长任务=卡死根因，
   // 砍到 512KB base64（≈380KB 文件）守住单卡体积；已有大 GIF 靠用户手动清理（先备份）。
   const CC_GIF_MAX_B64 = 512 * 1024;
+  // FIX 2026-09-16 #554（TASKS #128）字卡图令牌化最小体积（base64 字符数，≈3KB 图）：
+  // 再小的是图标/占位，令牌化收益不抵池条目与异步解析开销；≥此值的上传与存量迁移都走
+  // 媒体池令牌（mochiMediaTokenize 自身另有 ≥1024 硬门，此处收紧到 4096）。
+  const CC_CC_TOK_MIN = 4096;
   function mergeWithPublic(g) {
     const p = pubGroupsRaw();
     let has = false;
@@ -1045,13 +1059,26 @@
     // v3.32.x：功能字卡双入口角标——专属行=专属库功能字卡、公用行=公用库功能字卡
     //（各自走缓存，本函数零解析；与 公用字卡/专属字卡 两行口径一致）
     const pfe = document.getElementById('cc-fun-count');
-    if (pfe) pfe.textContent = String(libCounts.fun < 0 ? 0 : libCounts.fun);
+    if (pfe) { pfe.textContent = String(libCounts.fun < 0 ? 0 : libCounts.fun); pfe.classList.remove('cc-cnt-loading'); } // #575 写回真值即摘掉取回中脉冲态
     const pfpe = document.getElementById('cc-fun-pub-count');
-    if (pfpe) pfpe.textContent = String(libCounts.pubFun < 0 ? 0 : libCounts.pubFun);
+    if (pfpe) { pfpe.textContent = String(libCounts.pubFun < 0 ? 0 : libCounts.pubFun); pfpe.classList.remove('cc-cnt-loading'); }
     const pe = document.getElementById('cc-pub-count');
-    if (pe) pe.textContent = libCounts.pub < 0 ? 0 : libCounts.pub;
+    if (pe) { pe.textContent = libCounts.pub < 0 ? 0 : libCounts.pub; pe.classList.remove('cc-cnt-loading'); }
     const oe = document.getElementById('cc-list-count');
-    if (oe) oe.textContent = libCounts.own < 0 ? 0 : libCounts.own;
+    if (oe) { oe.textContent = libCounts.own < 0 ? 0 : libCounts.own; oe.classList.remove('cc-cnt-loading'); }
+  }
+  // FIX 2026-09-16 #575：字卡库列表页角标的「取回中」态——四个计数位显示「…」并加脉冲类，
+  //   避免等待期显示 0 被当成「字卡丢了」（数据面不缩短等待，但界面不能说谎）。
+  //   取回落定后由 refreshLibCounts(true) 写回真值并摘掉脉冲类。
+  function markLibCountsLoading() {
+    try {
+      ['cc-pub-count', 'cc-list-count', 'cc-fun-count', 'cc-fun-pub-count'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = '…';
+        el.classList.add('cc-cnt-loading');
+      });
+    } catch (e) {}
   }
   // v3.25.x：数据迟到重算——restore-done 时内存缓存才刚有数据（iOS 上常晚于首屏渲染），
   // 此前没有任何时点会重算两行角标，0 就一直挂着。启动回填完成即强制重算一次。
@@ -1376,11 +1403,17 @@
     if (q) {
       // v3.7.x：保留原始索引——搜索过滤后 data-idx 必须仍是原始数组索引，
       // 否则单卡点击编辑/删除会按错位索引改到别的字卡
+      // FIX 2026-09-16 #573 搜索精准化（与 #557 字卡库页同款）：①多词空格 AND + 查询侧标点归一；
+      // ②组内按匹配质量稳定排序（rk 并列以原始 oi 决胜），data-idx 仍写原始 oi＝点击编辑删除不受影响；
+      // #508 指纹复用池按内容指纹存取（ccPoolPush/Adopt 以 sig 为键），与行序无关＝乱序安全。
+      const terms = window.mochiSearch ? window.mochiSearch.terms(window.mochiSearch.qnorm(q)) : [q.toLowerCase()];
+      const kwN = terms.join(' ');
       shown = shown
         .map(([g, arr]) => [g, arr
-          .map((c, oi) => ({ c: c, oi: oi }))
-          .filter(x => (typeof x.c === 'string' && x.c.indexOf('data:') !== 0) && x.c.indexOf(q) >= 0)])
-        .filter(([g, arr]) => arr.length || g.indexOf(q) >= 0);
+          .map((c, oi) => { const o = { c: c, oi: oi }; o.rk = window.mochiSearch ? window.mochiSearch.rank(c, kwN) : 2; return o; })
+          .filter(x => (typeof x.c === 'string' && x.c.indexOf('data:') !== 0) && terms.every(w => x.c.toLowerCase().indexOf(w) >= 0))
+          .sort((a, b) => a.rk - b.rk || a.oi - b.oi)])
+        .filter(([g, arr]) => arr.length || terms.every(w => g.toLowerCase().indexOf(w) >= 0));
     }
     updateCountsOnly();
     // FIX #508（红米 K80 Chrome 等多机型报「表情包页操作后图片闪一下重新加载」，与头像互动
@@ -1397,11 +1430,31 @@
     ccPoolHarvest(list);
     list.innerHTML = '';
     if (!shown.length) {
+      const isVoice = cur === 'voice';
       const emptyTxt = cur === 'sticker' ? '暂无表情包 · 点击右上角批量导入上传图片'
         : cur === 'image' ? '暂无图片 · 点击右上角批量导入上传图片'
         : cur === 'voice' ? '暂无语音 · 点击右上角批量导入上传音频'
         : '暂无字卡';
-      list.innerHTML = '<div class="cc-empty">' + emptyTxt + '</div>';
+      // #549 空状态可点：原来只写「点右上角」要用户自己找；这里直接给按钮，点了即触发右上角
+      // 同一入口（批量导入/链接导入），空列表不再是死胡同。按钮用内联样式，不动共享 CSS。
+      const impLabel = isVoice ? '批量导入音频' : (cur === 'sticker' || cur === 'image') ? '批量导入图片' : '批量导入字卡';
+      list.innerHTML = '<div class="cc-empty-wrap" style="grid-column:1/-1">'
+        + '<div class="cc-empty">' + emptyTxt + '</div>'
+        + '<div class="cc-empty-act" style="display:flex;gap:8px;justify-content:center;padding:0 0 20px">'
+        + '<button type="button" class="cc-empty-btn" data-cc-empty="import" style="padding:9px 15px;border:0;border-radius:10px;background:var(--ink,#111);color:var(--card-bg,#fff);font-size:13px;font-weight:700;cursor:pointer">' + impLabel + '</button>'
+        + (isVoice ? '' : '<button type="button" class="cc-empty-btn" data-cc-empty="link" style="padding:9px 15px;border:0;border-radius:10px;background:rgba(0,0,0,.06);color:var(--ink,#111);font-size:13px;font-weight:700;cursor:pointer">链接导入</button>')
+        + '</div></div>';
+      // 一次性委托：点空状态按钮 → 透传到右上角既有入口（不重复实现导入逻辑）
+      if (list && !list.__ccEmptyActBound) {
+        list.__ccEmptyActBound = true;
+        list.addEventListener('click', (e) => {
+          const b = e.target && e.target.closest ? e.target.closest('[data-cc-empty]') : null;
+          if (!b) return;
+          e.preventDefault(); e.stopPropagation();
+          const el = document.getElementById(b.getAttribute('data-cc-empty') === 'link' ? 'cc-import-link' : 'cc-import');
+          if (el) el.click();
+        });
+      }
       return;
     }
     // 展开扁平结构：分组 header 与字卡项交错（header 带 data-g 供局部更新定位）
@@ -1529,14 +1582,34 @@
   function renderSearchResult(kw) {
     if (!kw) { searchResultEl.hidden = true; searchResultEl.innerHTML = ''; return; }
     searchResultEl.hidden = false;
+    kw = window.mochiSearch ? window.mochiSearch.qnorm(kw) : kw; // #573 查询侧标点归一：「晚安。」＝「晚安」
+    if (!kw) { searchResultEl.hidden = true; searchResultEl.innerHTML = ''; return; }
     const fns = window.__cardSearchFns || [];
+    // FIX 2026-09-16 #557 字卡库搜索精准化（用户报「搜一个字，多几个字的全部出现」）：
+    // ① 多词空格 AND——各注册方只认整串子串，故以最长词为锚调注册方取候选，其余词在中心
+    //    复筛每词都须命中（此前整串当单词条，「晚安 爱」恒 0 命中）；
+    // ② 匹配质量排序分节：整卡等于关键词（精确）→ 开头命中 → 包含命中，最像的排最前，
+    //    不再按模块注册顺序把精确卡淹没在一堆仅「沾边」的长卡里。
+    // #573 分词/锚词/分级改走全站公共 window.mochiSearch（与设置页/功能大全同一套语义）。
+    const ms = window.mochiSearch || null;
+    const terms = ms ? ms.terms(kw) : [String(kw).toLowerCase()];
+    const anchor = ms ? ms.anchor(terms) : terms[0];
     let all = [];
-    fns.forEach(function (reg) { try { (reg.fn(kw) || []).forEach(function (r) { all.push({ t: r.t, cat: r.cat, mod: reg.name }); }); } catch (e) {} });
+    fns.forEach(function (reg) { try { (reg.fn(anchor) || []).forEach(function (r) { all.push({ t: r.t, cat: r.cat, mod: reg.name }); }); } catch (e) {} });
+    all = all.filter(function (r) { const t = String(r.t || '').toLowerCase(); return terms.every(function (w) { return t.indexOf(w) >= 0; }); });
+    all.forEach(function (r) { r.__rank = ms ? ms.rank(r.t, kw) : 2; });
+    all.sort(function (a, b) { return a.__rank - b.__rank; });
     if (!all.length) { searchResultEl.innerHTML = '<div class="ta-empty" style="padding:20px 12px">没有找到含「' + esc(kw) + '」的字卡</div>'; return; }
+    const RANK_NAME = ['精确命中', '开头命中', '包含命中'];
     let html = '<div class="cal-card-title" style="padding:10px 2px">找到 ' + all.length + ' 张含「' + esc(kw) + '」的字卡</div>';
-    all.forEach(function (r) {
-      html += '<div class="tc-qrow"><div class="tc-qmain"><div class="tc-qtext">' + esc(r.t) + '</div><div class="tc-qmeta" style="font-size:11px;color:var(--muted)">' + esc(r.mod) + (r.cat ? ' · ' + esc(r.cat) : '') + '</div></div></div>';
-    });
+    for (let rk = 0; rk < 3; rk++) {
+      const sec = all.filter(function (r) { return r.__rank === rk; });
+      if (!sec.length) continue;
+      html += '<div class="cal-card-title" style="padding:8px 2px 4px;font-size:12px;color:var(--muted,#888)">' + RANK_NAME[rk] + ' ' + sec.length + ' 张</div>';
+      sec.forEach(function (r) {
+        html += '<div class="tc-qrow"><div class="tc-qmain"><div class="tc-qtext">' + esc(r.t) + '</div><div class="tc-qmeta" style="font-size:11px;color:var(--muted)">' + esc(r.mod) + (r.cat ? ' · ' + esc(r.cat) : '') + '</div></div></div>';
+      });
+    }
     searchResultEl.innerHTML = html;
   }
   if (searchInput2) {
@@ -1556,8 +1629,40 @@
         if (presetEl) presetEl.hidden = (k !== 'preset');
       }
     };
-    searchInput2.addEventListener('input', filterEntries);
-    searchInput2.addEventListener('keydown', function (e) { if (e.key === 'Escape') { searchInput2.value = ''; filterEntries(); searchInput2.blur(); } });
+    // FIX 2026-09-16 #581 字卡库列表页搜索防抖（口径同上面自定义字卡管理页的 v3.6.x 120ms）：
+    //   此前 input 直连 filterEntries，每敲一个字就重跑全部 __cardSearchFns——预设字卡 7k+ 张
+    //   全量扫，外加 4 个 ta-ask 题库各自一次 JSON.parse，低端机上表现为掉字/输入粘滞。
+    //   ① 停顿 150ms 才真搜，打字期间一次都不搜；
+    //   ② 上一轮搜索 ≥120ms 才亮「搜索中…」（轻库不闪），且提示先上屏 32ms 再跑同步搜索——
+    //      不让出这一拍，提示写进 DOM 也来不及画出来，等于没加。
+    let ccSearchTimer = 0, ccSearchPost = 0, ccSearchLast = 0;
+    const ccSearchRun = function () {
+      if (ccSearchPost) { clearTimeout(ccSearchPost); ccSearchPost = 0; }
+      const t0 = Date.now();
+      filterEntries();
+      ccSearchLast = Date.now() - t0; // 记本次耗时：够快则下轮不再亮提示，免得每键闪一下
+    };
+    const ccSearchInput = function () {
+      clearTimeout(ccSearchTimer);
+      if (ccSearchPost) { clearTimeout(ccSearchPost); ccSearchPost = 0; }
+      if (!String(searchInput2.value || '').trim()) { ccSearchRun(); return; } // 清空＝立即复原分类列表
+      ccSearchTimer = setTimeout(function () {
+        if (ccSearchLast < 120) { ccSearchRun(); return; }
+        searchResultEl.hidden = false;
+        searchResultEl.innerHTML = '<div class="ta-empty" style="padding:20px 12px">搜索中…</div>';
+        ccSearchPost = setTimeout(ccSearchRun, 32);
+      }, 150);
+    };
+    searchInput2.addEventListener('input', ccSearchInput);
+    searchInput2.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        searchInput2.value = '';
+        clearTimeout(ccSearchTimer);
+        if (ccSearchPost) { clearTimeout(ccSearchPost); ccSearchPost = 0; }
+        filterEntries();
+        searchInput2.blur();
+      }
+    });
     const ccPage = document.getElementById('page-chatcard');
     if (ccPage) { new MutationObserver(function () { if (!ccPage.hidden && searchInput2.value) { searchInput2.value = ''; filterEntries(); } }).observe(ccPage, { attributes: true, attributeFilter: ['hidden'] }); }
   }
@@ -2055,6 +2160,104 @@
       return { ok: ok, miss: miss };
     });
   }
+  // ================= #554（TASKS #128）字卡媒体令牌化持久化：库键瘦身 =================
+  // 把双作用域字卡库存储键里的内联图（data:image/*，≥CC_CC_TOK_MIN）替换成媒体池令牌
+  // @@m:hash——同一张图跨卡/跨组/跨作用域（公用+专属共用一个全局池）只存一份。背景：
+  // 聊天图自 #142 走池去重，字卡图一直整份内联（#160 实测双作用域 62.8MB、用户机公用库
+  // 44.59MB）；#377/#455 内存令牌化只省内存（原始键一字节不动），>64KB 大图每会话经
+  // mochiMediaTokenize 写池＝池里早已有一份、存储键里却又内联一份＝双份存储。
+  // 安全设计（缺一即回归「图片丢失」家族）：
+  //   · 池先令牌后：mochiMediaTokenize 批量查/写池并排程落盘之后，才把令牌写回库键——
+  //     崩溃窗口最多「池多一条孤儿」（GC 可清），绝不会「令牌入库而池数据丢失」；
+  //   · 字符串级替换：正则定位 + 一次拼接写回，绝不 JSON.parse 整库（#455 纪律，
+  //     44MB 级 parse 在 iOS 上是秒级长任务/OOM 源）；
+  //   · 保险丝：替换后没变小就不写；本库任一张令牌化失败（crypto 不可用等）整库放弃，
+  //     绝不写半个库；
+  //   · 消费方已全部就绪：渲染/池视图令牌解析（#377/#142 观察器）、GC 引用面含
+  //     cc-groups(-public)（#506）、字卡导出自包含还原（#506 ccExportExpandTokens）、
+  //     字卡自检令牌感知（#532）；完整备份自带池键（#275 MEDIA_POOL_KEY_RE）。
+  //   · 语音（名称|||data:audio）v1 不动：令牌链路语音虽已支持（#283/#395），但管理页
+  //     预览/编辑树语音路径未随本批验证，留待后续批次。
+  window.mochiCcPersistTokenize = function (prog) {
+    return (async function () {
+      const out = { ok: false, reason: '', images: 0, uniq: 0, saved: 0, written: 0, libs: [] };
+      if (!window.idbGet || !window.xyStore || !window.mochiMediaTokenize) { out.reason = '接口不可用（需安全上下文 + IndexedDB）'; return out; }
+      // xyStore 约定：prefix 不带尾冒号（set/get 内部拼 ':'+k）——带尾冒号会写出
+      // xy-home-v2::xx 双冒号垃圾键（#560 实测，storage-slim 同款隐患）。
+      const libs = [{ prefix: PUB_PREFIX, key: PUB_KEY, label: '公用字卡库' }];
+      try { (window.getContacts ? window.getContacts() : []).forEach(function (c) { if (c && c.id) libs.push({ prefix: PUB_PREFIX + ':' + c.id, key: 'cc-groups', label: (c.name || c.id) + ' · 专属' }); }); } catch (e) {}
+      libs.push({ prefix: PUB_PREFIX, key: 'cc-groups', label: '旧版顶层字卡库（残留）' });
+      const yieldUI = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+      const re = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g;
+      for (let li = 0; li < libs.length; li++) {
+        const L = libs[li];
+        let raw = null;
+        try { raw = await window.idbGet(L.prefix + ':' + L.key); } catch (e) {}
+        if (typeof raw !== 'string' || !raw) {
+          // IDB 没有（未落/被启动预算挂起另算）时回落 xyStore 读（memoryCache/LS）——
+          // 该键 IDB 确认没有＝LS 是唯一副本，读它写回是安全的
+          try { const v2 = window.xyStore(L.prefix).get(L.key); if (typeof v2 === 'string' && v2) raw = v2; } catch (e2) {}
+        }
+        if (typeof raw !== 'string' || raw.indexOf('data:image/') < 0) continue;
+        // ① 收集内联图偏移（≥MIN；只记 [index,len]，不整串复制）
+        const offs = [];
+        let m, found = 0;
+        re.lastIndex = 0;
+        while ((m = re.exec(raw))) { found++; if (m[0].length >= CC_CC_TOK_MIN) offs.push([m.index, m[0].length]); if ((found & 1023) === 0) await yieldUI(); }
+        if (!offs.length) continue;
+        // ② 唯一化 → 逐张写池拿令牌（跨卡/跨库同图同哈希，池里只写一次）
+        const byUrl = new Map();
+        for (let oi = 0; oi < offs.length; oi++) {
+          const url = raw.slice(offs[oi][0], offs[oi][0] + offs[oi][1]);
+          if (!byUrl.has(url)) byUrl.set(url, null);
+          if ((oi & 127) === 127) await yieldUI();
+        }
+        out.images += offs.length;
+        let failed = false, i = 0;
+        for (const url of byUrl.keys()) {
+          let tok = null;
+          try { tok = await window.mochiMediaTokenize(url, { noCache: true }); } catch (e) {}
+          if (!tok) { failed = true; break; }
+          byUrl.set(url, tok);
+          i++;
+          if (prog) { try { prog(L.label + '：写池', i, byUrl.size); } catch (eP) {} }
+          if ((i & 15) === 0) await yieldUI();
+        }
+        if (failed) { byUrl.clear(); out.libs.push({ label: L.label, skipped: '令牌化不可用，本库未改动' }); continue; }
+        // 池先令牌后（对齐聊天 normalize「先 mochiMediaFlush 再 saveMsgs」契约）：池写缓冲
+        // 是 300ms 延迟批量落盘，不强制冲刷的话库键令牌可能先于池数据入 IDB——崩溃窗口
+        // 变成「令牌入库而池缺数据」＝图片丢失。这里显式 flush 后才允许写库键。
+        try { await window.mochiMediaFlush(); } catch (e) {}
+        // ③ 一次拼接写回（此刻池数据已强制落 IDB；不变小不写＝保险丝）
+        let outStr = '', last = 0, replaced = 0;
+        for (let oi = 0; oi < offs.length; oi++) {
+          const url = raw.slice(offs[oi][0], offs[oi][0] + offs[oi][1]);
+          const tok = byUrl.get(url);
+          if (!tok) continue;
+          outStr += raw.slice(last, offs[oi][0]) + tok;
+          last = offs[oi][0] + offs[oi][1];
+          replaced++;
+        }
+        outStr += raw.slice(last);
+        if (!replaced || outStr.length >= raw.length) continue;
+        try { window.xyStore(L.prefix).set(L.key, outStr); } catch (eW) { out.libs.push({ label: L.label, skipped: '写回失败' }); continue; }
+        // durable 收尾：xyStore.set 的值事务是异步发出，这里再 await 一次同字节直写并等
+        // commit——①「池→库」提交顺序从此可依赖；②调用方/用户界面随后读回即见令牌
+        //（幂等：同一字节重复写，零语义漂移；wrj 日志里 set() 已记的同值标记不受影响）。
+        try { await window.idbSet(L.prefix + ':' + L.key, outStr); } catch (eS) {}
+        const savedChars = raw.length - outStr.length;
+        out.saved += savedChars * 2;
+        out.uniq += byUrl.size;
+        out.written++;
+        out.libs.push({ label: L.label, found: offs.length, uniq: byUrl.size, saved: savedChars * 2 });
+        if (prog) { try { prog(L.label + '：写回完成', 1, 1); } catch (eP2) {} }
+        await yieldUI();
+      }
+      if (out.written) { try { pubInvalidate(); } catch (eI) {} } // 池视图按令牌化后的原始键重建
+      out.ok = true;
+      return out;
+    })().catch(function (e) { return { ok: false, reason: '迁移异常：' + ((e && e.message) || e), images: 0, uniq: 0, saved: 0, written: 0, libs: [] }; });
+  };
   const ccExport = document.getElementById('cc-export');
   if (ccExport) {
     // 7 大分类 key + 显示名（与分类 tab 一致）
@@ -2989,9 +3192,15 @@
                 // 语音：存 "文件名|||音频数据"，图片/表情：存图片 dataURL
                 // v3.6.x：文件名去掉 mp3/mp4 等后缀（聊天里语音名称不显示 .mp3/.mp4）
                 const val = cur === 'voice' ? ((f.name || '音频').replace(/\.[^.]+$/, '') + '|||' + data) : data;
-                g[1].push(val);
-                done++;
-                if (done === files.length) finishUpload(done - skipped, skipped);
+                // FIX 2026-09-16 #554（TASKS #128）字卡媒体令牌化持久化·上传口：
+                // 表情包/图片 ≥CC_CC_TOK_MIN 先写媒体池、库键只存 @@m: 令牌——同一张图全库
+                // （公用+各专属，哈希寻址）只存一份。池写失败/非安全上下文回退内联原值，
+                // 上传永不因池失败而丢图；令牌渲染/导出还原/GC 保护消费方均已就绪（见迁移函数注释）。
+                const commit = (v) => { g[1].push(v); done++; if (done === files.length) finishUpload(done - skipped, skipped); };
+                if (cur !== 'voice' && window.mochiMediaTokenize && typeof data === 'string' && data.length >= CC_CC_TOK_MIN) {
+                  try { window.mochiMediaTokenize(data).then((tok) => commit(tok || val)).catch(() => commit(val)); return; } catch (e) { commit(val); return; }
+                }
+                commit(val);
               };
               // v3.8.x：语音先归一化 MIME（安卓/雨见下 File.type 为空时 dataURL 无 audio/ 前缀，
               // 会触发乱码+无法播放），再存文件
@@ -3471,21 +3680,47 @@
   //   的场景拿小图）。启动数据就绪后异步对自定义 sticker/image 池逐张压缩建缓存，
   //   之后 taLetterContent 等同步路径能直接取到压缩版，避免几百 KB 原图入库触发 200KB 剥图。
   if (!window._shrunkStickerCache) window._shrunkStickerCache = {};
+  // FIX 2026-09-16 #581 预压缩改「串行 + 每张让出主线程」：原实现对池内全部 sticker/image
+  //   一次性并发发起 new Image() 解码 + canvas.toDataURL('image/png') 编码，几百张时全部挤在
+  //   主线程（与本文件 #398 ccTokenizeGiantMedia 同一形状），启动就绪后与每次切联系人都卡死
+  //   数秒到数十秒。改为逐张 await、其间 setTimeout(0) 让出，UI 全程可交互（总时长不变）；
+  //   世代计数 ccShrinkGen——切联系人触发的新一轮让上一轮立即作废（池已重建，旧 pass 无意义）。
+  var ccShrinkGen = 0;
   function warmShrunkCache() {
     try {
       const g = replyPoolGroups();
       if (!g) return;
+      const jobs = [];
       ['sticker', 'image'].forEach(function (t) {
         (g[t] || []).forEach(function (entry) {
           (entry[1] || []).forEach(function (media) {
             if (typeof media !== 'string' || media.indexOf('data:') !== 0) return;
             if (window._shrunkStickerCache[media]) return;
-            window.shrinkMediaUrl(media, function (small) {
-              if (small !== media) { window._shrunkStickerCache[media] = small; }
-            });
+            jobs.push(media);
           });
         });
       });
+      if (!jobs.length || typeof window.shrinkMediaUrl !== 'function') return;
+      const gen = ++ccShrinkGen;
+      (async function () {
+        for (let k = 0; k < jobs.length; k++) {
+          if (gen !== ccShrinkGen) return; // 已有更新的一轮（切了联系人/池已重建），本次作废
+          const media = jobs[k];
+          try {
+            await new Promise(function (res) {
+              let done = false;
+              const fin = function () { if (done) return; done = true; res(); };
+              window.shrinkMediaUrl(media, function (small) {
+                if (small !== media) { window._shrunkStickerCache[media] = small; }
+                fin();
+              });
+              // 兜底：图既不 load 也不 error（坏 dataURL）时不至于把整轮卡住
+              setTimeout(fin, 3000);
+            });
+          } catch (e) { /* 单张失败不中断整轮 */ }
+          await new Promise(function (res) { setTimeout(res, 0); }); // 让出主线程，UI 可交互
+        }
+      })();
     } catch (e) {}
   }
   document.addEventListener('mochi-restore-done', function warmOnce() {
@@ -3511,6 +3746,26 @@
       return arr.map(g => [g[0], (g[1] || []).filter(isMediaImg)]);
     }
     return arr;
+  };
+  // FIX 2026-09-16 #547：令牌化稳定的卡身份——同一张图「原始 dataURL 形态」与「@@m: 令牌形态」
+  // 算出同一个短身份串，供表情面板等消费方做内容签名（不改任何库数据，纯读侧映射）。
+  // · 令牌卡：反查 ccTokMemoRev 取内容短指纹；反查不到（别处来的令牌）退令牌头定长截断＝本会话内仍稳定；
+  // · ≥64KB 大图卡（会被令牌化的）：与 ccTokMemoRev 登记侧同式短指纹（ccMediaFrag）——
+  //   令牌化前后两次计算逐字符相同，签名不再翻转；
+  // · 其余卡（短 dataURL/文字/语音）：定长截断，行为与旧「按原文签名」等价稳定。
+  window.ccMediaCardIdent = function (card) {
+    try {
+      if (typeof card !== 'string') return String(card);
+      const bar = card.indexOf('|||');
+      const body = bar >= 0 ? card.slice(bar + 3) : card;
+      const pre = bar >= 0 ? card.slice(0, bar + 3) : '';
+      if (body.indexOf('@@m:') === 0) {
+        const f = ccTokMemoRev.get(body);
+        return f ? (pre + f) : (pre + body.slice(0, 72));
+      }
+      if (body.length >= CC_MEDIA_TOKEN_THRESHOLD && body.indexOf('data:image/') === 0) return pre + ccMediaFrag(body);
+      return card.length > 120 ? (card.slice(0, 60) + '~' + card.length) : card;
+    } catch (e) { return String(card); }
   };
 
   // #317 梦角自由造句：程序化追加字卡进指定作用域库的指定分类/分组
@@ -4023,11 +4278,45 @@
     const ccPage = document.getElementById('page-custom-cards');
     if (ccPage) ccPage.hidden = false;
     maybeLowCardsRemind(); // v3.32.x：自建聊天字卡很少时提醒默认字卡 30% 概率
+    // FIX 2026-09-16 #574 字卡库开页「空白干等 IDB」（用户报「字卡库卡 5、6 秒，也没有
+    //   动画加载的缓冲」iPhone 14 Pro Safari 等多 iOS 机型）：本机（LS/内存/缓存）读不到
+    //   该作用域时，下面这行 hydrateCurScope 要等 idbHydrateKey 取回——iOS 挂后台杀 IDB
+    //   连接后单次读最长 6s、重试链最长 14s（无头桩实测 14024ms），期间渲染被 then 门控＝
+    //   列表停在上一版内容（首开即旧空态「暂无字卡」）且页面内零加载态＝点下去像死机。
+    //   这里在等待发生【之前】先出加载行：健康设备（本机有数据）不进本分支＝零变化、
+    //   零闪动；真需要取回时用户立刻看到「正在加载字卡…」，取回完成后 render() 照常覆写。
+    //   只动首屏观感，不碰取回时机与写路径权威门控（ccAuthMark/#193 语义零改动）。
+    try { if (!curStore().get(curKey())) showLibLoadingSoon(); } catch (eL) {}
     hydrateCurScope().then(() => {
       groups = loadGroups();
       try { renderGroupsBar(); render(); } catch (e) {}
+      clearLibLoadingRow(); // #574：取回落定后无论 render 成败都摘掉加载态，不留残留占位
       refreshLibCounts(false); // v3.15.x：懒加载取回后同步刷新列表页两行角标（此前停留 0 像「丢失」）
     });
+  }
+  // #574：字卡库首屏加载态（等待发生前占位，取回完成由 render() 覆写；不新建 DOM 锚点，
+  //   直接复用列表容器，避免与 render() 的清空/分块渲染互相打架）。
+  //   延迟 150ms 才出：空库/健康设备的一次 IDB 读通常几十毫秒内返回＝全程不出现，观感零变化；
+  //   真卡住（iOS 挂后台杀连接：单次 6s、重试链 14s）才亮出「正在加载字卡…」。
+  var libLoadTimer = null; // #574：用 var 避开「函数先于 let 执行」的 TDZ 风险（历史 TDZ 事故族）
+  function showLibLoadingSoon() {
+    try { clearTimeout(libLoadTimer); libLoadTimer = setTimeout(showLibLoadingRow, 150); } catch (e) {}
+  }
+  function showLibLoadingRow() {
+    try {
+      if (!list) return;
+      list.dataset.ccLoading = '1';
+      list.innerHTML = '<div class="cc-lib-loading"><span class="cc-spin"></span>正在加载字卡…</div>';
+    } catch (e) {}
+  }
+  function clearLibLoadingRow() {
+    try { clearTimeout(libLoadTimer); } catch (e0) {}
+    try {
+      if (!list || !list.dataset.ccLoading) return;
+      delete list.dataset.ccLoading;
+      const row = list.querySelector('.cc-lib-loading');
+      if (row) row.remove();
+    } catch (e) {}
   }
   // v3.11.x：离开自定义字卡管理页一律恢复专属作用域——回复池（getCustomCards/
   // getPokeCards/getMediaCards 等）以内存 groups 为基准，若停留在 public 作用域，
@@ -4301,6 +4590,14 @@
         refreshLibCounts(true);
         if (libScopesDeferred(['public', 'own'])) {
           try { toast('字卡较多，正在加载…'); } catch (e) {}
+          // FIX 2026-09-16 #575：取回期间两行角标显示「…」而非 0——0 会被当成「字卡丢了」
+          //（#574 同族：等待本身没办法缩短，但不能让等待期的界面说谎）。取回落定后强制
+          //  重算一次把真值填回；失败/无数据也一样重算（还 0 就是真 0）。
+          markLibCountsLoading();
+          hydrateLibScopes(['public', 'own']).then(function () {
+            try { refreshLibCounts(true); } catch (e) {}
+          });
+          return;
         }
         hydrateLibScopes(['public', 'own']);
       }).observe(libPage, { attributes: true, attributeFilter: ['hidden'] });
@@ -4308,6 +4605,42 @@
     // #266 修复标记：本块必须立即调用（结尾 `})();`）。漏掉调用括号＝语法仍合法、
     // node --check 与哨兵都查不出，但整段兜底取回变死代码 → iOS 回填被打断后字卡库永久空载。
   })();
+
+  // v3.4x：字卡数据健康探针（供设置→工具「字卡使用状态自检」card-audit.js 调用）——只读，
+  //   扫当前桌面专属池 + 公用池的池视图（令牌化后），统计：
+  //   tokens=媒体池令牌卡数、missing=池里已缺失的令牌（渲染成占位/发不出）、
+  //   bigMedia=单卡 dataURL >512KB 的超大图（库体积/卡顿来源）、badVoice=格式异常的语音卡。
+  window.__ccAuditHealth = function () {
+    const out = { tokens: 0, missing: 0, bigMedia: 0, badVoice: 0 };
+    function scan(g) {
+      if (!g) return;
+      ['sticker', 'image'].forEach(function (t) {
+        (g[t] || []).forEach(function (grp) {
+          if (!Array.isArray(grp) || !Array.isArray(grp[1])) return;
+          grp[1].forEach(function (c) {
+            if (typeof c !== 'string') return;
+            if (c.indexOf('@@m:') === 0) {
+              out.tokens++;
+              if (window.mochiMediaTokenMissing && window.mochiMediaTokenMissing(c)) out.missing++;
+            } else if (c.indexOf('data:image') === 0 && c.length > 512 * 1024) {
+              out.bigMedia++;
+            }
+          });
+        });
+      });
+      (g['voice'] || []).forEach(function (grp) {
+        if (!Array.isArray(grp) || !Array.isArray(grp[1])) return;
+        grp[1].forEach(function (c) {
+          if (typeof c !== 'string' || !c) return;
+          const i = c.indexOf('|||');
+          if (i < 0 || c.slice(i + 3).indexOf('data:audio') !== 0) out.badVoice++;
+        });
+      });
+    }
+    try { scan(ownPoolRaw()); } catch (e) {}
+    try { scan(pubGroupsRaw()); } catch (e) {}
+    return out;
+  };
 
   // v3.26.x：字卡/回复/收藏 存储明细诊断——报障「该分类 583MB 是否正常」一眼定位
   // 哪个键大、是否有 LS 残留大键（双倍计算）、旧 my-emoji-groups 各桌面遗留（应清未清）。
