@@ -1123,16 +1123,18 @@
   // v3.6.x：改存 Blob（不再存 base64 dataURL 字符串）——夸克等浏览器对
   // `<audio src="data:...">`（尤其大段 base64）播放失效，Blob + 对象 URL 是标准播放方案
   // ================= 添加歌曲 =================
-  // 本地上传（多个文件，存储到 IndexedDB）
-  // v3.6.x：改存 Blob（不再存 base64 dataURL 字符串）——夸克等浏览器对
-  // `<audio src="data:...">`（尤其大段 base64）播放失效，Blob + 对象 URL 是标准播放方案
+  // #607：用户反复误以为「QQ音乐 / 酷狗等其他 App 里的歌能直接导入」——三个导入面板
+  // 统一挂这句声明（集中一处，免得各面板各写一版、日后漂移）。事实依据：导入识别链
+  // 只有网易云一套（extractNeteaseSongId / extractPlaylistId），其他 App 的分享链接
+  // 会被当普通 URL 原样收下，而它打开是网页不是音频文件，必然放不出声。
+  const OTHER_APP_LINK_HINT = '<b>✕ 不支持其他 App 的分享链接：</b>QQ音乐 / 酷狗 / 酷我 / 咪咕 / B站 / YouTube / Spotify / Apple Music 等 App 的「分享」链接，点开是网页、不是音频文件，导进来也放不出声。要用这些歌，得先把音频文件拿到手机里（走「上传音乐」）。<br>';
   function triggerUpload() {
     if (!window.openTCPanel) { localPlId = 'default'; }
     // v3.x：本地上传前先选目标「播放列表（歌单）」——不再一律存进默认「我的音乐库」
     window.openTCPanel('添加本地音乐', '' +
       '<div class="sm-form">' +
       '<div class="sm-fld"><label>上传到播放列表</label><select class="tc-input" id="sm-local-pl">' + targetPlOptions() + '</select></div>' +
-      '<div class="sm-fld-hint">选择一首或多首本地音频（mp3 / m4a / aac / ogg / wav / flac）存放进上面的歌单；选「新建歌单」可先建一个歌单再上传。</div>' +
+      '<div class="sm-fld-hint">选择一首或多首本地音频（mp3 / m4a / aac / ogg / wav / flac）存放进上面的歌单；选「新建歌单」可先建一个歌单再上传。<br>整首音乐已经存在手机里（下载 / 导出成的音频文件）时用这里；如果歌还在别的 App 里（QQ音乐 / 酷狗 / B站 等），要先把它下载成音频文件再上传——App 的「分享」链接不能直接导入。</div>' +
       '</div>' +
       '<div class="mail-actions"><button class="cc-tool" id="sm-local-cancel">取消</button><button class="cc-tool" id="sm-local-ok">选择文件上传</button></div>');
     document.getElementById('sm-local-cancel').addEventListener('click', () => { document.getElementById('tc-mask').hidden = true; });
@@ -1343,7 +1345,7 @@
       '<div class="sm-fld"><label>歌手</label><input class="tc-input" id="sm-url-artist" placeholder="可留空"></div>' +
       '<div class="sm-fld"><label>网易云歌曲ID 或 链接 / 音乐直链</label><textarea class="tc-input" id="sm-url-link" rows="3" placeholder="如 2064961530&#10;或 https://music.163.com/#/song?id=xxx&#10;每行一个，支持批量"></textarea></div>' +
       '<div class="sm-fld"><label>导入到歌单</label><select class="tc-input" id="sm-target-pl">' + targetPlOptions() + '</select></div>' +
-      '<div class="sm-fld-hint">填网易云歌曲数字 ID（如 2064961530）或<b>直接粘贴完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3），都会自动识别导入，不用手动填 ID；mp3 直链也可。支持批量：每行一个 ID 或链接；批量时歌曲名/歌手自动识别，可不填。<br>粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx）自动导入整个歌单。<br><span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入受网络环境影响，失败可稍后重试</span></div>' +
+      '<div class="sm-fld-hint"><b>可填 3 类：</b>① 网易云歌曲数字 ID（如 2064961530）；② <b>完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3、分享短链 163cn.tv/xxx），都会自动识别导入，不用手动填 ID；③ <b>音频文件直链</b>（点开就是音频本身、以 .mp3 / .m4a 等结尾的 URL，需 https）。支持批量：每行一个 ID 或链接；批量时歌曲名/歌手自动识别，可不填。<br>粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx）自动导入整个歌单。<br>' + OTHER_APP_LINK_HINT + '<span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入受网络环境影响，失败可稍后重试</span></div>' +
       '</div>' +
       '<div class="mail-actions"><button class="cc-tool" id="sm-url-cancel">取消</button><button class="cc-tool" id="sm-url-ok">确认添加</button></div>');
     document.getElementById('sm-url-cancel').addEventListener('click', () => { document.getElementById('tc-mask').hidden = true; });
@@ -1470,7 +1472,7 @@
   function openBatch() {
     if (!window.openTCPanel) return;
     window.openTCPanel('批量导入音乐', '' +
-      '<div class="sm-fld-hint" style="margin-bottom:8px"><b>支持 3 种导入方式：</b><br>① <b>网易云歌单</b>：直接粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx），自动导入整个歌单；<br>② <b>网易云单曲</b>：每行一个歌曲数字 ID（如 2064961530），或<b>直接粘贴完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3），自动识别导入，不用手动填 ID；<br>③ <b>本地/直链</b>：按「歌曲名称 / 歌手 / 音乐直链URL」格式粘贴，每首歌空一行分隔（URL 栏同样支持直接贴网易云链接）。<br><br><span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入会自动移除 VIP/付费歌曲；歌单导入受网络环境影响（部分手机浏览器可能拦截），失败可稍后重试</span></div>' +
+      '<div class="sm-fld-hint" style="margin-bottom:8px"><b>支持 3 种导入方式：</b><br>① <b>网易云歌单</b>：直接粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx），自动导入整个歌单；<br>② <b>网易云单曲</b>：每行一个歌曲数字 ID（如 2064961530），或<b>直接粘贴完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3），自动识别导入，不用手动填 ID；<br>③ <b>本地/直链</b>：按「歌曲名称 / 歌手 / 音乐直链URL」格式粘贴，每首歌空一行分隔（URL 栏同样支持直接贴网易云链接；直链要点开就是音频本身、以 .mp3 等结尾、需 https）。<br>' + OTHER_APP_LINK_HINT + '<br><span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入会自动移除 VIP/付费歌曲；歌单导入受网络环境影响（部分手机浏览器可能拦截），失败可稍后重试</span></div>' +
       '<textarea id="sm-batch-input" class="tc-input" rows="8" placeholder="网易云歌单链接：https://music.163.com/playlist?id=3778678&#10;网易云单曲链接：https://music.163.com/#/song?id=27538343&#10;或纯数字 ID：27538343&#10;&#10;歌曲名称：Baby&#10;歌手：EXO-K&#10;音乐直链URL：http://music.163.com/song/media/outer/url?id=27538343.mp3"></textarea>' +
       '<div class="sm-fld"><label>导入到歌单</label><select class="tc-input" id="sm-target-pl">' + targetPlOptions() + '</select></div>' +
       '<div class="mail-actions"><button class="cc-tool" id="sm-batch-cancel">取消</button><button class="cc-tool" id="sm-batch-ok">开始导入</button></div>');
@@ -1792,7 +1794,7 @@
       emptyEl.hidden = songs.length > 0;
       if (!songs.length) {
         emptyEl.textContent = libFilter === 'all'
-          ? '还没有音乐，上传本地音乐，建立属于你们的声音陪伴空间'
+          ? '还没有音乐，上传本地音乐，建立属于你们的声音陪伴空间（只支持本机音频文件、网易云链接 / 歌单、音频直链；QQ音乐等其他 App 的分享链接不能导入）'
           : (libFilter === 'default' ? '还没有未分类的音乐' : '这个歌单还没有歌曲');
       }
     }
@@ -2742,8 +2744,40 @@
         navigator.mediaSession.setActionHandler('nexttrack', function () { try { next(); } catch (e) {} });
         navigator.mediaSession.setActionHandler('previoustrack', function () { try { prev(); } catch (e) {} });
       } catch (e) {}
+      // v3.26.x #645：补齐 seek/stop 四个动作——此前媒体卡只有播放/暂停/上下首，
+      // 拖动定位、快进快退、划掉卡片停止分别依赖 seekto/seekbackward/seekforward/stop
+      try {
+        navigator.mediaSession.setActionHandler('seekbackward', function (d) { try { if (audio) audio.currentTime = Math.max(0, audio.currentTime - ((d && d.seekOffset) || 10)); } catch (e) {} });
+        navigator.mediaSession.setActionHandler('seekforward', function (d) { try { if (audio) audio.currentTime = Math.min(isFinite(audio.duration) ? audio.duration : Infinity, audio.currentTime + ((d && d.seekOffset) || 10)); } catch (e) {} });
+        navigator.mediaSession.setActionHandler('seekto', function (d) { try { if (audio && d && isFinite(d.seekTime)) audio.currentTime = Math.max(0, Math.min(isFinite(audio.duration) ? audio.duration : Infinity, d.seekTime)); } catch (e) {} });
+        navigator.mediaSession.setActionHandler('stop', function () { try { stopFromMediaSession(); } catch (e) {} });
+      } catch (e) {}
+      try { syncMediaPosition(); } catch (e) {}
       try { window.__musicPlaying = playing; } catch (e) {}
     } catch (e) {}
+  }
+  // v3.26.x #645：通知栏进度条状态——不 setPositionState 媒体卡就没有进度条、拖动定位没基准；
+  // 流式音频 duration=Infinity 不上报；position 越界部分内核会直接拒收，夹到 [0, duration]
+  function syncMediaPosition() {
+    try {
+      if (!('mediaSession' in navigator) || !navigator.mediaSession || !navigator.mediaSession.setPositionState) return;
+      if (!audio || !isFinite(audio.duration) || audio.duration <= 0) return;
+      navigator.mediaSession.setPositionState({
+        duration: audio.duration,
+        playbackRate: audio.playbackRate > 0 ? audio.playbackRate : 1,
+        position: Math.min(Math.max(audio.currentTime, 0), audio.duration)
+      });
+    } catch (e) {}
+  }
+  // v3.26.x #645：通知栏「停止/划掉卡片」＝彻底停止（同删除/失败清场：teardown + 清 currentId +
+  // 刷新悬浮条/列表）；teardownAudio 会派发 music-media-release 让 bg-keep 恢复保活条
+  function stopFromMediaSession() {
+    wantPlay = false;
+    clearBgResume();
+    teardownAudio();
+    currentId = null;
+    updatePlayerBar();
+    renderLibrary();
   }
   function setupHandlers(m) {
     audio.onended = function () { handleEnded(); };
@@ -2781,6 +2815,8 @@
         } else { armAutoResume(); }
       }
     };
+    // v3.26.x #645：播放中持续上报进度（timeupdate 约 4Hz），通知栏进度条随播放走
+    audio.ontimeupdate = function () { try { syncMediaPosition(); } catch (e) {} };
     audio.onplay = function () { playRejected = false; bgResumeFails = 0; clearStallGuard(); disarmAutoResume(); clearBgResume(); bgBrokeAudio = false; wantPlay = true; syncPlayIcons(true); if (m) failMap[m.id] = 0; try { if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; } catch (e) {} try { window.__musicPlaying = true; } catch (e) {} // v3.28.x：每次真正出声都重新绑定歌曲媒体条——后台短暂打断被 bg-keep 接管媒体会话（元数据换成「Mochi 后台保活」）后，恢复播放时若不重设歌曲元数据，通知栏媒体条会停在保活条或直接消失
       try { updateMediaSession(true); } catch (e) {} };
     audio.onpause = function () { syncPlayIcons(false); try { if (navigator.mediaSession) navigator.mediaSession.playbackState = (wantPlay && !callHoldPending) ? 'playing' : 'paused'; } catch (e) {} try { window.__musicPlaying = false; } catch (e) {} // v3.28.x：外部打断（还想播）保持 playbackState='playing'，避免 Chrome 把页面当闲置标签冻结、通知栏媒体条消失；仅用户主动暂停才标 'paused'。v3.10.x：非用户暂停（后台省电/音频焦点抢占/系统打断）→ 定时补播反击
@@ -3383,11 +3419,30 @@
     applyFloatMin();
     syncPlayIcons(audio && !audio.paused);
   }
+  // FIX 2026-09-16 #587 悬浮小框「点了没反应」的元凶是它自己压住了音乐控件：
+  //   #sm-float 默认 left:12px;top:80px、宽 230px、高随系统字体浮动（实测 107px），
+  //   正好盖在桌面音乐小组件与音乐页上半部——实测音乐页「我的音乐库 / 歌单 / 我的收藏」
+  //   三颗 tab 与桌面小组件进度条（#mw-bar）被它压住，elementFromPoint 命中 sm-float，
+  //   点上去毫无反应；系统字号越大/小框越高，被吃掉的可点区域越多（故「其他设备型号也有」）。
+  //   桌面小组件与音乐页各自带完整播放控件（音乐页还有 #sm-player-bar 常驻播放条），
+  //   悬浮小框在这两处纯属重复——与既有 floatHideByWidget「小组件本身就是控制器，
+  //   避免重复弹出」同源；其余页面（聊天 / 字卡库 / 设置 等）显示逻辑完全不变。
+  function floatOwnSurfaceShown() {
+    try {
+      const musicPage = document.getElementById('page-music');
+      if (musicPage && !musicPage.hidden) return true;
+      const phonePage = document.getElementById('page-phone');
+      if (!phonePage || phonePage.hidden) return false;
+      // 桌面音乐小组件在页内（offsetParent 为 null ＝被移出/隐藏）时同样让位
+      const w = document.getElementById('music-widget');
+      return !!(w && w.offsetParent !== null);
+    } catch (e) { return false; }
+  }
   function renderFloat() {
     const el = document.getElementById('sm-float');
     if (!el) return;
     const m = findTrack(currentId);
-    el.hidden = !(settings.floatEn && !floatClosed && currentId && audio && m) || floatHideByWidget;
+    el.hidden = !(settings.floatEn && !floatClosed && currentId && audio && m) || floatHideByWidget || floatOwnSurfaceShown();
     applyFloatMin();
     if (!m) return;
     document.getElementById('sm-f-name').textContent = m.name || '未知歌曲';
@@ -3402,6 +3457,18 @@
     syncPlayIcons(audio && !audio.paused);
     syncHeartIcons();
   }
+  // FIX 2026-09-16 #587：上面两条判据看的是「当前显示哪个页面」，页面切换（进/出桌面、
+  //   进/出音乐页）不会主动调 renderFloat——观察 #page-phone / #page-music 的 hidden
+  //   属性变化补一次重算，保证切页后悬浮小框显隐即时跟上。仅监听这两个节点的单个属性，
+  //   无定时器、无全树监听，切页零额外开销。
+  ['page-phone', 'page-music'].forEach(function (id) {
+    const p = document.getElementById(id);
+    if (!p || typeof MutationObserver === 'undefined') return;
+    try {
+      new MutationObserver(function () { renderFloat(); })
+        .observe(p, { attributes: true, attributeFilter: ['hidden'] });
+    } catch (e) {}
+  });
   // v3.7.x：聊天设置「音乐悬浮小窗」开关钩子——读写同一 floatEn 状态（music-global，
   // 每桌面独立）。chat-settings.js 加载早于本文件，运行时调用；与音乐页 #music-float-en、
   // 音乐设置 #sm-set-float 完全同源（复用 saveSettings/syncFloatToggle/renderFloat 流程）。

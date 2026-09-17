@@ -222,6 +222,311 @@
   window.__LENO_ICONS__ = LENO_ICONS;
   window.__MODE_LABELS__ = MODE_LABELS;
 
+  // ===== v3.27.x：自定义牌面（上传图片 / 图鉴 / 导入导出）＋ 雷诺曼 36-40 体系 =====
+  // 设计要点：
+  //  · 数据全局共用（全局命名空间 xy-home-v2），与牌库一致：换联系人牌面不变。
+  //  · 每张牌一张自定义图，按「体系+牌名」绑定；原图压到 720px，另存 256px 缩略图
+  //    （页面里的牌面与图鉴都用缩略图，原图仅在导出时按需从 IDB 取，内存常驻只有缩略图）。
+  //  · 牌库对象自身的 icon 被换成合成键 '@df:<mode>:<牌名>'，合成键在 TAROT_ICONS/LENO_ICONS
+  //    里注册为 svg <image>。因此聊天页占卜半框（chat.js）零改动即自动共用自定义牌面。
+  const GNS = 'xy-home-v2';
+  const gStore = window.xyStore(GNS);
+  const FACE_IDX_KEY = 'divine-faces-idx';
+  const LENO36_KEY = 'divine-leno-36';
+  const FACE_PREFIX = '@df:';
+  const ORIG_ICON = { tarot: {}, lenormand: {} };
+  TAROT.forEach(c => { ORIG_ICON.tarot[c.name] = c.icon; });
+  LENO.forEach(c => { ORIG_ICON.lenormand[c.name] = c.icon; });
+  const faceThb = new Map();   // 'mode|牌名' -> 缩略图 dataURL
+  let facePanelCid = 'tarot';  // 管理面板当前体系
+  let faceTab = 'manage';      // manage | gallery
+  let pendingUpload = null;    // { m, n } 待上传的牌
+  let facePanelScroll = 0;     // 浮层打开前的占卜页滚动位置（关闭时还原）
+  let leno36 = false;          // 雷诺曼 36（经典）/ 40（含扩展）
+  const ONEBASED_KEY = 'divine-face-onebased';
+  let faceOneBased = false;
+  try { faceOneBased = gStore.get(ONEBASED_KEY) === '1'; } catch (e) {}
+  function obBtn_sync() {
+    const b = document.getElementById('divf-onebased');
+    if (b) {
+      b.textContent = '编号从 1 起（塔罗 1–78）：' + (faceOneBased ? '开' : '关');
+      b.setAttribute('aria-pressed', faceOneBased ? 'true' : 'false');
+    }
+  }
+
+  function isFaceKey(k) { return typeof k === 'string' && k.indexOf(FACE_PREFIX) === 0; }
+  function faceKey(m, n) { return FACE_PREFIX + m + ':' + n; }
+  function faceParse(k) {
+    const s = k.slice(FACE_PREFIX.length);
+    const i = s.indexOf(':');
+    return { m: s.slice(0, i), n: s.slice(i + 1) };
+  }
+  function encN(n) { return encodeURIComponent(n); }
+  function fullKey(m, n) { return 'divine-face-' + m + '-' + encN(n); }
+  function thbKey(m, n) { return 'divine-face-thb-' + m + '-' + encN(n); }
+  function iconMapOf(m) { return m === 'tarot' ? TAROT_ICONS : LENO_ICONS; }
+  function cardOf(m, n) {
+    const a = m === 'tarot' ? TAROT : LENO;
+    for (let i = 0; i < a.length; i++) if (a[i].name === n) return a[i];
+    return null;
+  }
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function dtStamp() {
+    const d = new Date();
+    const p = (n) => (n < 10 ? '0' + n : '' + n);
+    return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+  }
+
+  function loadFaceIdx() {
+    let arr = [];
+    try { arr = JSON.parse(gStore.get(FACE_IDX_KEY) || '[]'); } catch (e) { arr = []; }
+    return Array.isArray(arr) ? arr.filter(x =>
+      x && (x.m === 'tarot' || x.m === 'lenormand') && x.n && cardOf(x.m, x.n)) : [];
+  }
+  function saveFaceIdx(arr) { try { gStore.set(FACE_IDX_KEY, JSON.stringify(arr)); } catch (e) {} }
+
+  // 把一张自定义牌面应用到牌库（合成键注册进 icon 映射 + 改写牌对象 icon）
+  function applyFace(m, n) {
+    const thb = faceThb.get(m + '|' + n);
+    const c = cardOf(m, n);
+    if (!thb || !c) return;
+    const k = faceKey(m, n);
+    iconMapOf(m)[k] = '<image href="' + thb + '" x="0" y="0" width="24" height="24" preserveAspectRatio="xMidYMid slice"/>';
+    c.icon = k;
+  }
+  // 落一张牌面（原图 + 缩略图）并登记索引（单张上传 / 批量上传共用）
+  function storeFaceFromDataUrls(m, n, full, thb) {
+    try { gStore.set(fullKey(m, n), full); } catch (e) {}
+    try { gStore.set(thbKey(m, n), thb); } catch (e) {}
+    const idx = loadFaceIdx();
+    if (!idx.some(x => x.m === m && x.n === n)) idx.push({ m: m, n: n, t: Date.now() });
+    saveFaceIdx(idx);
+    faceThb.set(m + '|' + n, thb);
+    applyFace(m, n);
+  }
+  // 按文件名匹配牌（批量上传）：支持「牌名」「塔罗-牌名」「雷诺曼-牌名」「编号」
+  //  · 编号：塔罗按 00-77（0 起，与牌库顺序一致），雷诺曼按 1-36/40（1 起）
+  //  · 同名跨体系（太阳/月亮/星星/塔/书/心…）无前缀时用当前管理页签的体系
+  function matchFaceFile(rawName, defaultMode, oneBased = faceOneBased) {
+    let s = String(rawName || '').replace(/\.[A-Za-z0-9]+$/, '').trim();
+    if (!s) return null;
+    let mode = '';
+    const mp = s.match(/^(塔罗牌?|雷诺曼|雷诺|lenormand|lennormand|leno|len|tarot|taro)[\s._\-:：]*/i);
+    if (mp) {
+      const t = mp[1].toLowerCase();
+      mode = (t.charAt(0) === '塔' || t.indexOf('tar') === 0) ? 'tarot' : 'lenormand';
+      s = s.slice(mp[0].length).trim();
+    }
+    if (!s) return null;
+    const numOf = (num) => {
+      const m = mode || defaultMode || 'tarot';
+      if (m === 'tarot') { const i = oneBased ? num - 1 : num; if (i >= 0 && i < TAROT.length) return { m: 'tarot', n: TAROT[i].name }; }
+      else { const i = num - 1; if (i >= 0 && i < LENO.length) return { m: 'lenormand', n: LENO[i].name }; }
+      return null;
+    };
+    if (/^\d+$/.test(s)) return numOf(parseInt(s, 10));
+    let lead = null;
+    const lm = s.match(/^(\d+)[\s._\-、:：#]*/);
+    if (lm) { lead = parseInt(lm[1], 10); s = s.slice(lm[0].length).trim(); }
+    if (s) {
+      const cands = [];
+      [['tarot', TAROT], ['lenormand', LENO]].forEach(([m, arr]) => {
+        arr.forEach(c => {
+          if (s === c.name) cands.push({ m: m, n: c.name, exact: true, len: c.name.length });
+          else if (s.indexOf(c.name) >= 0) cands.push({ m: m, n: c.name, exact: false, len: c.name.length });
+        });
+      });
+      if (cands.length) {
+        if (mode) { const f = cands.find(x => x.m === mode); if (f) return { m: f.m, n: f.n }; }
+        const exacts = cands.filter(x => x.exact);
+        const pool = exacts.length ? exacts : cands.sort((a, b) => b.len - a.len);
+        const pref = pool.find(x => x.m === defaultMode);
+        const pick = pref || pool[0];
+        return { m: pick.m, n: pick.n };
+      }
+    }
+    if (lead !== null) return numOf(lead);
+    return null;
+  }
+  // 按当前索引与缩略图缓存重建全部牌面（删除/导入后调用）
+  function rebuildFaces() {
+    const want = {};
+    loadFaceIdx().forEach(x => { if (faceThb.get(x.m + '|' + x.n)) want[x.m + '|' + x.n] = true; });
+    ['tarot', 'lenormand'].forEach(m => {
+      (m === 'tarot' ? TAROT : LENO).forEach(c => {
+        const wk = m + '|' + c.name, k = faceKey(m, c.name);
+        if (want[wk]) { applyFace(m, c.name); return; }
+        if (c.icon === k) c.icon = ORIG_ICON[m][c.name];
+        // 合成键不删除而是改回默认图标：旧占卜记录里存的还是合成键，删掉会渲染空白
+        iconMapOf(m)[k] = iconMapOf(m)[ORIG_ICON[m][c.name]] || '';
+      });
+    });
+  }
+  function loadFaces() {
+    faceThb.clear();
+    loadFaceIdx().forEach(x => {
+      let thb = null;
+      try { thb = gStore.get(thbKey(x.m, x.n)); } catch (e) {}
+      if (typeof thb === 'string' && thb) faceThb.set(x.m + '|' + x.n, thb);
+    });
+    rebuildFaces();
+    try { renderFaceList(); renderFaceGallery(); } catch (e) {}
+  }
+  function rmFaceData(m, n) {
+    try { gStore.remove(fullKey(m, n)); } catch (e) {}
+    try { gStore.remove(thbKey(m, n)); } catch (e) {}
+    faceThb.delete(m + '|' + n);
+  }
+  // 压缩（失败返回 null；超大图在解码前拦截，与 personalize.js 同口径）
+  function compressImg(dataUrl, maxSide, quality) {
+    return new Promise((resolve) => {
+      if (typeof dataUrl === 'string' && dataUrl.length > 8 * 1024 * 1024) { resolve(null); return; }
+      const img = new Image();
+      img.onload = () => {
+        try {
+          if (img.width * img.height > 26000000) { resolve(null); return; }
+          const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const cv = document.createElement('canvas');
+          cv.width = w; cv.height = h;
+          cv.getContext('2d').drawImage(img, 0, 0, w, h);
+          resolve(cv.toDataURL('image/jpeg', quality));
+        } catch (e) { resolve(null); }
+      };
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+  }
+
+  // ---- 雷诺曼 36 / 40 体系 ----
+  try { leno36 = gStore.get(LENO36_KEY) === '1'; } catch (e) { leno36 = false; }
+  function lenoDeck() { return leno36 ? LENO.slice(0, 36) : LENO; }
+  function syncLenoSys() {
+    const wrap = document.getElementById('div-leno-sys');
+    if (wrap) {
+      wrap.hidden = mode !== 'lenormand';
+      wrap.querySelectorAll('.div-mode').forEach(b => {
+        b.classList.toggle('sel', (b.dataset.lenosys === '36') === leno36);
+      });
+    }
+    // 聊天页半框里的同款切换（由 injectChatFacesUI 注入）
+    const cw = document.getElementById('div-chat-leno-sys');
+    if (cw) {
+      const sel = document.querySelector('#chat-divine-body [data-chatmode].sel');
+      const cmode = sel ? sel.getAttribute('data-chatmode') : 'tarot';
+      cw.hidden = cmode !== 'lenormand';
+      cw.querySelectorAll('.div-mode').forEach(b => {
+        b.classList.toggle('sel', (b.dataset.lenosys === '36') === leno36);
+      });
+    }
+  }
+  // 聊天页半框沿用 window.__LENO__ 抽牌：改成 getter 即自动跟随 36/40
+  try {
+    Object.defineProperty(window, '__LENO__', { get: lenoDeck, configurable: true });
+  } catch (e) { window.__LENO__ = LENO; }
+
+  // ---- v3.27.x：占卜对象（选一个桌面联系人 → 该次牌面/解读写入 TA 的主页「占卜记录」）----
+  // 缺实现补齐：chat.js / records.js 一直按 `window.divine*` 调用这组接口但源码里没有
+  // （`#div-targets`/`#div-chat-targets` 永远空白、主页「占卜记录」永远空、「查看牌面」
+  // 点了没反应）。这里补全：不选＝存当前桌面；选了某联系人＝存该联系人桌面。
+  let divineTarget = '';   // '' = 不选（存到当前桌面）
+  let homePending = [];    // IDB 回填完成前暂存的待写主页记录
+  function curStore() { return (window.activeStore && window.activeStore()) || store; }
+  function targetName(cid) {
+    cid = cid || (window.__activeCid || 'default');
+    try {
+      let v = '';
+      if (cid === (window.__activeCid || 'default')) {
+        const s = curStore();
+        v = s.get('lbl-partner') || s.get('cs-lbl-partner') || '';
+      } else {
+        const s = window.storeFor(cid);
+        v = s.get('lbl-partner') || s.get('cs-lbl-partner') || '';
+      }
+      return v || (window.contactNameFor ? window.contactNameFor(cid) : '') || (window.taWordFor ? window.taWordFor(cid) : 'TA');
+    } catch (e) { return 'TA'; }
+  }
+  function loadDivineTarget() {
+    try { divineTarget = curStore().get('divine-target') || ''; } catch (e) { divineTarget = ''; }
+    if (divineTarget && window.getContacts && !window.getContacts().some(c => c && c.id === divineTarget)) divineTarget = '';
+  }
+  function syncTargets() {
+    document.querySelectorAll('[data-dtarget]').forEach(b =>
+      b.classList.toggle('sel', (b.getAttribute('data-dtarget') || '') === divineTarget));
+  }
+  function renderTargetsInto(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    loadDivineTarget();
+    const contacts = (window.getContacts && window.getContacts()) || [];
+    const chips = [{ cid: '', label: '不选' }];
+    contacts.forEach(c => { if (c && c.id) chips.push({ cid: c.id, label: targetName(c.id) }); });
+    el.innerHTML = chips.map(x =>
+      '<button type="button" class="div-mode' + ((x.cid || '') === divineTarget ? ' sel' : '') +
+      '" data-dtarget="' + escHtml(x.cid || '') + '">' + escHtml(x.label) + '</button>').join('');
+    if (!el.dataset.dtBound) {
+      el.dataset.dtBound = '1';
+      el.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-dtarget]');
+        if (!b) return;
+        divineTarget = b.getAttribute('data-dtarget') || '';
+        try { curStore().set('divine-target', divineTarget); } catch (e2) {}
+        syncTargets();
+      });
+    }
+  }
+  window.divineRenderTargets = function (id) { try { renderTargetsInto(id); } catch (e) {} };
+  window.divineGetTarget = function () { return divineTarget; };
+  window.divineTargetName = function (cid) { return targetName(cid); };
+  // 写主页「占卜记录」（records-divine，per-cid 桌面）；恢复窗口内暂存，回填后再合并
+  function writeHomeRec(cid, record) {
+    let list = [];
+    try { list = JSON.parse(window.storeFor(cid).get('records-divine') || '[]'); } catch (e) { list = []; }
+    if (!Array.isArray(list)) list = [];
+    if (!list.some(x => x && x.ts === record.ts)) list.unshift(record);
+    if (list.length > 100) list = list.slice(0, 100);
+    try { window.storeFor(cid).set('records-divine', JSON.stringify(list)); } catch (e) {}
+  }
+  function saveToHome(record, target) {
+    // 与主页文案一致（「选择对象抽牌后…自动存入这里」）：只有选了对象才写该对象主页；
+    // 未选对象的占卜仍进占卜页本地历史（divine-history），不污染任何桌面的主页记录。
+    if (!target) return;
+    if (!histReady) { homePending.push({ cid: target, record: record }); return; }
+    writeHomeRec(target, record);
+  }
+  function flushHomePending() {
+    if (!homePending.length) return;
+    const arr = homePending; homePending = [];
+    arr.forEach(p => { try { writeHomeRec(p.cid, p.record); } catch (e) {} });
+  }
+  window.divineSaveToHomeHistory = function (record, target) { try { saveToHome(record, target); } catch (e) {} };
+
+  // ---- 牌面渲染（divination.js 自己的两处牌面展示；聊天页走合成图标路径） ----
+  function faceActive(c) {
+    if (!isFaceKey(c.icon)) return false;
+    const p = faceParse(c.icon);
+    return !!faceThb.get(p.m + '|' + p.n);
+  }
+  function faceTouch(c, m) {
+    if (faceActive(c)) {
+      const p = faceParse(c.icon);
+      const thb = faceThb.get(p.m + '|' + p.n);
+      return '<div class="div-card-img"><img src="' + thb + '" alt=""></div>';
+    }
+    if (isFaceKey(c.icon)) {
+      // 图已删/缺图（旧记录）→ 回退该牌默认图标
+      const p = faceParse(c.icon);
+      const im = iconMapOf(p.m);
+      return '<div class="div-card-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + (im[ORIG_ICON[p.m][p.n]] || '') + '</svg></div>';
+    }
+    const icons = m === 'tarot' ? TAROT_ICONS : LENO_ICONS;
+    return '<div class="div-card-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + (icons[c.icon] || '') + '</svg></div>';
+  }
+
   // 模式/张数切换
   const modesWrap = document.getElementById('div-modes');
   const countsWrap = document.getElementById('div-counts');
@@ -232,6 +537,7 @@
       modesWrap.querySelectorAll('.div-mode').forEach(x => x.classList.remove('sel'));
       b.classList.add('sel');
       mode = b.dataset.mode;
+      syncLenoSys();
       clearResult();
     });
   }
@@ -267,7 +573,6 @@
     const count = Math.max(1, parseInt(opts.count, 10) || 1);
     const labels = opts.labels || [];
     const isTarot = !!opts.tarot;
-    const icons = isTarot ? TAROT_ICONS : LENO_ICONS;
     const onDone = opts.onDone || function () {};
     if (!stageEl || !deck.length) return function () {};
     let cancelled = false;
@@ -366,8 +671,8 @@
         const dc = document.createElement('div');
         dc.className = 'div-drawn-card';
         dc.innerHTML =
-          '<div class="ddc-face">' +
-          '<div class="div-card-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + (icons[c.icon] || '') + '</svg></div>' +
+          '<div class="ddc-face' + (faceActive(c) ? ' has-face' : '') + '">' +
+          faceTouch(c, isTarot ? 'tarot' : 'lenormand') +
           '<div class="ddc-name">' + c.name + '</div>' +
           (isTarot ? '<div class="ddc-pos' + (rev ? ' ddc-down' : ' ddc-up') + '">' + (rev ? '逆位' : '正位') + '</div>' : '') +
           '</div>' +
@@ -493,6 +798,7 @@
       histReady = true;
       migrateLegacyHist();
       flushPendingHist();
+      try { flushHomePending(); } catch (e) {}
       // v3.9.x：IDB 回填完成后补渲染历史区——文件加载时 renderHistOnOpen 可能在
       // idbRestore 完成前调用，此时 store.get('divine-history') 读到空（LS/memoryCache
       // 均无），历史区渲染空白；恢复完成后必须补渲染一次，否则已有历史记录显示不出来
@@ -518,6 +824,10 @@
           '<button class="div-h-del" data-hi="' + i + '">✕</button>' +
           '</div>').join('')
       : '';
+    // v3.27.x：无记录时连同外层白卡一起隐藏——原来 innerHTML 清空后外层 .div-card.glass
+    // 仍在（padding 撑出一块空白白框，用户反馈「抽牌按钮下面一个莫名其妙的白色框」）
+    const hcard = el.closest ? el.closest('.div-card') : null;
+    if (hcard) hcard.hidden = !list.length;
     el.querySelectorAll('.div-h-view').forEach(b => b.addEventListener('click', () => {
       const h = histLoad()[parseInt(b.dataset.hi, 10)];
       if (h && Array.isArray(h.cards)) renderDrawResult(h.cards, h.mode, h.question, h.summary);
@@ -533,14 +843,13 @@
   function renderDrawResult(cards, m, question, summary) {
     const r = document.getElementById('div-result');
     if (!r) return;
-    const icons = m === 'tarot' ? TAROT_ICONS : LENO_ICONS;
     const labels = (MODE_LABELS[m] && MODE_LABELS[m][cards.length]) || [];
     let html = '<div class="div-spread">';
     cards.forEach((c, i) => {
       html += '<div class="div-mini' + (cards.length === 1 ? ' div-mini-single' : '') + '" style="animation-delay:' + (i * 120) + 'ms">' +
         (labels[i] ? '<div class="div-mini-tag">' + labels[i] + '</div>' : '') +
-        '<div class="div-card-face">' +
-          '<div class="div-card-ico">' + icons[c.icon] + '</div>' +
+        '<div class="div-card-face' + (faceActive(c) ? ' has-face' : '') + '">' +
+          faceTouch(c, m) +
           '<div class="div-card-name">' + (c.rev ? c.name + '（逆）' : c.name) + '</div>' +
         '</div>' +
         '<div class="div-card-meaning">' + (window.taFit ? window.taFit(c.meaning) : c.meaning) + '</div>' +
@@ -635,7 +944,7 @@
       const question = ((document.getElementById('div-question') || {}).value || '').trim();
       // v3.5.130：快照点击时的模式/张数——流程期间切换设置不再影响本次结果
       const snapMode = mode, snapCount = count;
-      const deck = snapMode === 'tarot' ? TAROT : LENO;
+      const deck = snapMode === 'tarot' ? TAROT : lenoDeck();
       if (!deck.length) { r.innerHTML = '<div class="div-result-empty">占卜牌库加载中…</div>'; return; }
       const labels = (MODE_LABELS[snapMode] && MODE_LABELS[snapMode][snapCount]) || [];
       drawBtn.textContent = '抽牌中…';
@@ -650,10 +959,15 @@
           const summary = buildSummary(cards, snapMode, question);
           renderDrawResult(cards, snapMode, question, summary);
           // 保存记录（v3.7.x：每个联系人桌面独立，store 动态绑定当前桌面）
+          const snapTarget = divineTarget; // v3.27.x：快照点击时的占卜对象
+          const record = { ts: Date.now(), mode: snapMode, count: snapCount, question: question, cards: cards, summary: summary };
+          if (snapTarget) record.target = targetName(snapTarget);
           const list = histLoad();
-          list.unshift({ ts: Date.now(), mode: snapMode, count: snapCount, question: question, cards: cards, summary: summary });
+          list.unshift(record);
           histSave(list);
           renderHistory();
+          // v3.27.x：写入占卜对象的主页「占卜记录」（不选＝当前桌面）
+          try { saveToHome(record, snapTarget); } catch (e) {}
           // v3.7.x：自动发送开关——开启后抽牌完成自动把结果发到聊天
           if (autoSendGet()) {
             const myCid = window.__activeCid || 'default';
@@ -694,6 +1008,8 @@
   function renderHistOnOpen() {
     try { renderHistory(); } catch (e) {}
     try { syncAutoToggle(); } catch (e) {}
+    // 占卜对象 chips（首次 + 切联系人后重渲染；当前桌面选择记忆在 per-cid 的 divine-target）
+    try { renderTargetsInto('div-targets'); } catch (e) {}
   }
   renderHistOnOpen();
   document.addEventListener('contact-switched', renderHistOnOpen);
@@ -716,6 +1032,448 @@
     });
   });
 
+  // ===== 牌面图鉴 UI（全部由 JS 构建：不改 template.html，避免与并行会话撞车）=====
+  function facePanelHTML() {
+    return '' +
+      '<div class="chat-head">' +
+        '<span class="ch-back" id="divf-back"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg></span>' +
+        '<span class="ch-name">牌面图鉴</span>' +
+      '</div>' +
+      '<div class="divf-tabs">' +
+        '<button class="divf-tab sel" data-fpanel="manage">牌面管理</button>' +
+        '<button class="divf-tab" data-fpanel="gallery">我的图鉴</button>' +
+      '</div>' +
+      '<div class="divf-tools">' +
+        '<button class="divf-batch-btn" id="divf-batch">📂 批量上传（按文件名自动对应牌）</button>' +
+        '<button class="divf-batch-btn" id="divf-onebased" style="margin-top:6px">编号从 1 起（塔罗 1–78）：关</button>' +
+        '<div class="divf-hint">按文件名自动对应牌：<br>' +
+          '· 牌名：<b>愚人.png</b>、<b>权杖王牌.jpg</b>（含子串也行，如 塔罗牌-愚人.png）<br>' +
+          '· 体系前缀：<b>塔罗-愚人.png</b>、<b>雷诺曼-骑士.jpg</b>、<b>tarot-00-魔术师.png</b><br>' +
+          '· 前缀序号：<b>07-战车.png</b><br>' +
+          '· 纯编号：塔罗 <b>00–77</b>、雷诺曼 <b>1–36/40</b>（同名跨体系按当前页签；塔罗编号从 0 起，如你的素材从 1 开始请开下方「编号从 1 起」）<br>' +
+          '未识别的文件会列出来，其余照常导入。</div>' +
+      '</div>' +
+      '<div class="divf-scroll">' +
+        '<div data-fpanel-body="manage">' +
+          '<div class="divf-modes" id="divf-modes">' +
+            '<button class="divf-mode sel" data-fmode="tarot">塔罗 78</button>' +
+            '<button class="divf-mode" data-fmode="lenormand">雷诺曼</button>' +
+          '</div>' +
+          '<div id="divf-list"></div>' +
+        '</div>' +
+        '<div data-fpanel-body="gallery" hidden>' +
+          '<div class="divf-gal-bar"><span id="divf-gal-count"></span><button class="divf-mini" id="divf-clear">清空全部</button></div>' +
+          '<div class="divf-grid" id="divf-grid"></div>' +
+        '</div>' +
+        '<div class="divf-io">' +
+          '<button class="divf-io-btn" id="divf-export">导出数据</button>' +
+          '<button class="divf-io-btn" id="divf-import">导入数据</button>' +
+        '</div>' +
+      '</div>' +
+      '<input type="file" accept="image/*" id="divf-imgfile" hidden>' +
+      '<input type="file" accept="image/*" multiple id="divf-batchfile" hidden>' +
+      '<input type="file" accept=".json,application/json" id="divf-jsonfile" hidden>';
+  }
+
+  function initFaceUI() {
+    const head = document.querySelector('#page-divine .chat-head');
+    if (head && !document.getElementById('div-faces-btn')) {
+      const btn = document.createElement('button');
+      btn.className = 'ch-more';
+      btn.id = 'div-faces-btn';
+      btn.title = '牌面图鉴';
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>';
+      head.appendChild(btn);
+      btn.addEventListener('click', openFacePanel);
+    }
+    const setup = document.querySelector('#page-divine .div-setup');
+    if (setup && !document.getElementById('div-leno-sys')) {
+      const wrap = document.createElement('div');
+      wrap.className = 'div-modes div-leno-sys';
+      wrap.id = 'div-leno-sys';
+      wrap.hidden = true;
+      wrap.innerHTML = '<button class="div-mode" data-lenosys="36">36 张 · 经典</button><button class="div-mode" data-lenosys="40">40 张 · 含扩展</button>';
+      setup.appendChild(wrap);
+      wrap.addEventListener('click', (e) => {
+        const b = e.target.closest('.div-mode');
+        if (!b) return;
+        leno36 = b.dataset.lenosys === '36';
+        try { gStore.set(LENO36_KEY, leno36 ? '1' : '0'); } catch (e2) {}
+        syncLenoSys();
+        clearResult();
+      });
+    }
+    if (!document.getElementById('divf-page')) {
+      const pg = document.createElement('div');
+      pg.className = 'divf-page';
+      pg.id = 'divf-page';
+      pg.hidden = true;
+      pg.innerHTML = facePanelHTML();
+      // 作为「占卜页内的浮层」而非独立 .page——tabs.js 的 pages/FULL_PAGES 是静态快照，
+      // 运行期新建的 .page 不在其中：隐藏占卜页会让 syncChrome 找不到可见页而把桌面
+      // 导航栏重新显示出来（用户反馈「牌面图鉴页顶部有桌面导航栏」）。浮层不动页面，
+      // 占卜页始终是可见的全屏页，chrome 状态天然正确。
+      const host = document.getElementById('page-divine') || document.body;
+      host.appendChild(pg);
+      wireFacePanel(pg);
+    }
+    injectChatFacesUI();
+    syncLenoSys();
+  }
+
+  // 把「牌面图鉴」入口 + 雷诺曼 36/40 切换注入聊天页占卜半框（不改 chat.js）
+  function injectChatFacesUI() {
+    const body = document.getElementById('chat-divine-body');
+    if (!body || document.getElementById('div-chat-faces-btn')) return;
+    const lenoWrap = document.createElement('div');
+    lenoWrap.className = 'div-modes-wrap div-leno-sys';
+    lenoWrap.id = 'div-chat-leno-sys';
+    lenoWrap.hidden = true;
+    lenoWrap.innerHTML = '<span class="div-mode" data-lenosys="36">36 张 · 经典</span><span class="div-mode" data-lenosys="40">40 张 · 含扩展</span>';
+    const modeWrap = body.querySelector('.div-modes-wrap');
+    if (modeWrap && modeWrap.parentNode === body) modeWrap.insertAdjacentElement('afterend', lenoWrap);
+    else body.insertBefore(lenoWrap, body.firstChild);
+    lenoWrap.addEventListener('click', (e) => {
+      const b = e.target.closest('.div-mode');
+      if (!b || !b.dataset.lenosys) return;
+      leno36 = b.dataset.lenosys === '36';
+      try { gStore.set(LENO36_KEY, leno36 ? '1' : '0'); } catch (e2) {}
+      syncLenoSys();
+    });
+    const bar = document.createElement('div');
+    bar.className = 'div-chat-facesbar';
+    bar.innerHTML = '<button type="button" class="div-chat-faces-btn" id="div-chat-faces-btn">🖼 牌面图鉴</button>';
+    const targets = body.querySelector('#div-chat-targets');
+    if (targets && targets.parentNode === body) targets.insertAdjacentElement('afterend', bar);
+    else body.insertBefore(bar, body.firstChild);
+    const fb = bar.querySelector('#div-chat-faces-btn');
+    if (fb) fb.addEventListener('click', (e) => { e.stopPropagation(); openFacePanelFromAnywhere(); });
+    // chat.js 自己的模式切换处理器会改 sel，这里追加监听以便同步 36/40 行显隐
+    body.querySelectorAll('[data-chatmode]').forEach(b => b.addEventListener('click', () => setTimeout(syncLenoSys, 0)));
+  }
+  // 从聊天半框进入：先切到占卜页再打开图鉴浮层
+  function openFacePanelFromAnywhere() {
+    const d = document.getElementById('page-divine');
+    if (d) {
+      document.querySelectorAll('.page').forEach(p => p.hidden = true);
+      d.hidden = false;
+    }
+    openFacePanel();
+  }
+
+  function openFacePanel() {
+    const pg = document.getElementById('divf-page');
+    if (!pg) return;
+    const d = document.getElementById('page-divine');
+    if (d) { facePanelScroll = d.scrollTop || 0; d.classList.add('divf-lock'); try { d.scrollTop = 0; } catch (e) {} }
+    pg.hidden = false;
+    syncFaceTabs();
+    renderFaceList();
+    renderFaceGallery();
+  }
+  function closeFacePanel() {
+    const pg = document.getElementById('divf-page');
+    if (pg) pg.hidden = true;
+    const d = document.getElementById('page-divine');
+    if (d) { d.classList.remove('divf-lock'); try { d.scrollTop = facePanelScroll; } catch (e) {} }
+    try { renderHistOnOpen(); } catch (e) {}
+  }
+  function syncFaceTabs() {
+    const pg = document.getElementById('divf-page');
+    if (!pg) return;
+    pg.querySelectorAll('.divf-tab').forEach(b => b.classList.toggle('sel', b.dataset.fpanel === faceTab));
+    pg.querySelectorAll('[data-fpanel-body]').forEach(b => { b.hidden = b.getAttribute('data-fpanel-body') !== faceTab; });
+    pg.querySelectorAll('.divf-mode').forEach(b => b.classList.toggle('sel', b.dataset.fmode === facePanelCid));
+  }
+  function renderFaceList() {
+    const el = document.getElementById('divf-list');
+    if (!el) return;
+    const m = facePanelCid || 'tarot';
+    const arr = m === 'tarot' ? TAROT : LENO;
+    const imap = iconMapOf(m);
+    el.innerHTML = arr.map(c => {
+      const thb = faceThb.get(m + '|' + c.name) || '';
+      const prev = thb
+        ? '<div class="divf-thb"><img src="' + thb + '" alt=""></div>'
+        : '<div class="divf-thb divf-thb-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' + (imap[ORIG_ICON[m][c.name]] || '') + '</svg></div>';
+      return '<div class="divf-row" data-name="' + escHtml(c.name) + '">' + prev +
+        '<div class="divf-name">' + escHtml(c.name) + '</div>' +
+        '<button class="divf-act divf-up">' + (thb ? '更换' : '上传') + '</button>' +
+        (thb ? '<button class="divf-act divf-del">清除</button>' : '') +
+        '</div>';
+    }).join('');
+  }
+  function renderFaceGallery() {
+    const grid = document.getElementById('divf-grid');
+    if (!grid) return;
+    const idx = loadFaceIdx();
+    const cnt = document.getElementById('divf-gal-count');
+    if (cnt) cnt.textContent = idx.length ? ('已上传 ' + idx.length + ' 张牌面') : '';
+    grid.innerHTML = idx.length ? idx.map(x => {
+      const thb = faceThb.get(x.m + '|' + x.n) || '';
+      return '<div class="divf-cell" data-m="' + x.m + '" data-name="' + escHtml(x.n) + '">' +
+        '<div class="divf-cell-img">' + (thb ? '<img src="' + thb + '" alt="">' : '<span class="divf-missing">图缺失</span>') + '</div>' +
+        '<div class="divf-cell-name">' + escHtml(x.n) + '<span class="divf-cell-mode">' + (x.m === 'tarot' ? '塔罗' : '雷诺曼') + '</span></div>' +
+        '<div class="divf-cell-acts"><button class="divf-mini divf-cell-up">更换</button><button class="divf-mini divf-cell-del">删除</button></div>' +
+        '</div>';
+    }).join('') : '<div class="divf-empty">还没有上传牌面。到「牌面管理」给喜欢的牌换张图吧。</div>';
+  }
+
+  function pickFaceFile(m, n) {
+    pendingUpload = { m: m, n: n };
+    const inp = document.getElementById('divf-imgfile');
+    if (inp) inp.click();
+  }
+  function deleteFace(m, n) {
+    window.openModal('删除「' + n + '」的自定义牌面？', '', (v) => {
+      if (v !== 'ok') return;
+      rmFaceData(m, n);
+      saveFaceIdx(loadFaceIdx().filter(x => !(x.m === m && x.n === n)));
+      rebuildFaces();
+      renderFaceList(); renderFaceGallery();
+      toast('已删除「' + n + '」的牌面');
+    }, { noInput: true, pillSubmit: true, staticText: '删除后恢复为默认牌面。', pills: [{ label: '删除', value: 'ok' }] });
+  }
+  function clearAllFaces() {
+    const n = loadFaceIdx().length;
+    if (!n) { toast('还没有上传牌面'); return; }
+    window.openModal('清空全部 ' + n + ' 张自定义牌面？（不可恢复）', '', (v) => {
+      if (v !== 'ok') return;
+      loadFaceIdx().forEach(x => rmFaceData(x.m, x.n));
+      saveFaceIdx([]);
+      rebuildFaces();
+      renderFaceList(); renderFaceGallery();
+      toast('已清空全部自定义牌面');
+    }, { noInput: true, pillSubmit: true, staticText: '将删除所有已上传的牌面图片。', pills: [{ label: '清空', value: 'ok' }] });
+  }
+
+  function buildFaceExport() {
+    const idx = loadFaceIdx();
+    if (!idx.length) return Promise.resolve('');
+    const readFull = (k) => {
+      const fallback = () => { try { return gStore.get(k) || ''; } catch (e) { return ''; } };
+      if (!window.idbGet) return Promise.resolve(fallback());
+      return Promise.resolve(window.idbGet(GNS + ':' + k)).then(v => (typeof v === 'string' && v) ? v : fallback()).catch(fallback);
+    };
+    // 顺序读取（不用 Promise.all）——几十张原图并发 idbGet 会挤在一条连接上，
+    // 慢设备上容易触发忙等；导出本就是一次性操作，顺序读更稳。
+    return idx.reduce((p, x) => p.then(faces => readFull(fullKey(x.m, x.n)).then(img => {
+      faces.push({
+        m: x.m, n: x.n,
+        img: img || faceThb.get(x.m + '|' + x.n) || '',
+        thb: faceThb.get(x.m + '|' + x.n) || ''
+      });
+      return faces;
+    })), Promise.resolve([])).then(faces => JSON.stringify({
+      v: 1, type: 'mochi-divine-faces', ts: Date.now(),
+      leno36: leno36 ? 1 : 0,
+      oneBased: faceOneBased ? 1 : 0,
+      faces: faces.filter(f => f.img || f.thb)
+    }));
+  }
+  function exportFacesData() {
+    if (!loadFaceIdx().length) { toast('还没有上传牌面'); return; }
+    toast('正在打包牌面数据…');
+    buildFaceExport().then(json => {
+      if (!json) { toast('还没有上传牌面'); return; }
+      const fname = 'mochi-divine-faces-' + dtStamp() + '.json';
+      if (window.mochiExportFile) { window.mochiExportFile(json, fname, '导出占卜牌面数据'); return; }
+      try {
+        const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = fname;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 4000);
+      } catch (e) { toast('导出失败，请换系统浏览器重试'); }
+    }).catch(() => toast('导出失败，请重试'));
+  }
+
+  function importFacesData(data) {
+    if (!data || data.type !== 'mochi-divine-faces' || !Array.isArray(data.faces)) { toast('文件格式不正确，请选择导出的牌面 JSON'); return; }
+    const valid = data.faces.filter(x => x && (x.m === 'tarot' || x.m === 'lenormand') && x.n && cardOf(x.m, x.n) &&
+      typeof (x.img || x.thb) === 'string' && (x.img || x.thb));
+    if (!valid.length) { toast('文件里没有可导入的牌面'); return; }
+    window.openModal('导入 ' + valid.length + ' 张牌面', '', (v) => {
+      if (!v) return;
+      applyImport(valid, v === 'replace', data.leno36, data.oneBased);
+    }, { noInput: true, pillSubmit: true, pill: 'merge', staticText: '「合并」保留现有牌面并覆盖同名；「覆盖」先清空现有牌面再导入。', pills: [{ label: '合并导入', value: 'merge' }, { label: '覆盖导入', value: 'replace' }] });
+  }
+  function applyImport(list, replace, l36, oneB) {
+    if (replace) { loadFaceIdx().forEach(x => rmFaceData(x.m, x.n)); }
+    const idx = replace ? [] : loadFaceIdx();
+    const byKey = {};
+    idx.forEach(x => { byKey[x.m + '|' + x.n] = true; });
+    let ok = 0;
+    list.forEach(x => {
+      const full = String(x.img || x.thb || '');
+      const thb = String(x.thb || x.img || '');
+      if (!full || full.length > 8 * 1024 * 1024) return;
+      try { gStore.set(fullKey(x.m, x.n), full); } catch (e) {}
+      try { gStore.set(thbKey(x.m, x.n), thb); } catch (e) {}
+      faceThb.set(x.m + '|' + x.n, thb);
+      if (!byKey[x.m + '|' + x.n]) { idx.push({ m: x.m, n: x.n, t: Date.now() }); byKey[x.m + '|' + x.n] = true; }
+      ok++;
+    });
+    saveFaceIdx(idx);
+    if (l36 === 0 || l36 === 1) {
+      leno36 = l36 === 1;
+      try { gStore.set(LENO36_KEY, leno36 ? '1' : '0'); } catch (e) {}
+      syncLenoSys();
+    }
+    if (oneB === 0 || oneB === 1) {
+      faceOneBased = oneB === 1;
+      try { gStore.set(ONEBASED_KEY, faceOneBased ? '1' : '0'); } catch (e) {}
+      obBtn_sync();
+    }
+    rebuildFaces();
+    renderFaceList(); renderFaceGallery();
+    toast('已导入 ' + ok + ' 张牌面');
+  }
+
+  // 批量上传：逐张按文件名匹配目标牌，压缩后落库；未识别的汇总提示
+  function handleBatchFiles(files) {
+    const list = Array.prototype.slice.call(files || []);
+    if (!list.length) return;
+    const defaultMode = facePanelCid || 'tarot';
+    const oneBased = faceOneBased;
+    const skipped = [];
+    let done = 0;
+    const step = (i) => {
+      if (i >= list.length) {
+        renderFaceList(); renderFaceGallery();
+        if (done) toast('批量导入 ' + done + ' 张牌面' + (skipped.length ? '，跳过 ' + skipped.length + ' 个' : ''));
+        else toast('没识别到对应牌（文件名需含牌名或编号）');
+        if (skipped.length && window.openModal) {
+          const names = skipped.slice(0, 15).join('、') + (skipped.length > 15 ? ' 等' : '');
+          window.openModal('以下 ' + skipped.length + ' 个文件没识别到对应牌', '', function () {}, { noInput: true, pillSubmit: true, big: true, staticText: names, pills: [{ label: '知道了', value: 'ok' }] });
+        }
+        return;
+      }
+      const f = list[i];
+      const hit = matchFaceFile(f.name, defaultMode, oneBased);
+      if (!hit) { skipped.push(f.name); step(i + 1); return; }
+      const rd = new FileReader();
+      rd.onload = () => {
+        compressImg(rd.result, 720, 0.85).then((full) => {
+          if (!full) { skipped.push(f.name); step(i + 1); return; }
+          compressImg(rd.result, 256, 0.82).then((thb) => {
+            if (!thb) { skipped.push(f.name); step(i + 1); return; }
+            storeFaceFromDataUrls(hit.m, hit.n, full, thb);
+            done++;
+            step(i + 1);
+          });
+        });
+      };
+      rd.onerror = () => { skipped.push(f.name); step(i + 1); };
+      rd.readAsDataURL(f);
+    };
+    step(0);
+  }
+
+  function wireFacePanel(pg) {
+    const back = pg.querySelector('#divf-back');
+    if (back) back.addEventListener('click', closeFacePanel);
+    pg.querySelectorAll('.divf-tab').forEach(b => b.addEventListener('click', () => {
+      faceTab = b.dataset.fpanel;
+      syncFaceTabs();
+      if (faceTab === 'gallery') renderFaceGallery(); else renderFaceList();
+    }));
+    const modes = pg.querySelector('#divf-modes');
+    if (modes) modes.addEventListener('click', (e) => {
+      const b = e.target.closest('.divf-mode');
+      if (!b) return;
+      facePanelCid = b.dataset.fmode;
+      syncFaceTabs();
+      renderFaceList();
+    });
+    const list = pg.querySelector('#divf-list');
+    if (list) list.addEventListener('click', (e) => {
+      const row = e.target.closest('.divf-row');
+      if (!row) return;
+      const n = row.dataset.name;
+      if (e.target.closest('.divf-del')) deleteFace(facePanelCid, n);
+      else if (e.target.closest('.divf-up')) pickFaceFile(facePanelCid, n);
+    });
+    const grid = pg.querySelector('#divf-grid');
+    if (grid) grid.addEventListener('click', (e) => {
+      const cell = e.target.closest('.divf-cell');
+      if (!cell) return;
+      const m = cell.dataset.m, n = cell.dataset.name;
+      if (e.target.closest('.divf-cell-del')) deleteFace(m, n);
+      else if (e.target.closest('.divf-cell-up')) pickFaceFile(m, n);
+    });
+    const clr = pg.querySelector('#divf-clear');
+    if (clr) clr.addEventListener('click', clearAllFaces);
+    const ex = pg.querySelector('#divf-export');
+    if (ex) ex.addEventListener('click', exportFacesData);
+    const imp = pg.querySelector('#divf-import');
+    const jsonInput = pg.querySelector('#divf-jsonfile');
+    if (imp && jsonInput) imp.addEventListener('click', () => jsonInput.click());
+    const imgInput = pg.querySelector('#divf-imgfile');
+    const batchInput = pg.querySelector('#divf-batchfile');
+    const batchBtn = pg.querySelector('#divf-batch');
+    if (batchBtn && batchInput) batchBtn.addEventListener('click', () => batchInput.click());
+    const obBtn = pg.querySelector('#divf-onebased');
+    obBtn_sync();
+    if (obBtn) obBtn.addEventListener('click', () => {
+      faceOneBased = !faceOneBased;
+      try { gStore.set(ONEBASED_KEY, faceOneBased ? '1' : '0'); } catch (e) {}
+      obBtn_sync();
+      toast(faceOneBased ? '已开启：塔罗纯编号按 1–78 对应' : '已关闭：塔罗纯编号按 0–77 对应');
+    });
+    if (batchInput) batchInput.addEventListener('change', () => {
+      // 必须先拷出 FileList 再清空 value——FileList 是活引用，清空后 length 归 0
+      const arr = batchInput.files ? Array.prototype.slice.call(batchInput.files) : [];
+      batchInput.value = '';
+      if (arr.length) handleBatchFiles(arr);
+    });
+    if (imgInput) imgInput.addEventListener('change', () => {
+      const f = imgInput.files && imgInput.files[0];
+      imgInput.value = '';
+      if (!f || !pendingUpload) return;
+      const target = pendingUpload;
+      pendingUpload = null;
+      const rd = new FileReader();
+      rd.onload = () => {
+        compressImg(rd.result, 720, 0.85).then((full) => {
+          if (!full) { toast('图片过大或无法读取，请换一张'); return; }
+          compressImg(rd.result, 256, 0.82).then((thb) => {
+            if (!thb) { toast('图片处理失败，请换一张'); return; }
+            storeFaceFromDataUrls(target.m, target.n, full, thb);
+            renderFaceList(); renderFaceGallery();
+            toast('已设为「' + target.n + '」的牌面');
+          });
+        });
+      };
+      rd.onerror = () => toast('图片读取失败');
+      rd.readAsDataURL(f);
+    });
+    if (jsonInput) jsonInput.addEventListener('change', () => {
+      const f = jsonInput.files && jsonInput.files[0];
+      jsonInput.value = '';
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => {
+        let d = null;
+        try { d = JSON.parse(String(rd.result || '')); } catch (e) { toast('文件解析失败，请选择导出的牌面 JSON'); return; }
+        importFacesData(d);
+      };
+      rd.onerror = () => toast('文件读取失败');
+      rd.readAsText(f);
+    });
+  }
+
+  // ---- 初始化：构建 UI + 载入已存牌面（IDB 回填完成后再补一次） ----
+  try { initFaceUI(); } catch (e) {}
+  try { loadFaces(); } catch (e) {}
+  try {
+    document.addEventListener('mochi-restore-done', function () {
+      try { faceOneBased = gStore.get(ONEBASED_KEY) === '1'; obBtn_sync(); } catch (e) {}
+      try { loadFaces(); } catch (e) {}
+    });
+  } catch (e) {}
+
   // ---- v3.7.x：暴露给聊天页占卜半框共用（chat.js 在 divination.js 之前加载，
   // 半框只在点击时调用这些 API，运行时均已就绪） ----
   window.startDivineDraw = startDivineDraw;
@@ -727,4 +1485,16 @@
   window.divineBuildResultText = buildResultText;
   window.divineCopyResultText = copyResultText;
   window.divineSendResult = function (m, cards, summary, question) { sendToChat(m, cards, summary, question); };
+  // v3.27.x：主页「占卜记录 → 查看牌面」复用占卜页完整结果渲染（records.js 已负责切页）
+  window.divineRenderResult = function (cards, m, question, summary) {
+    try { renderDrawResult(cards, m, question, summary); } catch (e) {}
+  };
+  // v3.27.x：牌面数据 API（图鉴页按钮内部用；也便于测试）
+  window.divineFaces = {
+    exportJSON: buildFaceExport,
+    importData: importFacesData,
+    count: function () { return loadFaceIdx().length; },
+    leno36: function () { return leno36; },
+    matchName: matchFaceFile
+  };
 })();

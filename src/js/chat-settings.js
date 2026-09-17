@@ -128,6 +128,37 @@
       fix.textContent = rules.join('\n');
     } else if (fix) fix.remove();
   }
+  const CHAT_SURFACE_SETTINGS = [
+    { key: 'cs-head-opacity', label: '顶部栏不透明度', def: 92, max: 100, unit: '%' },
+    { key: 'cs-input-opacity', label: '底部输入栏不透明度', def: 92, max: 100, unit: '%' },
+    { key: 'cs-bubble-opacity', label: '气泡底色不透明度', def: 100, max: 100, unit: '%' },
+    { key: 'cs-head-inset', label: '顶部栏向下移动', def: 0, max: 80, unit: 'px' },
+    { key: 'cs-input-inset', label: '底部栏向上移动', def: 0, max: 80, unit: 'px' }
+  ];
+  function surfaceValue(item) {
+    const raw = store.get(item.key);
+    const n = raw === null || raw === undefined || String(raw).trim() === '' ? item.def : Number(raw);
+    return Number.isFinite(n) ? Math.max(0, Math.min(item.max, Math.round(n))) : item.def;
+  }
+  function applyChatSurfaces(inBg, outBg) {
+    if (!chatPage) return;
+    const values = CHAT_SURFACE_SETTINGS.map(surfaceValue);
+    CHAT_SURFACE_SETTINGS.forEach((item, i) => {
+      chatPage.style.setProperty('--' + item.key, item.unit === '%' ? values[i] / 100 : values[i] + 'px');
+    });
+    // Keep opaque colors intact for the existing contrast guard; alpha affects only bubble paint.
+    [['in', inBg], ['out', outBg]].forEach(([side, color]) => {
+      const rgb = _csHexRgb(color);
+      chatPage.style.setProperty('--cs-' + side + '-surface', rgb ? 'rgba(' + rgb.join(',') + ',' + values[2] / 100 + ')' : color);
+    });
+    const labels = {
+      'cs-bar-op-val': '顶 ' + values[0] + '% / 底 ' + values[1] + '%',
+      'cs-bubble-op-val': values[2] + '% 不透明',
+      'cs-bar-pos-val': '顶 ↓' + values[3] + ' / 底 ↑' + values[4] + 'px',
+      'cs-typing-ink-val': store.get('cs-typing-ink') || '#8a8a8a'
+    };
+    Object.keys(labels).forEach(id => { const el = document.getElementById(id); if (el) el.textContent = labels[id]; });
+  }
   function applySettings() {
     // 设置页值写入（定义在最前，避免暂时性死区）
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
@@ -217,6 +248,7 @@
     const rm = document.getElementById('cs-bg-remove');
     if (rm) rm.hidden = !bg;
     _ensureBubbleContrast();
+    applyChatSurfaces(inBg, outBg);
   }
   window.applyChatSettings = applySettings;
   applySettings();
@@ -733,6 +765,39 @@
       });
     });
   }
+  function editChatSurface(index) {
+    if (!window.openModal) return;
+    const item = CHAT_SURFACE_SETTINGS[index];
+    const cid = window.activePrefix();
+    window.openModal(item.label, '', v => {
+      if (window.activePrefix() !== cid) return;
+      const n = Number(v);
+      if (!Number.isFinite(n)) return;
+      store.set(item.key, String(Math.max(0, Math.min(item.max, Math.round(n)))));
+      applySettings();
+    }, {
+      noInput: true,
+      slider: { min: 0, max: item.max, step: 1, value: surfaceValue(item), unit: item.unit,
+        label: item.unit === '%' ? '0% 全透明 · 100% 不透明；确认后生效' : '0px 为默认位置；保留安全区，确认后生效' },
+      pills: [{ label: '恢复默认', value: item.def }]
+    });
+  }
+  function bindChatSurfaceGroup(id, title, indices) {
+    const el = row(id);
+    if (!el) return;
+    el.addEventListener('click', () => {
+      if (!window.openModal) return;
+      window.openModal(title, '', v => {
+        const index = Number(v);
+        if (indices.indexOf(index) >= 0) setTimeout(() => editChatSurface(index), 0);
+      }, { noInput: true, pill: indices[0], pills: indices.map(index => ({ label: CHAT_SURFACE_SETTINGS[index].label, value: index })) });
+    });
+  }
+  bindChatSurfaceGroup('cs-bar-op', '选择要调整的栏背景', [0, 1]);
+  bindChatSurfaceGroup('cs-bar-pos', '选择要微调的位置（仅当前桌面）', [3, 4]);
+  const bubbleOpacityRow = row('cs-bubble-op');
+  if (bubbleOpacityRow) bubbleOpacityRow.addEventListener('click', () => editChatSurface(2));
+  bindBubbleColorRow('cs-typing-ink', 'cs-typing-ink', '#8a8a8a', '对方正在输入文字颜色', [{ color: '#8a8a8a', label: '默认灰' }].concat(BUBBLE_INK_COLORS));
   // 我的气泡（out 深色系）/ 联系人气泡（in 浅色系）与各自文字色
   bindBubbleColorRow('cs-out-bg', 'cs-out-bg', '#111111', '我的气泡颜色', BUBBLE_BG_COLORS);
   bindBubbleColorRow('cs-out-ink', 'cs-out-ink', '#ffffff', '我的消息文字颜色', BUBBLE_INK_COLORS);
@@ -844,24 +909,134 @@
 
   // ================= 全局字体（上传本地字体 / 输入字体名或链接，v3.5.34 起全局应用） =================
   const csFontRow = row('cs-font');
+  // v3.26.x #628：字体仍按桌面各存各的（键 cs-font，per-cid，与壁纸/气泡/字号等同桌面美化一致，
+  //   每个联系人桌面可以各自排版）。用户报的「上传字体，无法应用到全部桌面」缺的是「一键推给
+  //   其它桌面」这一步 —— 面板里新增「同步到全部桌面」按钮（syncFontAllDesks，两个入口都有）。
+  //   ⚠️ default 桌面的 activeStore() 是 contacts.js 的 defaultStore：它的 get 会回退读根键、
+  //   set/remove 会连带处理同名根键——写入统一走下面三个函数，便于 demoteFontGlobal 处理中间版残留。
   const FONT_KEY = 'cs-font';
   function fontVal() { return store.get(FONT_KEY) || ''; }
-  function applyFont() {
-    // 移除旧的字体样式
-    const old = document.getElementById('cs-font-style');
-    if (old) old.remove();
+  function fontSet(v) { store.set(FONT_KEY, v); }
+  function fontRemove() { store.remove(FONT_KEY); }
+  // #642 字体去重：上传型字体（几 MB 的 dataURL）按内容哈希存【全局唯一一份】
+  //   xy-home-v2:font-blob-<hash>，各桌面 cs-font 只存轻量引用 '@@font:<hash>' ——
+  //   3 个桌面用同一个字体只占 1 份存储（此前「同步到全部桌面」会整份复制 N 份）。
+  //   哈希只做「同内容合并」用途（djb2 + 长度），碰撞概率对人工上传场景可忽略。
+  function fontHash(s) {
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) { h = ((h << 5) + h + s.charCodeAt(i)) | 0; }
+    return (h >>> 0).toString(36) + '-' + s.length.toString(36);
+  }
+  function fontBlobPut(hash, dataURL) { try { window.xyStore('xy-home-v2').set('font-blob-' + hash, dataURL); } catch (e) {} }
+  function fontSetDataFor(s, dataURL) {
+    const h = fontHash(dataURL);
+    fontBlobPut(h, dataURL);
+    try { s.set(FONT_KEY, '@@font:' + h); } catch (e) {}
+  }
+  function fontSetData(dataURL) { fontSetDataFor(store, dataURL); }
+  let _fontHydrating = {};
+  // 引用展开：'@@font:<hash>' → 全局唯一下载的 dataURL；同步读不到（大键只进 IDB /
+  //   被 OOM 预算 defer）时异步 idbGet 补读一次并重应用，补读落地前按「未设字体」渲染。
+  function fontResolved() {
     const v = fontVal();
+    if (v.indexOf('@@font:') !== 0) return v;
+    const hash = v.slice(7);
+    const g = window.xyStore('xy-home-v2');
+    const blob = g.get('font-blob-' + hash);
+    if (blob) return blob;
+    if (window.idbGet && !_fontHydrating[hash]) {
+      _fontHydrating[hash] = true;
+      window.idbGet('xy-home-v2:font-blob-' + hash).then(b => {
+        if (b && typeof b === 'string' && b.length > 2) { fontBlobPut(hash, b); applyFont(); csFontChanged(); }
+      }).catch(() => {});
+    }
+    return '';
+  }
+  // 全部桌面 id（default + 各联系人）
+  function deskFontCids() {
+    const ids = ['default'];
+    try { (window.getContacts() || []).forEach(c => { if (c && c.id && ids.indexOf(c.id) < 0) ids.push(c.id); }); } catch (e) {}
+    return ids;
+  }
+  // 字体变更广播：桌面美化页「全局字体」行（personalize.js）与这里是同键同功能，
+  // 任一边改动后另一边即时回显（apply* 内不广播，防两边互相触发成环）
+  function csFontChanged() { try { document.dispatchEvent(new Event('cs-font-changed')); } catch (e) {} }
+  // v3.26.x #628：反向兼容——本号初版（中间版本）曾把字体改存【根键】xy-home-v2:cs-font
+  //   （所有桌面共用一个值）。现改回「每个桌面各存各的」+同步按钮，故把那版残留的根键值回填给
+  //   每个【还没设字体】的桌面（不覆盖各桌面已有的字体），再删掉根键——否则那版用户只有
+  //   default 桌面看得到字体。根值是上传型 dataURL 时得等 idbRestore 回填才读得到，故 restore-done 再补一次。
+  function demoteFontGlobal() {
+    try {
+      if (!window.storeFor) return;
+      let root = '';
+      try { root = window.xyStore('xy-home-v2').get(FONT_KEY) || ''; } catch (e) {}
+      if (!root) return;
+      deskFontCids().forEach(id => {
+        try { const s = window.storeFor(id); if (!s.get(FONT_KEY)) s.set(FONT_KEY, root); } catch (e) {}
+      });
+      try { window.xyStore('xy-home-v2').remove(FONT_KEY); } catch (e) {}
+      applyFont();
+      csFontChanged();
+    } catch (e) {}
+  }
+  // 「同步到全部桌面」：把当前桌面的字体推给其它所有桌面（含还没设字体的），二次确认后一次写齐。
+  // 与聊天壁纸的「把壁纸和图库同步到全部联系人」同款交互（会覆盖对方桌面现有的字体，故要确认）。
+  function syncFontAllDesks() {
+    const v = fontVal();
+    if (!v) { toast('当前桌面还没有自定义字体：先上传字体或输入字体名，点「应用」'); return; }
+    const me = (window.getActiveContact && window.getActiveContact()) || 'default';
+    const others = deskFontCids().filter(id => id !== me);
+    if (!others.length) { toast('现在只有这一个桌面，无需同步'); return; }
+    if (!window.openModal || !window.storeFor) return;
+    window.openModal('同步字体到全部桌面', '', (r) => {
+      if (r !== '__yes__') return;
+      let n = 0;
+      others.forEach((id) => { try { window.storeFor(id).set(FONT_KEY, v); n++; } catch (e) {} });
+      csFontChanged();
+      toast('已同步到 ' + n + ' 个桌面（切到对应桌面即可看到）');
+    }, { noInput: true, pills: [{ label: '确认同步（覆盖其它桌面的字体）', value: '__yes__' }, { label: '取消', value: '__no__' }] });
+  }
+  // 桌面美化页入口（personalize.js）的「同步到全部桌面」按钮复用同一份实现，避免两处漂移
+  window.csFontSyncAllDesks = syncFontAllDesks;
+  // #642：美化页上传/下载字体也走「全局唯一份 + 轻量引用」（实现只有这一份）
+  window.csFontStoreData = fontSetData;
+  // #642：存量迁移——把各桌面 cs-font 里的整份 dataURL 收敛为「全局唯一份 + 轻量引用」；
+  //   幂等（已是引用的跳过），同内容多桌面自动合并到同一 blob。启动一次 + restore-done
+  //   再补一次（上传型大键要等 IDB 回填才读得到）。
+  function migrateFontBlobs() {
+    try {
+      if (!window.storeFor) return;
+      deskFontCids().forEach((id) => {
+        try {
+          const s = window.storeFor(id);
+          const v = s.get(FONT_KEY);
+          if (v && v.indexOf('data:') === 0) fontSetDataFor(s, v);
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+  window.migrateFontBlobs = migrateFontBlobs;
+  function applyFont() {
+    const v = fontResolved();
     const setVal = document.getElementById('cs-font-val');
     if (setVal) setVal.textContent = v ? (v.indexOf('data:') === 0 ? '已上传' : v) : '默认';
+    // 同一个值已在位就不再重注入——dataURL 字体可达 MB 级，而切桌面/回填兜底都会调到这里
+    const old = document.getElementById('cs-font-style');
+    if (old && old.__fontVal === v) return;
+    // 移除旧的字体样式
+    if (old) old.remove();
     if (!v) {
-      document.body.style.fontFamily = '';
-      document.documentElement.style.fontFamily = '';
+      if (document.body.style.fontFamily || document.documentElement.style.fontFamily) {
+        document.body.style.fontFamily = '';
+        document.documentElement.style.fontFamily = '';
+      }
       return;
     }
     // dataURL → @font-face 注入 + 全局应用（body/html 继承到全部页面，不只聊天）
     if (v.indexOf('data:') === 0) {
       const st = document.createElement('style');
       st.id = 'cs-font-style';
+      st.__fontVal = v;
       st.textContent = '@font-face{font-family:"cs-custom-font";src:url("' + v + '");font-display:swap;}' +
         'body,html{font-family:"cs-custom-font",sans-serif !important;}';
       document.head.appendChild(st);
@@ -877,10 +1052,14 @@
     csFontRow.addEventListener('click', () => {
       if (!window.openTCPanel) return;
       window.openTCPanel('全局字体', '' +
-        '<div class="sm-fld"><label>上传本地字体（ttf / otf / woff / woff2），应用后全局生效</label>' +
+        '<div class="sm-fld"><label>上传本地字体（ttf / otf / woff / woff2），应用后本桌面全部页面生效</label>' +
         // v3.6.x：字体名做 HTML 转义——原逻辑直接拼接 value 属性，字体名含 " 或 < 会破坏弹层结构
-        '<input class="tc-input" id="cs-font-name" placeholder="也可直接输入字体名或链接，如 Microsoft YaHei"' + (fontVal() && fontVal().indexOf('data:') !== 0 && fontVal().indexOf('http') !== 0 ? ' value="' + String(fontVal()).replace(/"/g, '&quot;').replace(/</g, '&lt;') + '"' : '') + '></div>' +
-        '<div class="mail-actions"><button class="cc-tool" id="cs-font-upload">上传字体</button><button class="cc-tool" id="cs-font-clear">恢复默认</button><button class="cc-tool" id="cs-font-ok">应用</button></div>');
+        '<input class="tc-input" id="cs-font-name" placeholder="也可直接输入字体名或链接，如 Microsoft YaHei"' + (fontResolved() && fontResolved().indexOf('data:') !== 0 && fontResolved().indexOf('http') !== 0 ? ' value="' + String(fontResolved()).replace(/"/g, '&quot;').replace(/</g, '&lt;') + '"' : '') + '></div>' +
+        '<div class="mail-actions"><button class="cc-tool" id="cs-font-upload">上传字体</button><button class="cc-tool" id="cs-font-clear">恢复默认</button><button class="cc-tool" id="cs-font-ok">应用</button></div>' +
+        // #628：字体按桌面独立（每个联系人可各自排版）——其它桌面也要用同一个字体时点这颗同步，
+        // 不必逐个桌面重新上传（上传型字体可达几 MB，重传很麻烦）
+        '<div class="sm-fld" style="margin-top:10px"><label>其它桌面也要用这个字体？</label>' +
+        '<button id="cs-font-sync" style="width:100%;padding:10px;border:1px solid var(--card-border,#ddd);border-radius:10px;background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:13px">同步到全部桌面</button></div>');
       document.getElementById('cs-font-upload').addEventListener('click', () => {
         const inp = document.createElement('input');
         inp.type = 'file';
@@ -891,10 +1070,11 @@
           toast('正在读取字体文件…');
           const reader = new FileReader();
           reader.onload = () => {
-            store.set(FONT_KEY, reader.result);
+            fontSetData(reader.result); // #642：存全局唯一份 + 轻量引用（同内容跨桌面只存一份）
             document.getElementById('tc-mask').hidden = true;
             applyFont();
-            toast('字体已应用成功');
+            csFontChanged();
+            toast('字体已应用到本桌面');
           };
           reader.onerror = () => { toast('字体文件读取失败，请重试'); };
           reader.readAsDataURL(f);
@@ -902,9 +1082,10 @@
         inp.click();
       });
       document.getElementById('cs-font-clear').addEventListener('click', () => {
-        store.remove(FONT_KEY);
+        fontRemove();
         document.getElementById('tc-mask').hidden = true;
         applyFont();
+        csFontChanged();
         toast('已恢复默认字体');
       });
       document.getElementById('cs-font-ok').addEventListener('click', () => {
@@ -919,33 +1100,44 @@
           }).then(blob => {
             const rd = new FileReader();
             rd.onload = () => {
-              store.set(FONT_KEY, rd.result);
+              fontSetData(rd.result); // #642：全局唯一份 + 引用
               document.getElementById('tc-mask').hidden = true;
               applyFont();
+              csFontChanged();
               toast('字体下载并应用成功');
             };
             rd.onerror = () => {
-              store.set(FONT_KEY, name);
+              fontSet(name);
               document.getElementById('tc-mask').hidden = true;
               applyFont();
+              csFontChanged();
               toast('字体读取失败，已按字体名应用');
             };
             rd.readAsDataURL(blob);
           }).catch(() => {
-            store.set(FONT_KEY, name);
+            fontSet(name);
             document.getElementById('tc-mask').hidden = true;
             applyFont();
+            csFontChanged();
             toast('链接下载失败，已按字体名应用');
           });
           return;
         }
-        store.set(FONT_KEY, name);
+        fontSet(name);
         document.getElementById('tc-mask').hidden = true;
         applyFont();
-        toast('字体已应用成功');
+        csFontChanged();
+        toast('字体已应用到本桌面');
       });
+      // #628：一键把本桌面字体推给其它桌面（实现见 syncFontAllDesks，桌面美化入口复用同一份）
+      document.getElementById('cs-font-sync').addEventListener('click', () => { syncFontAllDesks(); });
     });
   }
+  // 中间版「全局字体」残留的根键回填到各桌面（一次性、幂等；大键等 restore-done 再补）
+  demoteFontGlobal();
+  // #642：存量整份字体收敛为全局唯一下载（幂等；大键等 restore-done 再补一次）
+  migrateFontBlobs();
+  try { document.addEventListener('mochi-restore-done', () => { migrateFontBlobs(); applyFont(); }); } catch (e) {}
   applyFont();
 
   // ================= 气泡 CSS（自定义样式，极简黑白灰） =================
@@ -1033,7 +1225,8 @@
     'cs-bg', 'cs-bubble-css', 'cs-font', 'cs-font-size', 'cs-bubble-size',
     'cs-bubble-radius', 'cs-av-shape', 'cs-time-style', 'cs-time-ink', 'cs-typing-ink',
     'cs-out-bg', 'cs-out-ink', 'cs-in-bg', 'cs-in-ink',
-    'cs-send-bg', 'cs-send-ink', 'cs-send-show'
+    'cs-send-bg', 'cs-send-ink', 'cs-send-show',
+    'cs-head-opacity', 'cs-input-opacity', 'cs-bubble-opacity', 'cs-head-inset', 'cs-input-inset'
   ];
   const getChatSchemes = () => {
     try { const a = JSON.parse(gStoreChat.get(CHAT_SCHEMES_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
@@ -1062,6 +1255,7 @@
     let n = 0;
     CHAT_BEAUTY_KEYS.forEach(k => { if (data[k] !== undefined) { store.set(k, data[k]); n++; } });
     try { applySettings(); applyCss(); applyFont(); } catch (e) {}
+    try { csFontChanged(); } catch (e) {}
     return n;
   };
   // FIX #527：聊天美化导入的兑底备份——此前 chatSchemeImport 直接覆盖、无「导入前备份」、
@@ -1587,9 +1781,10 @@
       });
       window.idbGet(myPrefix + ':' + FONT_KEY).then(v => {
         if (window.activePrefix() !== myPrefix) return;
-        if (v && typeof v === 'string' && v.length > 2 && !store.get(FONT_KEY)) {
-          store.set(FONT_KEY, v);
+        if (v && typeof v === 'string' && v.length > 2 && !fontVal()) {
+          fontSet(v);
           applyFont();
+          csFontChanged();
         }
       });
       // v3.14.x：气泡 CSS 同款兜底——LS 写失败（配额满）或被浏览器清理后值只剩 IDB 副本，
@@ -1609,6 +1804,9 @@
   //   上方 idbGet 补读又被 !store.get() 条件跳过（idbRestore 先回填 memoryCache 时）→
   //   字体刷新后不应用。数据就绪后兜底再应用一次（applyFont 幂等，重复调用安全）
   document.addEventListener('mochi-restore-done', function () {
+    // #628：上传的字体是 dataURL 大键（只进 IDB+memoryCache），回填完成才读得到——中间版
+    // 「全局字体」残留根键的回填在此补一次（小值在上面初始化时已处理）
+    try { demoteFontGlobal(); } catch (e) {}
     try { applyFont(); } catch (e) {}
     try { applyProfile(); } catch (e) {}
     // v3.14.x：气泡 CSS 补应用——boot 时 applyCss 跑在 IDB 回填完成前（值只在 IDB 时
@@ -1616,11 +1814,11 @@
     // applyCss 幂等：会话内已写入时 memoryCache 值更新，重应用无副作用
     try { applyCss(); } catch (e) {}
   });
-  // v3.6.x：多桌面——切换联系人后重新应用聊天美化（壁纸/气泡颜色/字号/形状按新桌面）
-  // v3.9.x 修复：气泡 CSS / 全局字体也是按联系人存储（cs-bubble-css / cs-font），
-  // 但注入的 <style>（cs-bubble-style / cs-font-style）是全局标签，切换联系人后必须
-  // 一并重应用/清除，否则 A 桌面的自定义气泡样式/字体会一直盖在 B 桌面上（改一个
-  // 联系人所有联系人的气泡都跟着变）。
+  // v3.6.x：多桌面——切换联系人后重新应用聊天美化（壁纸/气泡颜色/字号/形状/字体均按新桌面）
+  // v3.9.x 修复：气泡 CSS / 全局字体也是按联系人存储（cs-bubble-css / cs-font），但注入的
+  // <style>（cs-bubble-style / cs-font-style）是全局标签，切换联系人后必须一并重应用/清除，
+  // 否则 A 桌面的自定义气泡样式/字体会一直盖在 B 桌面上（改一个联系人所有联系人的气泡都跟着变）。
+  // #628：字体加了「同值不重复注入」守卫，切到字体相同的桌面时不会重建 MB 级 @font-face。
   document.addEventListener('contact-switched', function () {
     try { applySettings(); } catch (e) {}
     try { applyProfile(); } catch (e) {}
@@ -1839,6 +2037,216 @@
     document.addEventListener('mochi-wrj-heal', syncVs);
   }
 
+  // v3.27.x #660：输入栏按钮位置（统一管理）——底部输入栏这一排按钮（含「开关型」的
+  // 麦克风/继续说/批量发送与输入框本身）的左右顺序，点行进排序面板。顺序存 cs-input-order
+  // （每联系人独立，与 cs-voice-send/cs-batch-send 同域），chat.js 用 flex order 应用到聊天页
+  // 与群聊两处输入栏（读 window.mochiInputOrder）。
+  // 与三个开关的关系：本项只管「排在哪里」，开关只管「显不显示」，互不覆盖——关着的按钮
+  // 仍在排序列表里（标「开关未开启」），开关打开后自动出现在这里保存的位置。
+  // 「发送」是固定收尾的动作按钮，不参与排序（列表底部只作展示）。
+  const IO_META = {
+    mic: { label: '录音（语音消息）', sub: '开关：聊天设置 →「我可发送语音」' },
+    continue: { label: '继续说', sub: '开关：回复设置 →「聊天栏继续说按钮」' },
+    more: { label: '更多功能' },
+    emoji: { label: '表情包' },
+    input: { label: '输入框', sub: '位置可调、不可移除；把按钮挪到它前面／后面即换到另一侧' },
+    img: { label: '插入图片' },
+    batch: { label: '批量发送', sub: '开关：聊天设置 →「批量发送消息」' }
+  };
+  const IO_SWITCHED = { mic: 1, continue: 1, batch: 1 }; // 带独立开关的项：未开时列表标「开关未开启」
+  const IO_BTN_STYLE = 'width:34px;height:34px;flex-shrink:0;border:1px solid var(--card-border,#e0e0e0);border-radius:9px;background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:15px;line-height:1;font-family:inherit;cursor:pointer';
+  const inputOrderRead = () => (window.mochiInputOrder ? window.mochiInputOrder.read() : []);
+  function inputOrderPanelOpen() {
+    const m = document.getElementById('cs-input-order-panel');
+    return !!(m && m.style.display === 'flex');
+  }
+  function inputOrderSync() {
+    const el = document.getElementById('cs-input-order-val');
+    if (el) el.textContent = (window.mochiInputOrder && !window.mochiInputOrder.isDefault()) ? '已自定义' : '默认排列';
+  }
+  // 取一排里某个令牌的实时图标：直接借用聊天页输入栏上那个真按钮里的 SVG——
+  // 面板不维护第二份图标，按钮换图这里自然跟着换。输入框是 div，没有图标。
+  function inputOrderIcon(token) {
+    if (token === 'input') return '';
+    const src = document.querySelector('#page-chat .chat-input-row [data-io="' + token + '"]');
+    return src ? src.innerHTML : '';
+  }
+  // 该按钮现在是否被开关藏起来了（只看聊天页那排的实时显示态——它就是 chat.js 按开关写的）
+  function inputOrderHidden(token) {
+    if (!IO_SWITCHED[token]) return false;
+    const src = document.querySelector('#page-chat .chat-input-row [data-io="' + token + '"]');
+    return !!(src && src.style.display === 'none');
+  }
+  function inputOrderMove(token, dir) {
+    if (!window.mochiInputOrder) return;
+    const order = inputOrderRead().slice();
+    const i = order.indexOf(token), j = i + dir;
+    if (i < 0 || j < 0 || j >= order.length) return;
+    order[i] = order[j];
+    order[j] = token;
+    window.mochiInputOrder.write(order);
+    inputOrderSync();
+    renderInputOrderPanel();
+  }
+  function renderInputOrderPanel() {
+    const m = document.getElementById('cs-input-order-panel');
+    const box = m && m.firstChild;
+    if (!box) return;
+    const order = inputOrderRead();
+    box.innerHTML = '';
+    const hd = document.createElement('div');
+    hd.innerHTML = '<div style="font-size:16px;font-weight:600">输入栏按钮位置</div>'
+      + '<div style="font-size:12px;color:var(--muted,#888);margin-top:5px;line-height:1.5">'
+      + '点 ← → 调整左右顺序（列表自上而下＝从最左到最右）；「发送」按钮固定在最右端，不参与排序。'
+      + '此项只影响排列位置，不影响各按钮的开关与显隐。</div>';
+    box.appendChild(hd);
+    // 预览条：按当前顺序把这一排画出来（含输入框与固定的发送按钮）
+    const prev = document.createElement('div');
+    prev.style.cssText = 'display:flex;align-items:center;gap:6px;padding:10px;margin:10px 0 12px;border-radius:12px;background:var(--bg-b,#f5f5f5);overflow-x:auto;-webkit-overflow-scrolling:touch';
+    order.forEach((t) => {
+      if (t === 'input') {
+        const iw = document.createElement('div');
+        iw.textContent = '说点什么…';
+        iw.style.cssText = 'flex:1;min-width:46px;font-size:11px;color:var(--hint-ink,#b5b5b5);padding:5px 9px;border-radius:99px;background:var(--card-bg,#fff);border:1px solid rgba(0,0,0,.08);white-space:nowrap;overflow:hidden';
+        prev.appendChild(iw);
+        return;
+      }
+      const ic = document.createElement('div');
+      ic.innerHTML = inputOrderIcon(t);
+      ic.style.cssText = 'width:26px;height:26px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--card-bg,#fff);border:1px solid rgba(0,0,0,.08);color:var(--ink,#111);'
+        + (inputOrderHidden(t) ? 'opacity:.35' : '');
+      const svg = ic.querySelector('svg');
+      if (svg) { svg.style.width = '16px'; svg.style.height = '16px'; }
+      prev.appendChild(ic);
+    });
+    const sendChip = document.createElement('div');
+    sendChip.textContent = '发送';
+    sendChip.style.cssText = 'flex-shrink:0;font-size:11px;font-weight:600;color:#fff;background:var(--ink,#111);border-radius:99px;padding:5px 12px';
+    prev.appendChild(sendChip);
+    box.appendChild(prev);
+    // 排序列表：每行一个按钮 ＋ ←／→（到两端时对应方向置灰）
+    order.forEach((t, idx) => {
+      const meta = IO_META[t] || { label: t };
+      const rowEl = document.createElement('div');
+      rowEl.setAttribute('data-io-row', t); // 稳定钩子：回归脚本按令牌定位「某按钮的左/右移」
+      rowEl.style.cssText = 'display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid rgba(0,0,0,.07);border-radius:11px;margin-bottom:8px';
+      const ic = document.createElement('div');
+      ic.innerHTML = inputOrderIcon(t);
+      ic.style.cssText = 'width:22px;height:22px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:var(--ink,#111)';
+      const svg = ic.querySelector('svg');
+      if (svg) { svg.style.width = '19px'; svg.style.height = '19px'; }
+      rowEl.appendChild(ic);
+      const txt = document.createElement('div');
+      txt.style.cssText = 'flex:1;min-width:0;font-size:13.5px;line-height:1.4';
+      const nm = document.createElement('div');
+      nm.textContent = meta.label;
+      txt.appendChild(nm);
+      const note = document.createElement('div');
+      note.style.cssText = 'font-size:11px;color:var(--muted,#888);margin-top:1px';
+      note.textContent = '第 ' + (idx + 1) + ' 位'
+        + (inputOrderHidden(t) ? ' · 开关未开启（打开后按此位置显示）' : (meta.sub ? ' · ' + meta.sub : ''));
+      txt.appendChild(note);
+      rowEl.appendChild(txt);
+      [-1, 1].forEach((dir) => {
+        const atEnd = dir < 0 ? idx === 0 : idx === order.length - 1;
+        const mv = document.createElement('button');
+        mv.type = 'button';
+        mv.textContent = dir < 0 ? '←' : '→';
+        mv.title = dir < 0 ? '向左移' : '向右移';
+        mv.disabled = atEnd;
+        mv.setAttribute('data-io-move', String(dir)); // 稳定钩子：-1=向左移，1=向右移
+        mv.style.cssText = IO_BTN_STYLE + (atEnd ? ';opacity:.3' : '');
+        mv.addEventListener('click', (e) => { e.stopPropagation(); inputOrderMove(t, dir); });
+        rowEl.appendChild(mv);
+      });
+      box.appendChild(rowEl);
+    });
+    const resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.textContent = '恢复默认排列';
+    resetBtn.style.cssText = 'width:100%;padding:10px;border:1px solid var(--card-border,#eee);border-radius:10px;background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:13px;margin-bottom:8px;font-family:inherit;cursor:pointer';
+    resetBtn.addEventListener('click', () => {
+      if (!window.mochiInputOrder) return;
+      window.mochiInputOrder.reset();
+      inputOrderSync();
+      renderInputOrderPanel();
+      toast('已恢复默认排列');
+    });
+    box.appendChild(resetBtn);
+    // 顺序是 per-联系人键——一键同步到其他桌面，换聊天对象不用重排一遍（对齐壁纸图库的同步入口）
+    if (window.getContacts && window.xyStore && window.openModal) {
+      const syncBtn = document.createElement('button');
+      syncBtn.type = 'button';
+      syncBtn.textContent = '同步到全部联系人';
+      syncBtn.style.cssText = 'width:100%;padding:10px;border:1px solid var(--card-border,#eee);border-radius:10px;background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:13px;margin-bottom:8px;font-family:inherit;cursor:pointer';
+      syncBtn.addEventListener('click', () => {
+        const me = window.getActiveContact ? window.getActiveContact() : 'default';
+        const others = window.getContacts().filter(c => c.id && c.id !== me);
+        if (!others.length) { toast('现在只有这一个联系人，无需同步'); return; }
+        window.openModal('同步到全部联系人', '', (v) => {
+          if (v !== '__yes__') return;
+          const order = inputOrderRead();
+          let n = 0;
+          others.forEach((c) => {
+            try {
+              window.xyStore('xy-home-v2:' + c.id).set('cs-input-order', JSON.stringify(order));
+              n++;
+            } catch (e) {}
+          });
+          toast('已同步到 ' + n + ' 个联系人（切到对应桌面即可看到）');
+        }, { noInput: true, pills: [{ label: '确认同步（覆盖对方的输入栏顺序）', value: '__yes__' }, { label: '取消', value: '__no__' }] });
+      });
+      box.appendChild(syncBtn);
+    }
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '关闭';
+    closeBtn.style.cssText = 'width:100%;padding:10px;border:1px solid var(--card-border,#eee);border-radius:10px;background:var(--btn-cancel-bg,#fafafa);color:var(--btn-cancel-ink,#555);font-size:13px;font-family:inherit;cursor:pointer';
+    closeBtn.addEventListener('click', closeInputOrderPanel);
+    box.appendChild(closeBtn);
+  }
+  // 开合同时改 hidden 属性与 display：mobile-adapt 的浮层滚动锁只监听 hidden
+  //（attributeFilter:['hidden']），只改 display 的话要等它 1s 看门狗才补挂锁——那 1 秒里
+  // 面板开着、底层设置页还能被滑动。hidden 一起改＝插入时即命中锁，无空窗。
+  function closeInputOrderPanel() {
+    const m = document.getElementById('cs-input-order-panel');
+    if (!m) return;
+    m.hidden = true;
+    m.style.display = 'none';
+  }
+  function openInputOrderPanel() {
+    let m = document.getElementById('cs-input-order-panel');
+    if (!m) {
+      m = document.createElement('div');
+      m.id = 'cs-input-order-panel';
+      m.style.cssText = 'position:fixed;inset:0;z-index:89;align-items:center;justify-content:center;background:rgba(0,0,0,.4);display:none';
+      document.body.appendChild(m);
+      m.addEventListener('click', (e) => { if (e.target === m) closeInputOrderPanel(); });
+      const box = document.createElement('div');
+      box.style.cssText = 'width:min(90vw,400px);max-height:82vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--card-bg,#fff);color:var(--ink,#111);border-radius:16px;padding:16px;box-shadow:0 8px 30px rgba(0,0,0,.2)';
+      m.appendChild(box);
+    }
+    renderInputOrderPanel();
+    m.hidden = false;
+    m.style.display = 'flex';
+  }
+  const csIo = row('cs-input-order');
+  if (csIo) {
+    inputOrderSync();
+    csIo.addEventListener('click', openInputOrderPanel);
+    document.addEventListener('contact-switched', () => {
+      inputOrderSync();
+      // 面板是挂在 body 上的固定浮层（不在 .page 里，切页面不会跟着隐藏）：切了联系人还留着
+      // 就是「盖在桌面上、内容是上一个联系人」的僵尸层，直接收掉，回来再点开即是新桌面的顺序
+      closeInputOrderPanel();
+    });
+    document.addEventListener('chat-input-order-changed', inputOrderSync);
+    // 面板开着时开关被改（本页下方就有「批量发送消息」「我可发送语音」两行）→ 重画一遍，
+    // 让「开关未开启」标记跟着变，不必关掉面板重开
+    document.addEventListener('batch-send-changed', () => { if (inputOrderPanelOpen()) renderInputOrderPanel(); });
+    document.addEventListener('voice-send-changed', () => { if (inputOrderPanelOpen()) renderInputOrderPanel(); });
+  }
+
   // 红包：TA 自动主动发红包概率（每联系人独立，默认 4%，0-100%）。点击弹输入框设百分比；
   // 存 cs-rp-auto-prob，chat.js trySystemAutoSend 读同一键控制 TA 主动发红包的概率门。
   const csRpProb = row('cs-rp-auto-prob');
@@ -1922,5 +2330,43 @@
     });
     csAddSync(syncHts);
     document.addEventListener('contact-switched', syncHts);
+  }
+
+  // v3.26.x #636：「隐藏颜文字 / 隐藏emoji」两开关——与上方「隐藏联系人的表情包」同款口径：
+  //   全局根键 xy-home-v2:hide-tab-*（contacts.js EXCLUDE 排除迁移，聊天/群聊/写信共用同一面板），
+  //   默认关＝分类显示；写回广播 hide-tab-changed，chat.js 即时重渲面板。行本身由 JS 注入到
+  //   「表情包」分组（锚 cs-hide-ta-sticker-row），template.html 不动（该文件常有多会话在途）。
+  const htsRow = document.getElementById('cs-hide-ta-sticker-row');
+  if (htsRow && htsRow.parentNode) {
+    const GNS2 = 'xy-home-v2';
+    const HIDE_CATS = [
+      ['hide-tab-kaomoji', '隐藏颜文字', '隐藏后，表情包面板不再显示【颜文字】分类（字卡库数据不受影响）'],
+      ['hide-tab-emoji', '隐藏emoji', '隐藏后，表情包面板不再显示【emoji】分类（字卡库数据不受影响）']
+    ];
+    let prevRow = htsRow;
+    HIDE_CATS.forEach(([key, label, sub]) => {
+      const row = document.createElement('div');
+      row.className = 'set-row';
+      row.id = 'cs-' + key + '-row';
+      row.innerHTML =
+        '<div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9 10h.01M15 10h.01"/><path d="M8.5 14a4.5 4.5 0 007 0"/></svg></div>' +
+        '<div class="txt">' + label + '<span class="sub">' + sub + '</span></div>' +
+        '<label class="toggle"><input type="checkbox"><span class="tk"></span></label>';
+      const box = row.querySelector('input');
+      const catGet = () => { try { return window.xyStore(GNS2).get(key) === '1'; } catch (e) { return false; } };
+      const catSet = (en) => { try { window.xyStore(GNS2).set(key, en ? '1' : '0'); } catch (e) {} };
+      const syncCat = () => { const v = catGet(); if (v !== box.checked) box.checked = v; };
+      syncCat();
+      box.addEventListener('change', () => {
+        if (box.checked === catGet()) return;
+        catSet(box.checked);
+        try { document.dispatchEvent(new Event('hide-tab-changed')); } catch (e) {}
+        toast(box.checked ? '已隐藏：表情包面板不再显示【' + label.replace('隐藏', '') + '】' : '已恢复显示【' + label.replace('隐藏', '') + '】');
+      });
+      csAddSync(syncCat);
+      document.addEventListener('contact-switched', syncCat);
+      prevRow.parentNode.insertBefore(row, prevRow.nextSibling);
+      prevRow = row;
+    });
   }
 })();

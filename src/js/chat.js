@@ -1305,14 +1305,32 @@ _tt.push('<img class="msg-inline-tok" src="' + _p + '" alt="" loading="lazy" dec
 }
 return _tt.join('');
 };
+// FIX 2026-09-17 #648 互动卡「TA：」回应行清洗（#383 令牌直出家族的存量治愈层）——
+// #554/#632 全库令牌化不分分类，历史上被抽进 互动回应/查岗 等功能池的媒体卡（@@m: 令牌 /
+// 「名称|||data:」语音 / 裸图片直链）已随 rec.askReply/choiceReply/curiousReply/roastReply
+// 落库；来源侧守卫（getCustomFuncCards #648a / pickAskCardReply #648b）只堵新数据，这里对
+// 卡片展示点统一清洗：整条图片直链或 data: base64→[图片]，语音「名称|||…」保留名称段，
+// 内嵌令牌→[图片]（与 #403 桌面弹窗清洗链同口径）。普通文字与文内普通链接原样保留。
+function askCardReplyClean(s) {
+let t = String(s == null ? '' : s);
+if (!t) return t;
+const bare = t.trim();
+if (chatIsImageUrlCard(bare)) return '[图片]';
+if (/^data:[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+;base64,/i.test(bare)) return '[图片]';
+const bar = t.indexOf('|||');
+if (bar >= 0) t = t.slice(0, bar).replace(/\.[^.]+$/, '').trim() || '[语音]';
+if (t.indexOf('@@m:') >= 0) t = t.replace(/@@m:[0-9a-f]{32}/g, '[图片]');
+return t;
+}
+window.askCardReplyClean = askCardReplyClean; // ta-ask.js 好奇结果弹窗复用
 function pokeIconHtml(text) {
 const s = String(text == null ? '' : text);
 const prefix = '<svg class="st-ico"';
 if (s.indexOf(prefix) === 0) {
 const end = s.indexOf('</svg>');
-if (end >= 0) return s.slice(0, end + 6) + escTxt(s.slice(end + 6));
+if (end >= 0) return s.slice(0, end + 6) + escTxt(askCardReplyClean(s.slice(end + 6)));
 }
-return escTxt(s);
+return escTxt(askCardReplyClean(s)); // #648g 存量拍一拍/回应里的媒体卡清洗后再铺（令牌→[图片]）
 }
 // v3.30.x：拍一拍人称「昵称制」——聊天昵称与桌面解耦后（v3.26.x），联系人昵称是聊天里
 // 唯一的人称来源。拍一拍消息里除了 {ta}/{me} 占位符外，字卡文案中写死的独立人称占位
@@ -1422,6 +1440,27 @@ if (t !== r.text) { r.text = t; changed = true; }
 }
 return changed;
 }
+// FIX 2026-09-16 #626 寻踪「更新了一条日常」系统消息改名后同 ts 变两条：
+// 昵称清扫只改了 msgs（并落盘），漏了 chat-tail 兜底日志——改名后 msgs 里这条已变
+// {ta} 更新了一条日常、chat-tail 里还是「旧名 更新了一条日常」；下次 chatTailMerge 按
+// ts|side|正文 签名判不出同一条，把旧名那条当「未落盘的新消息」补回 ⇒ 同一 ts 两条、
+// 文字不同又永远合不掉（置顶/寻踪必现）。收口＝凡是清扫 msgs 的 oldName，同步清扫 chat-tail。
+function chatTailSweepNick(oldName) {
+try {
+if (typeof oldName !== 'string' || !oldName) return false;
+const arr = chatTailRead();
+if (!arr.length) return false;
+let changed = false;
+for (let i = 0; i < arr.length; i++) {
+const j = arr[i];
+if (!sysNickSweepable(j) || j.text.indexOf(oldName) < 0) continue;
+const t = sysNickSweepText(j.text, oldName);
+if (t !== j.text) { j.text = t; changed = true; }
+}
+if (changed) store.set('chat-tail', JSON.stringify(arr));
+return changed;
+} catch (e) { return false; }
+}
 function sysNickCatchup() {
 const cur = sysNickCur();
 const hist = sysNickHistGet(store);
@@ -1433,6 +1472,7 @@ let changed = false;
 if (hist[hist.length - 1] !== cur) {
 // 名字在上次会话后被改动（含绕过钩子的外部写入，如备份导入）：旧尾名清扫成 {ta}，与改名钩子同效
 if (sysNickSweepMsgs(msgs, hist[hist.length - 1])) changed = true;
+try { chatTailSweepNick(hist[hist.length - 1]); } catch (e) {} // FIX 2026-09-16 #626 尾巴日志同步清扫
 hist.push(cur);
 try { store.set('sysmsg-nick-hist', JSON.stringify(hist)); } catch (e) {}
 }
@@ -1441,6 +1481,7 @@ try { swept = parseInt(store.get('sysmsg-nick-swept'), 10) || 0; } catch (e) {}
 if (swept < hist.length) {
 for (let i = swept; i < hist.length; i++) {
 if (hist[i] && hist[i] !== cur && sysNickSweepMsgs(msgs, hist[i])) changed = true;
+if (hist[i] && hist[i] !== cur) { try { chatTailSweepNick(hist[i]); } catch (e) {} } // FIX 2026-09-16 #626 尾巴日志同步清扫
 }
 try { store.set('sysmsg-nick-swept', String(hist.length)); } catch (e) {}
 }
@@ -2360,7 +2401,9 @@ window.chatRoastReply(idx, v, reply);
 } else if (type === 'ask' && window.chatAskReply) {
 const defs = ['收到你的回答。', '好呀，我知道了。', '你这么说，我记住了。'];
 const pool = window.getInteractPool ? window.getInteractPool('询问·回应', defs) : defs;
-window.chatAskReply(idx, v, pool[Math.floor(Math.random() * pool.length)]);
+// FIX 2026-09-17 #648 与吐槽/好奇分支同款走 pickAskCardReply（预设池媒体守卫）——
+// 原裸抽 pool[random] 会把功能池里混入的媒体卡原样发进 rec.askReply＝互动卡直出令牌串
+window.chatAskReply(idx, v, (window.pickAskCardReply ? window.pickAskCardReply(pool) : pool[Math.floor(Math.random() * pool.length)]));
 }
 if (window.logFish) window.logFish();
 delete inplaceDrafts[idx];
@@ -2427,6 +2470,22 @@ e.stopPropagation();
 // 改为按最近的 data-idx 容器定位，保证所有带心形的互动卡片都能收藏
 const fItem = favBtn.closest('[data-idx]');
 if (fItem && fItem.dataset.idx !== undefined) window.favCardFromMsg(Number(fItem.dataset.idx));
+return;
+}
+// v3.26.x #660：聊天里「TA 的心愿」卡片点【送 TA】——复用市集购买弹窗（gift-shop 侧同一扣款 /
+// 心意柜 / 聊天送礼链路），成交回调把这张卡就地转「已送出」（不整窗重建，同红包 #230 口径）
+const wishBuyBtn = e.target.closest('.msg-wish-buy');
+if (wishBuyBtn) {
+e.stopPropagation();
+const wItem = wishBuyBtn.closest('.msg-wish');
+const wIdx = wItem && wItem.dataset.idx !== undefined ? Number(wItem.dataset.idx) : -1;
+const wRec = wIdx >= 0 ? msgs[wIdx] : null;
+if (!wRec || wRec.special !== 'wish' || !window.giftBuyFromWishCard) { toast('这张卡片已经翻篇啦'); return; }
+window.giftBuyFromWishCard(wRec, function () {
+const acts = wItem.querySelector('.msg-wish-acts');
+// 此处不能用 renderMsg 局部的 T()，用同层其它提示的 taFit 口径（失焦/兜底同理）
+if (acts) acts.outerHTML = '<div class="msg-wish-done">\u2713 ' + escTxt(window.taFit ? window.taFit('已送出') : '已送出') + '</div>';
+});
 return;
 }
 const rpCard = e.target.closest('.msg-rp-card');
@@ -2536,7 +2595,7 @@ const isVoice = (rec && rec.type === 'voice') || raw.indexOf('|||') >= 0;
 let html = '';
 if (imgs.length) html += imgs.slice(0, 3).map(s => '<img class="msg-img msg-img-sm" src="' + attrEsc(s) + '" alt="撤回的图片">').join('');
 if (isVoice) html += '<span style="opacity:.85">[语音] ' + escTxt(raw.split('|||')[0] || '') + '</span>';
-else if (!textIsImg && text.trim()) html += '<span style="opacity:.85;word-break:break-word">' + escTxtBr(quoteDisplayFit(text, rec.side)) + '</span>';
+else if (!textIsImg && text.trim()) html += '<span style="opacity:.85;word-break:break-word">' + (window.mochiInlineTextHtml ? window.mochiInlineTextHtml(quoteDisplayFit(text, rec.side)) : escTxtBr(quoteDisplayFit(text, rec.side))) + '</span>'; // FIX 2026-09-17 #648 撤回无快照兜底同走内嵌令牌助手（混排令牌不再直出，与 #385 撤回段同口径）
 const moods = (rec && Array.isArray(rec.mood)) ? rec.mood : [];
 const liveMoods = moods.filter((md, mi) => md && String(md.tag || '').trim() && !(rec.retractedMood && rec.retractedMood.indexOf(mi) >= 0));
 if (liveMoods.length) {
@@ -2961,6 +3020,29 @@ _kbRepinT = setTimeout(function () { _kbRepinT = null; if (chatPinnedBottom) scr
 const vv466 = window.visualViewport;
 if (vv466) vv466.addEventListener('resize', refreshKbRepin);
 })();
+// FIX 2026-09-16 #643（iPhone 17 Pro Edge 等多机型报「发消息后消息和屏幕都上移，最新消息不在
+// 底部而跑到屏幕上半部分」，用户要求勿致其他机型回归）：#466 的回钉只挂 visualViewport resize——
+// 两个洞：①iOS 键盘收起偶发**不派发**该事件（程序化 blur/完成键收起最易触发，发送时清空聚焦的
+// contenteditable 正中此路，mobile-adapt「键盘状态自愈」注释同款场景）；②事件先到、mobile-adapt
+// 恢复 .phone 高度**后到**（失焦后 250ms 轮询兜底才 restore），60ms 防抖回钉算出的还是旧
+// clientHeight，最终布局落地后无人再补滚 ⇒ 列表停在旧 scrollTop、最新消息悬在半屏、下方一大片
+// 空白。改挂 **chat-body 自身盒子** 的 ResizeObserver：无论高度变化来自键盘收起、地址栏/工具条、
+// 还是 .phone 内联高度恢复，「盒子真变了」这一事实发生时才回钉，天然躲开事件时序竞态；仍受
+// chatPinnedBottom 闸约束（用户翻历史＝解钉，绝不拽底，#162 契约不变）。无 ResizeObserver 的
+// 老内核保留 #466 原路，零回退。scrollChatBottom 只写 scrollTop、不改 chat-body 盒子，不会自激励成环。
+(function () {
+const cb643 = document.getElementById('chat-body');
+if (!cb643 || typeof ResizeObserver === 'undefined') return;
+let t643 = null;
+new ResizeObserver(function () {
+if (!chatVisible() || !chatPinnedBottom) return;
+if (t643) clearTimeout(t643);
+t643 = setTimeout(function () {
+t643 = null;
+if (chatPinnedBottom && chatVisible()) scrollChatBottom();
+}, 60);
+}).observe(cb643);
+})();
 // FIX #162：消息图片是 loading=lazy，加载完成晚于滚底，加载后内容长高会把视图从底部顶开
 //（iPadOS 26 Safari 尤其明显＝「回一条滑一次」）——钉住期间任何消息图片 onload 后回到底部
 body.addEventListener('load', (e) => {
@@ -3193,7 +3275,7 @@ const answered = rec.inviteStatus === 'answered';
 m.innerHTML = '<div class="msg-ask-card' + (answered ? ' answered' : '') + '">' +
 '<div class="msg-ask-q">' + T('邀请TA') + ' · ' + escTxt(rec.inviteContent || rec.text || '') + '</div>' +
 (answered
-? '<div class="msg-ask-a">✓ ' + escTxt(T(rec.inviteAnswer || 'TA 回应了你')) + '</div>'
+? '<div class="msg-ask-a">✓ ' + escTxt(T(askCardReplyClean(rec.inviteAnswer) || 'TA 回应了你')) + '</div>'
 : '<div class="msg-ask-tip">' + T('等待 TA 回应…') + '</div>') +
 favHeartHtml(rec) +
 '</div>';
@@ -3209,7 +3291,7 @@ const askIsSingle = rec.askType === 'single';
 m.innerHTML = '<div class="msg-ask-card' + (answered ? ' answered' : '') + '">' +
 '<div class="msg-ask-q">' + T('问问TA') + ' · ' + escTxt(rec.askQuestion || '') + '</div>' +
 (answered
-? '<div class="msg-ask-a">✓ ' + T('TA：') + escTxt(T(rec.askAnswer || '回答了你')) + '</div>' + (rec.askReply ? '<div class="msg-choose-r">' + T('TA：') + escTxt(T(rec.askReply)) + '</div>' : '')
+? '<div class="msg-ask-a">✓ ' + T('TA：') + escTxt(T(rec.askAnswer || '回答了你')) + '</div>' + (rec.askReply ? '<div class="msg-choose-r">' + T('TA：') + escTxt(T(askCardReplyClean(rec.askReply))) + '</div>' : '')
 : '<div class="msg-ask-tip">' + (askIsSingle ? T('等待 TA 选择…') : T('等待 TA 回答…')) + '</div>') +
 favHeartHtml(rec) +
 '</div>';
@@ -3380,6 +3462,33 @@ appendMsg(m);
 maybeScrollChatBottom(rec.side);
 return m;
 }
+// v3.26.x #660：TA 的心愿卡——gift-shop.js 在「TA 把商品加进自己心愿单」那一刻按概率发出，
+// 让我点【送 TA】买下送出。是否还「待买」按 TA 心愿单的实时数据判定（window.giftTaWishHas
+// 由 gift-shop 提供；买下即从 TA 心愿单移除），所以记录里不写状态、卡片下次渲染自动转「已送出」。
+// gift-shop.js 在 jsFiles 里排在 chat.js 之后，但本分支只在渲染时取用该全局（脚本全部执行完
+// 才有渲染），取不到时按「还在心愿单里」处理（宁可多给一次【送 TA】）。
+if (rec.special === 'wish') {
+m.className = 'msg-gift msg-wish';
+m.dataset.idx = msgs.length - 1;
+const wStill = !window.giftTaWishHas || window.giftTaWishHas(rec.wishGiftId);
+const wgc = ((window.GIFT_CAT_COLOR || {})[rec.wishGiftCat]) || '#f2f2f5';
+m.innerHTML = '<div class="msg-gift-card msg-wish-card">' +
+'<div class="msg-wish-tag">' + escTxt(T('TA 的心愿')) + '</div>' +
+'<div class="msg-gift-emoji" style="background:' + escTxt(wgc) + '">' + (rec.wishGiftImg ? '<img class="msg-gift-img" src="' + escTxt(rec.wishGiftImg) + '" alt="">' : escTxt(rec.wishGiftEmoji || '\uD83C\uDF81')) + '</div>' +
+'<div class="msg-gift-name">' + escTxt(rec.wishGiftName || '礼物') + '</div>' +
+'<div class="msg-gift-divider"></div>' +
+'<div class="msg-gift-wish">\u201C' + escTxt(T(rec.text || '想要这个')) + '\u201D</div>' +
+'<div class="msg-gift-foot"><span class="mg-side">' + escTxt(chatPartnerName() + T(' 许愿')) + '</span>' +
+'<span class="msg-gift-price">\u00A5' + escTxt(Number(rec.wishGiftPrice || 0).toFixed(2)) + '</span></div>' +
+(wStill
+? '<div class="msg-wish-acts"><button class="msg-wish-buy" type="button">' + T('送 TA') + '</button></div>'
+: '<div class="msg-wish-done">\u2713 ' + T('已送出') + '</div>') +
+favHeartHtml(rec) +
+'</div>';
+appendMsg(m);
+maybeScrollChatBottom(rec.side);
+return m;
+}
 if (rec.special === 'dish') {
 m.className = 'msg-gift msg-dish';
 m.dataset.idx = msgs.length - 1;
@@ -3406,7 +3515,7 @@ const answered = rec.choiceStatus === 'answered';
 m.innerHTML = '<div class="msg-choose-card' + (answered ? ' answered' : '') + '">' +
 '<div class="msg-ask-q">' + escTxt(rec.choiceQuestion || rec.text || '') + '</div>' +
 (answered
-? '<div class="msg-ask-a">✓ 你选择了：' + escTxt(rec.choiceAnswer) + '</div><div class="msg-choose-r">' + T('TA：') + escTxt(T(rec.choiceReply)) + '</div>'
+? '<div class="msg-ask-a">✓ 你选择了：' + escTxt(rec.choiceAnswer) + '</div><div class="msg-choose-r">' + T('TA：') + escTxt(T(askCardReplyClean(rec.choiceReply))) + '</div>'
 : '<div class="msg-ask-tip">点击选择你的答案</div>') +
 favHeartHtml(rec) +
 '</div>';
@@ -3421,7 +3530,7 @@ const answered = rec.curiousStatus === 'answered';
 m.innerHTML = '<div class="msg-choose-card' + (answered ? ' answered' : '') + '">' +
 '<div class="msg-ask-q">' + escTxt(rec.curiousQuestion || rec.text || '') + '</div>' +
 (answered
-? '<div class="msg-ask-a">✓ 你：' + escTxt(rec.curiousAnswer) + '</div><div class="msg-choose-r">' + T('TA：') + escTxt(T(rec.curiousReply)) + '</div>'
+? '<div class="msg-ask-a">✓ 你：' + escTxt(rec.curiousAnswer) + '</div><div class="msg-choose-r">' + T('TA：') + escTxt(T(askCardReplyClean(rec.curiousReply))) + '</div>'
 : '<div class="msg-ask-tip">' + T('点击回答 TA 的好奇') + '</div>') +
 favHeartHtml(rec) +
 '</div>';
@@ -3436,7 +3545,7 @@ const answered = rec.roastStatus === 'answered';
 m.innerHTML = '<div class="msg-choose-card' + (answered ? ' answered' : '') + '">' +
 '<div class="msg-ask-q">' + escTxt(rec.roastText || rec.text || '') + '</div>' +
 (answered
-? '<div class="msg-ask-a">✓ 你：' + escTxt(rec.roastAnswer) + '</div><div class="msg-choose-r">' + T('TA：') + escTxt(T(rec.roastReply)) + '</div>'
+? '<div class="msg-ask-a">✓ 你：' + escTxt(rec.roastAnswer) + '</div><div class="msg-choose-r">' + T('TA：') + escTxt(T(askCardReplyClean(rec.roastReply))) + '</div>'
 : '<div class="msg-ask-tip">' + T('点击回 TA 一句') + '</div>') +
 favHeartHtml(rec) +
 '</div>';
@@ -3460,7 +3569,7 @@ const isSingle = rec.askType === 'single' || (rec.type === 'single' && Array.isA
 m.innerHTML = '<div class="msg-ask-card' + (answered ? ' answered' : '') + '">' +
 '<div class="msg-ask-q">' + escTxt(rec.askQuestion || rec.text) + '</div>' +
 (answered
-? '<div class="msg-ask-a">✓ 已回答：' + escTxt(rec.askAnswer) + '</div>' + (rec.askReply ? '<div class="msg-choose-r">' + T('TA：') + escTxt(T(rec.askReply)) + '</div>' : '')
+? '<div class="msg-ask-a">✓ 已回答：' + escTxt(rec.askAnswer) + '</div>' + (rec.askReply ? '<div class="msg-choose-r">' + T('TA：') + escTxt(T(askCardReplyClean(rec.askReply))) + '</div>' : '')
 : '<div class="msg-ask-tip">' + (isSingle ? '点击选择你的答案' : T('点击回答 TA 的提问')) + '</div>') +
 favHeartHtml(rec) +
 '</div>';
@@ -4052,7 +4161,9 @@ window.__replyWaitT0 = null;
 } catch (eRL) {}
 chatTailAppend(rec); // #180：同步尾巴日志先落 LS，再交低频整包落盘
 saveMsgs();
-	const notable = rec.side === 'in' && (!rec.special || rec.special === 'poke' || rec.special === 'gift');
+	// #660：TA 的心愿卡同礼物卡一样算「值得提醒」——它在等我去买，不提醒就等于没发（预览文本
+	// 走 rec.text「想要「XX」」，未读角标 / 桌面横幅 / 后台系统通知三处都能看懂）
+	const notable = rec.side === 'in' && (!rec.special || rec.special === 'poke' || rec.special === 'gift' || rec.special === 'wish');
 	// v3.19.x：rec.silent（psync 跨桌面补投递）——消息进聊天+未读角标，但不触发
 	// 桌面横幅/系统通知：补投递的是同步队列里其他时刻/其他桌面的旧内容，弹通知
 	// 会形成"一堆看过的消息重叠弹窗 + 错误联系人名"
@@ -4159,6 +4270,7 @@ store.set('sysmsg-nick-swept', String(hist.length));
 // 改名后无论清扫是否有改动都要重渲染：系统消息显示走 {ta}→当前名替换，有改动时旧名
 // 已换成 {ta}、无改动（连续改名）时旧渲染缓存的名字已过期——不重渲染 DOM 会停留在旧名
 if (sysNickSweepMsgs(msgs, oldName)) saveMsgs();
+try { chatTailSweepNick(oldName); } catch (e) {} // FIX 2026-09-16 #626 尾巴日志同步清扫（防 chatTailMerge 用旧名原文补回一条重复）
 try { if (chatVisible()) renderWindow(true); } catch (e) {}
 } catch (e) {}
 };
@@ -4438,7 +4550,7 @@ addInTyped(reply || '…');
 taFavCard(rec);
 const el = body.querySelector('.msg-ask[data-idx="' + msgIdx + '"]');
 if (el) {
-el.innerHTML = '<div class="msg-choose-card answered"><div class="msg-ask-q">' + escTxt(rec.choiceQuestion || rec.text || '') + '</div><div class="msg-ask-a">✓ 你选择了：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(reply || '…') : (reply || '…')) + '</div>' + favHeartHtml(rec) + '</div>';
+el.innerHTML = '<div class="msg-choose-card answered"><div class="msg-ask-q">' + escTxt(rec.choiceQuestion || rec.text || '') + '</div><div class="msg-ask-a">✓ 你选择了：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(askCardReplyClean(reply) || '…') : (askCardReplyClean(reply) || '…')) + '</div>' + favHeartHtml(rec) + '</div>';
 }
 };
 window.chatCuriousReply = function (msgIdx, answer, reply, followup) {
@@ -4454,7 +4566,7 @@ addInTyped(followup ? [reply || '…', followup] : (reply || '…'));
 taFavCard(rec);
 const el = body.querySelector('.msg-ask[data-idx="' + msgIdx + '"]');
 if (el) {
-el.innerHTML = '<div class="msg-choose-card answered"><div class="msg-ask-q">' + escTxt(rec.curiousQuestion || rec.text || '') + '</div><div class="msg-ask-a">✓ 你：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(reply || '…') : (reply || '…')) + '</div>' + favHeartHtml(rec) + '</div>';
+el.innerHTML = '<div class="msg-choose-card answered"><div class="msg-ask-q">' + escTxt(rec.curiousQuestion || rec.text || '') + '</div><div class="msg-ask-a">✓ 你：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(askCardReplyClean(reply) || '…') : (askCardReplyClean(reply) || '…')) + '</div>' + favHeartHtml(rec) + '</div>';
 }
 };
 window.chatRoastReply = function (msgIdx, answer, reply) {
@@ -4470,12 +4582,25 @@ addInTyped(reply || '…');
 taFavCard(rec);
 const el = body.querySelector('.msg-ask[data-idx="' + msgIdx + '"]');
 if (el) {
-el.innerHTML = '<div class="msg-choose-card answered"><div class="msg-ask-q">' + escTxt(rec.roastText || rec.text || '') + '</div><div class="msg-ask-a">✓ 你：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(reply || '…') : (reply || '…')) + '</div>' + favHeartHtml(rec) + '</div>';
+el.innerHTML = '<div class="msg-choose-card answered"><div class="msg-ask-q">' + escTxt(rec.roastText || rec.text || '') + '</div><div class="msg-ask-a">✓ 你：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(askCardReplyClean(reply) || '…') : (askCardReplyClean(reply) || '…')) + '</div>' + favHeartHtml(rec) + '</div>';
 }
 };
 window.chatAskReply = function (msgIdx, answer, reply, opts) {
-const rec = msgs[msgIdx];
-if (!rec || rec.special !== 'ask-card' || rec.askStatus === 'answered') return;
+// FIX 2026-09-17 #653：自动弹窗→作答隔着异步间隙（loadMsgs IDB 合并 / chatTailMerge 回放
+// 插入都会让 msgs 下标位移，#407 已注明「回放插入=下标位移」），弹窗手里攥着的 msgIdx 可能
+// 已不指向那张卡——此前这里直接静默 return＝回答整个丢失、聊天卡片纹丝不动，用户必须再点
+// 一次卡片重答（跨桌面查岗「要不要来查查我呀？」点【好呀】卡片不更新报障根因）。槽位失效
+// 时从末尾回退找最近的未作答 ask-card 重定位（ta-ask.js locateCardIdx v3.6.x 同款守卫；
+// 自动弹窗场景卡片就是当时最新一条），彻底找不到才维持原静默返回。
+let rec = msgs[msgIdx];
+if (!rec || rec.special !== 'ask-card' || rec.askStatus === 'answered') {
+rec = null;
+for (let _i = msgs.length - 1; _i >= 0; _i--) {
+const _r = msgs[_i];
+if (_r && _r.special === 'ask-card' && _r.askStatus !== 'answered') { msgIdx = _i; rec = _r; break; }
+}
+if (!rec) return;
+}
 rec.askStatus = 'answered';
 rec.askAnswer = answer;
 let preset = '';
@@ -4542,7 +4667,7 @@ addInTyped(finalReply);
 taFavCard(rec);
 const el = body.querySelector('.msg-ask[data-idx="' + msgIdx + '"]');
 if (el) {
-el.innerHTML = '<div class="msg-ask-card answered"><div class="msg-ask-q">' + escTxt(rec.askQuestion || rec.text || '') + '</div><div class="msg-ask-a">✓ 已回答：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(finalReply) : finalReply) + '</div>' + favHeartHtml(rec) + '</div>';
+el.innerHTML = '<div class="msg-ask-card answered"><div class="msg-ask-q">' + escTxt(rec.askQuestion || rec.text || '') + '</div><div class="msg-ask-a">✓ 已回答：' + escTxt(answer) + '</div><div class="msg-choose-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(askCardReplyClean(finalReply)) : askCardReplyClean(finalReply)) + '</div>' + favHeartHtml(rec) + '</div>';
 }
 return finalReply;
 };
@@ -4793,7 +4918,7 @@ if (spellSegs && spellSegs.length > 1) {
 // 引用快照/收藏/回复引用读 text，两轨不同步＝「消息显示 A、引用预览显示 B」（iOS Chrome
 // 等多机型同报，词典拼字/梦角自由造句同族）。口径：文本段=最终正文（与 addIn 文本一致，
 // 单气泡 join(' ')、逐卡连发末气泡=本卡），原回复掷中的表情/图片段原样保留。
-const __spText = spellOne ? spellSegs.join(' ') : spellSegs.join('');
+const __spText = spellOne ? pyJoinCards(spellSegs, c) : spellSegs.join(''); // #650 单气泡连接符同走符号池
 const __spImgs = (rep.parts || []).filter(p => p && p.k === 'img');
 spellImgParts = __spImgs;
 rep = { text: __spText, type: 'text', spell: spellSegs, spellOne: spellOne,
@@ -5020,6 +5145,20 @@ document.dispatchEvent(new Event('continue-say-changed')); // 群聊输入栏「
 } catch (e) {}
 };
 window.applyContinueSayUI();
+// FIX 2026-09-17 #660附（本批输入栏按钮位置实测暴露的旧 bug）：这一行是本文件初始化末尾的
+// 首次计算，但 jsFiles 顺序里 reply-settings.js 排在本文件之后 —— 此刻 window.replyCfg 还没
+// 定义，cfg() 返回 {}，于是 c['cs-trigger-bar'] === 1 恒为假，设置里开着「聊天栏继续说按钮」
+// 也被置成 display:none；而冷启动之后没有任何一次重算时机（只有切联系人 chat.js:91 或再动
+// 一次那个开关 reply-settings.js:419 才重算）＝「开关明明是开的，继续说按钮要切一下联系人才
+// 肯出现」（旧产物实测复现，与 #660 同批）。mic/batch 两个按钮读 store 直取故无此问题，
+// 但它们同样只有初始化那一次同步——localStorage 被清、值由 IDB 回填（iOS 常见）时也会停在
+// 隐藏态。三者在数据就绪（回填完成，idb.js 保证必派发）后统一补算一次：此时 replyCfg 与
+// 存档值都是最终值。
+document.addEventListener('mochi-restore-done', function () {
+try { syncMicBtn(); } catch (e) {}
+try { syncBatchBtn(); } catch (e) {}
+try { if (window.applyContinueSayUI) window.applyContinueSayUI(); } catch (e) {}
+});
 const pAv = document.getElementById('chat-partner-av');
 if (pAv) {
 pAv.addEventListener('click', (e) => {
@@ -5075,13 +5214,38 @@ lastMineText = '';
 lastMineQuote = '';
 lastMineIdx = -1;
 }
+// ===== #650 多字卡「拼接随机标点」：多条字卡拼一条时的中间连接符 =====
+// 「拼接随机标点」总开关（py-punct-en，默认开）开启时，每两条字卡的中间从「拼接符号」池
+//（py-punct-space 空格 / py-punct-dou ，/ py-punct-per 。/ py-punct-ex ！/ py-punct-q ？/
+// py-punct-el ......；设置页六选 N、至少保留一个）随机抽一个相连，每处独立随机。总开关关
+// 或池意外全空＝回退单个空格（原行为）。消费点：genOneReply（多字卡回复）/ replyOnce
+// 词典拼字单气泡 / genChatStyleReply（ta-ask 同源回应）；设置 UI 在 reply-settings.js #650 段。
+function pyJoinCards(segs, c) {
+if (!Array.isArray(segs) || !segs.length) return '';
+if (segs.length === 1) return String(segs[0] == null ? '' : segs[0]);
+let pool = null;
+if (c && c['py-punct-en'] === 1) {
+pool = [];
+if (c['py-punct-space'] === 1) pool.push(' ');
+if (c['py-punct-dou'] === 1) pool.push('，');
+if (c['py-punct-per'] === 1) pool.push('。');
+if (c['py-punct-ex'] === 1) pool.push('！');
+if (c['py-punct-q'] === 1) pool.push('？');
+if (c['py-punct-el'] === 1) pool.push('......');
+}
+if (!pool || !pool.length) pool = [' '];
+let out = String(segs[0] == null ? '' : segs[0]);
+for (let i = 1; i < segs.length; i++) out += pool[Math.floor(Math.random() * pool.length)] + String(segs[i] == null ? '' : segs[i]);
+return out;
+}
+window.pyJoinCards = pyJoinCards; // 各文件独立作用域：ta-ask.js 互动卡回应/文字题同源复用走 window
 function genOneReply(c) {
 const pool = getPool();
 let t, type = 'text';
 if (c['py-en'] === 1 && hit(c['py-prob']) && pool.text.length) {
 const nbTextPool = pool.text.filter(s => typeof s === 'string' && s.trim()); // FIX 2026-09-05 #185 多字卡拼接前先滤空白卡（否则 join 出纯空格空气泡）
 const n = randInt(c['py-min'], c['py-max']);
-t = pickN(nbTextPool.length ? nbTextPool : pool.text, n).join(' ');
+t = pyJoinCards(pickN(nbTextPool.length ? nbTextPool : pool.text, n), c); // #650 中间连接符走「拼接随机标点」符号池（关＝空格，原样）
 } else {
 const r = genReplyText(c);
 t = r.text;
@@ -5134,7 +5298,7 @@ try { rep = genOneReply(cfg()); } catch (e) {}
 try {
 const _sp = (window.quoteSpellPick && window.quoteSpellPick(cfg())) || null;
 const segs = _sp && Array.isArray(_sp.segs) ? _sp.segs : (Array.isArray(_sp) ? _sp : null);
-if (segs && segs.length) return segs.join(' ');
+if (segs && segs.length) return pyJoinCards(segs, cfg()); // #650 连接符同走符号池
 } catch (e) {}
 // FIX 2026-09-16 #624 多图消息（text 是图片载荷 + parts）没有可当文字用的正文——
 // 不把 data: 串当「聊天字卡文本」返回（否则 ta-ask 会把它当文本发出）。
@@ -5289,6 +5453,8 @@ return true;
 window.tryActiveInvite = tryActiveInvite;
 function tryAutoSend() {
 try {
+// 夜间模式（设置里开启后 22:00–7:00 生效）：联系人不再主动发消息（拍一拍/邀请/查岗同链一并暂停）
+if (window.nightModeActive && window.nightModeActive()) { try { console.log('[mochi-auto] night mode, skip'); } catch(e){} return; }
 const c = cfg();
 // FIX 2026-09-05 #187 专属字卡串桌面：tryAutoSend 异步链（await 取回字卡可数秒+每条消息
 // setTimeout 再数百~2600ms）此前无 sameCid 守卫——B 桌面触发的主动消息在用户切到 A 桌面后
@@ -5633,13 +5799,21 @@ if (card.indexOf('你') >= 0) return 'mine';
 if (card.indexOf('我') >= 0) return 'ta';
 return 'mine';
 }
+// FIX 2026-09-17 #648g 拍一拍池媒体守卫——拍一拍短语池（预设+poke-groups 自建+字卡库【拍一拍】
+// 分类）混入的媒体形态卡（@@m: 令牌/图链/|||/data:）不得被抽中拼进「TA 拍了拍你 …」＝气泡直出
+function pokeTextOnly(x) {
+if (typeof x !== 'string' || !x.trim()) return false;
+if (x.indexOf('data:') === 0 || x.indexOf('|||') >= 0 || x.indexOf('@@m:') >= 0) return false;
+if (/^https?:\/\//i.test(x)) return false;
+return true;
+}
 function pokeAllCards() {
 const out = [];
 (POKE_PRESETS.ta || []).forEach(x => out.push(x));
 (POKE_PRESETS.mine || []).forEach(x => out.push(x));
 ['ta', 'mine'].forEach(kind => {
 (pokeUserGroups[kind] || []).forEach(g => {
-if (Array.isArray(g) && Array.isArray(g[1])) g[1].forEach(x => out.push(x));
+if (Array.isArray(g) && Array.isArray(g[1])) g[1].forEach(x => { if (pokeTextOnly(x)) out.push(x); });
 });
 });
 try { ((window.getPokeCards && window.getPokeCards()) || []).forEach(x => out.push(x)); } catch (e) {}
@@ -5736,6 +5910,8 @@ pokeCard.insertBefore(pokeGroupsBar, pokeList);
 pokeCard.appendChild(pokeInputRow);
 }
 function sendPoke(action) {
+// FIX 2026-09-17 #648g 面板单点防御：媒体形态串（存量导入/令牌化产物）不当拍一拍短语发出
+if (!pokeTextOnly(action)) { toast('这条不是文字拍一拍，已跳过'); return; }
 // v3.26.x：存 {me}/{ta} 占位符而非字面昵称——渲染 T() 回填「我的昵称 + TA 的昵称」
 // （跟随改名），称呼功能（taFit）不再把昵称槽位改写成 他/ta/她
 let text;
@@ -5756,6 +5932,9 @@ text = '{me} ' + action.replace(/我(?![们])/g, '{ta}');
 } else {
 text = '{me} ' + action;
 }
+// FIX 2026-09-17 拍一拍发出不跟底：用户主动触发的 in 侧消息（同 #492 决策结果），置一次性
+// 跟底标记——否则上翻过聊天＝解钉态，拍一拍气泡永远落在视口下方不自动滚到最底
+chatUserFollowScroll = true;
 addRec({ side: 'in', text: text, special: 'poke' });
 if (window.logFish) window.logFish();
 setTimeout(() => {
@@ -7925,6 +8104,8 @@ clearInterval(callPanelTimer);
 callPanelTimer = null;
 }
 const moreCall = document.getElementById('more-call');
+// #641：通话设置页「打开通话半框」跨页直达入口（call.js 调用）
+window.openChatCallPanel = openChatCall;
 if (moreCall) {
 moreCall.addEventListener('click', (e) => {
 e.stopPropagation();
@@ -8284,18 +8465,21 @@ return true;
 function cardSnapshot(rec) {
 if (!rec) return null;
 let q = '', mine = '', ta = '', special = rec.special;
-if (special === 'ask-choose') { q = rec.choiceQuestion || rec.text || ''; mine = rec.choiceAnswer || ''; ta = rec.choiceReply || ''; }
-else if (special === 'ask-curious') { q = rec.curiousQuestion || rec.text || ''; mine = rec.curiousAnswer || ''; ta = rec.curiousReply || ''; }
-else if (special === 'ask-roast') { q = rec.roastText || rec.text || ''; mine = rec.roastAnswer || ''; ta = rec.roastReply || ''; }
-else if (special === 'ask-card') { q = rec.askQuestion || rec.text || ''; mine = rec.askAnswer || ''; ta = rec.askReply || ''; }
-else if (special === 'invite') { q = rec.inviteContent || ''; ta = rec.inviteAnswer || ''; }
+// FIX 2026-09-17 #648 收藏快照的 TA 回应同样清洗——收藏页/引用预览不再直出存量令牌串
+if (special === 'ask-choose') { q = rec.choiceQuestion || rec.text || ''; mine = rec.choiceAnswer || ''; ta = askCardReplyClean(rec.choiceReply || ''); }
+else if (special === 'ask-curious') { q = rec.curiousQuestion || rec.text || ''; mine = rec.curiousAnswer || ''; ta = askCardReplyClean(rec.curiousReply || ''); }
+else if (special === 'ask-roast') { q = rec.roastText || rec.text || ''; mine = rec.roastAnswer || ''; ta = askCardReplyClean(rec.roastReply || ''); }
+else if (special === 'ask-card') { q = rec.askQuestion || rec.text || ''; mine = rec.askAnswer || ''; ta = askCardReplyClean(rec.askReply || ''); }
+else if (special === 'invite') { q = rec.inviteContent || ''; ta = askCardReplyClean(rec.inviteAnswer || ''); }
 // v3.28.x 修复：以下卡片在 renderMsg 都渲染了收藏心形（favHeartHtml），但 cardSnapshot
 // 未覆盖 → 点收藏静默无效（无 toast、不进收藏夹）。补齐快照，收藏夹按通用卡渲染。
-else if (special === 'ask') { q = rec.askQuestion || rec.text || ''; mine = rec.askAnswer || ''; ta = rec.askReply || ''; }
+else if (special === 'ask') { q = rec.askQuestion || rec.text || ''; mine = rec.askAnswer || ''; ta = askCardReplyClean(rec.askReply || ''); }
 else if (special === 'redpacket') { mine = (rec.side === 'out' ? '我发出' : chatPartnerName() + '发出'); q = '红包 ¥' + Number(rec.rpAmount || 0).toFixed(2) + (rec.rpWish ? ' · ' + rec.rpWish : ''); }
 else if (special === 'flower') { q = (rec.flName || '花') + (rec.flWish ? '：' + rec.flWish : ''); }
 else if (special === 'gift') { q = (rec.giftName || '礼物') + (rec.giftWish ? '：“' + rec.giftWish + '”' : '') + (rec.giftPrice != null ? ' · ¥' + Number(rec.giftPrice || 0).toFixed(2) : ''); }
 else if (special === 'dish') { q = (rec.dishName || '菜肴') + (rec.dishWish ? '：“' + rec.dishWish + '”' : '') + (rec.dishPrice != null ? ' · ¥' + Number(rec.dishPrice || 0).toFixed(2) : ''); }
+// #660：TA 的心愿卡——补齐快照，收藏心形才不是「点了没反应」（同上面 #v3.28.x 那批的口径）
+else if (special === 'wish') { q = (rec.wishGiftName || '礼物') + '（' + chatPartnerName() + '的心愿）' + (rec.wishGiftPrice != null ? ' · ¥' + Number(rec.wishGiftPrice || 0).toFixed(2) : ''); }
 else return null;
 return { kind: 'card', special: special, q: q, mine: mine, ta: ta, ts: rec.ts || Date.now() };
 }
@@ -8324,6 +8508,7 @@ if (!f) return;
 if (window.addTaFavItem(f)) setTimeout(() => toast('TA 收藏了你们的互动卡片'), 1200);
 }
 function closeMsgActions() {
+if (msgActions && typeof msgActions.__maFollowStop === 'function') { try { msgActions.__maFollowStop(); } catch (e) {} } // FIX 2026-09-16 #642 摘跟随监听
 if (msgActions) msgActions.hidden = true;
 activeMsgEl = null;
 activeMsgSnap = null; // FIX 2026-09-13 #407 随菜单关闭清身份快照
@@ -8411,6 +8596,66 @@ let msgHoldEl = null;
 let msgHoldFired = false;
 let msgSuppressClickUntil = 0;
 let msgHoldX = 0, msgHoldY = 0; // FIX 2026-09-14 #G2 长按起始触点，判断是否算滑动
+// FIX 2026-09-16 #642（iPhone 17 Pro Edge 等多机型报「点消息弹出的引用/操作条这一行乱跑，
+// 飞到离气泡很远的地方」，用户要求勿致其他机型回归）：操作条是 position:fixed、此前只在打开
+// 瞬间按气泡 getBoundingClientRect 定位一次；此后任何视口几何变化都会把「气泡」挪走而「操作条」
+// 留在原地坐标上——①键盘收起/弹出的过渡动画（mobile-adapt 按 vv 高度改写 .phone 高度，点气泡
+// 常伴随输入框失焦收键盘）；②Edge iOS 聚焦输入框后的 visualViewport 平移（window.scrollY 恒 0，
+// fixed 元素不随内容平移）；③来消息自动贴底滚动（#162/#516）；④消息图 lazy 解码撑高后的补滚。
+// 观感即「乱跑/飞到很远的地方」。修法与内核无关——打开后持续「跟随锚点气泡」：视口/滚动每次
+// 几何变化都用气泡的**新鲜 rect** 重算位置，并用操作条自身 rect 做一次误差自校正（不假设 fixed
+// 的包含块是布局视口还是可视视口、不猜 vv.offset 的内核语义）；锚点被重渲/删除（isConnected=false）
+// 即关菜单。单聊/群聊共用（chat.js 先于 group-chat.js 载入，挂 window）。纯几何、零机型/内核分支。
+window.mochiFollowActionBar = function (bar, anchor, onClose) {
+if (!bar) return null;
+let raf = 0;
+let vv = window.visualViewport;
+function place() {
+if (bar.hidden) return;
+if (!anchor || !anchor.isConnected) { stop(); if (onClose) onClose(); return; }
+const b = anchor.getBoundingClientRect();
+const v = window.visualViewport || vv;
+const vw = v ? v.width : window.innerWidth;
+const vh = v ? v.height : window.innerHeight;
+const aw = bar.offsetWidth || 200;
+const ah = bar.offsetHeight || 50;
+let x = b.left + b.width / 2 - aw / 2;
+x = Math.max(10, Math.min(vw - aw - 10, x));
+let y = b.top - ah - 8;
+const belowY = b.bottom + 8;
+const aboveFits = y >= 50;
+const belowFits = belowY + ah <= vh - 8;
+y = aboveFits || !belowFits ? y : belowY;
+bar.style.left = x + 'px';
+bar.style.top = y + 'px';
+// 自校正：量「目标视觉位置」与「实际渲染位置」的差并补掉——无论内核把 fixed 锚在布局视口
+// 还是可视视口、有无 vv 平移，一次即收敛到「贴着气泡」
+const m = bar.getBoundingClientRect();
+const _maDx = x - m.left, _maDy = y - m.top;
+if (_maDx < -1 || _maDx > 1 || _maDy < -1 || _maDy > 1) {
+bar.style.left = (x + _maDx) + 'px';
+bar.style.top = (y + _maDy) + 'px';
+}
+}
+function stop() {
+if (raf) { cancelAnimationFrame(raf); raf = 0; }
+if (vv) { vv.removeEventListener('resize', req); vv.removeEventListener('scroll', req); }
+window.removeEventListener('resize', req);
+window.removeEventListener('scroll', req, true);
+bar.__maFollowStop = null;
+}
+const req = () => {
+if (bar.hidden || bar.__maFollowStop !== stop) return;
+if (!raf) raf = requestAnimationFrame(() => { raf = 0; place(); });
+};
+if (typeof bar.__maFollowStop === 'function') { try { bar.__maFollowStop(); } catch (e) {} }
+if (vv) { vv.addEventListener('resize', req); vv.addEventListener('scroll', req); }
+window.addEventListener('resize', req);
+// capture：scroll 事件不冒泡但走捕获期，window 上的捕获监听收得到所有容器（含 .chat-body）的滚动
+window.addEventListener('scroll', req, true);
+bar.__maFollowStop = stop;
+return place;
+};
 function msgActionEligible(t) {
 // 沿用原「点气泡弹菜单」的判定规则：可弹返回 {item, b}，不可弹返回 null（引用气泡/拍一拍/撤回/已读不回等）
 // FIX 2026-09-15 #507 语音播放按钮不算「点气泡」——否则轻点/长按播放按钮都会布气泡轻点/长按
@@ -8455,21 +8700,11 @@ try { delEn = store.get('cs-del-ta-msg') === '1'; } catch (e) {}
 delBtn.hidden = !(delEn && activeSide === 'in');
 }
 msgActions.hidden = false;
-const bRect = b.getBoundingClientRect();
-const aw = msgActions.offsetWidth || 200;
-const ah = msgActions.offsetHeight || 50;
-const vv = window.visualViewport;
-const vw = vv ? vv.width : window.innerWidth;
-const vh = vv ? vv.height : window.innerHeight;
-let x = bRect.left + bRect.width / 2 - aw / 2;
-x = Math.max(10, Math.min(vw - aw - 10, x));
-let y = bRect.top - ah - 8;
-const below = bRect.bottom + 8;
-const aboveFits = y >= 50;
-const belowFits = below + ah <= vh - 8;
-y = aboveFits || !belowFits ? y : below;
-msgActions.style.left = x + 'px';
-msgActions.style.top = y + 'px';
+// FIX 2026-09-16 #642 打开即挂「跟随锚点」并立即定位一次：定位算法与旧块一致（上方居中、
+// 放不下换下方、clamp 视口内），此后键盘开合动画/vv 平移/贴底滚动/图片撑高都会实时跟随气泡
+// 重算（旧实现只定位一次＝视口一变操作条就留在原地「乱跑/飞远」）
+const _maPlace = window.mochiFollowActionBar(msgActions, b, closeMsgActions);
+if (_maPlace) _maPlace();
 }
 // FIX 2026-09-13 #407：菜单动作执行时按身份快照重新定位消息，防「msgs 重排 + DOM 未重渲」
 // 窗口期里 data-idx 指向别的消息（引用预览串条/收藏串条/编辑串条/撤回错条）。解析顺序：
@@ -8842,7 +9077,7 @@ let html = '<div class="fav-item-card">' +
 '<span class="fav-item-tag">互动卡片 · ' + label + '</span>' +
 '<div class="fav-item-q">' + (f.special === 'invite' ? (window.taFit ? window.taFit('邀请TA') : '邀请TA') + ' · ' : '') + escTxt(f.q || '') + '</div>';
 if (f.mine) html += '<div class="fav-item-a">✓ 我：' + escTxt(f.mine) + '</div>';
-if (f.ta) html += '<div class="fav-item-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(f.ta) : f.ta) + '</div>';
+if (f.ta) html += '<div class="fav-item-r">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escTxt(window.taFit ? window.taFit(askCardReplyClean(f.ta)) : askCardReplyClean(f.ta)) + '</div>'; // #648g 存量收藏快照的媒体卡回应同样清洗
 if (!f.mine && !f.ta) html += '<div class="fav-item-tip">等待回应…</div>';
 html += '</div>';
 m.innerHTML = html + side;
@@ -9101,9 +9336,156 @@ try { if (window.xyStore) return window.xyStore(MYE_G_PREFIX).get('hide-ta-stick
 try { return store.get('hide-ta-sticker') === '1'; } catch (e) { return false; }
 }
 myGroups = myEmojiLoad();
+// v3.26.x #636：表情包面板新增【颜文字】【emoji】两个分类——文字字卡，取字卡库同名分类的 公用/专属
+//   两作用域 + 面板内自建的「我的」文字库（批量导入一行一个），与表情包 公用/TA/我的 同模式。
+//   实现：emojiMode 语义不变（public/ta/mine 三作用域，作用域 tab 三类共用），另加一级分类行
+//   emojiCat（sticker/kaomoji/emoji，JS 注入、template 不动）；emojiCat==='sticker' 的既有分支一律
+//   不动，文字分类走 renderEmojiTextPanel 全新路径，互不纠缠。
+let emojiCat = 'sticker';           // 面板第一级分类
+let myTextGroups = { kaomoji: [], emoji: [] }; // 我的文字库（全局键 my-text-groups，与 my-emoji-groups 同为跨桌面共用）
+let myTextBatch = false;            // 文字库批量管理模式
+let myTextSel = new Set();          // 文字库批量勾选：分组名\u0001索引
+let myTextHydrated = false;         // 本会话是否已从 IDB 取回过 my-text-groups
+let textCurGroupMap = {};           // '分类\u0001作用域' -> 当前分组名（公用/专属可能同名，按作用域分键）
+let emojiCatBar = null;             // 分类行 DOM（懒建一次）
+let emojiTextTools = null;          // 文字库工具行 DOM（懒建一次）
+let mytBatchBtn = null;
+const MYT_KEY = MYE_G_PREFIX + ':my-text-groups';
+function textCatHidden(cat) {
+try { return window.xyStore(MYE_G_PREFIX).get(cat === 'kaomoji' ? 'hide-tab-kaomoji' : 'hide-tab-emoji') === '1'; } catch (e) {}
+return false;
+}
+function textCurKey() { return emojiCat + '\u0001' + emojiMode; }
+function textCurGroup() { return textCurGroupMap[textCurKey()] || ''; }
+function textCurSet(v) { textCurGroupMap[textCurKey()] = v || ''; }
+function textCatLabel() { return emojiCat === 'kaomoji' ? '颜文字' : (emojiCat === 'emoji' ? 'emoji' : '表情包'); }
+function myTextOf() { if (!Array.isArray(myTextGroups[emojiCat])) myTextGroups[emojiCat] = []; return myTextGroups[emojiCat]; }
+function myTextLoad() {
+try { const v = JSON.parse(myEmojiStore().get('my-text-groups') || 'null'); if (v && typeof v === 'object') { myTextGroups.kaomoji = Array.isArray(v.kaomoji) ? v.kaomoji : []; myTextGroups.emoji = Array.isArray(v.emoji) ? v.emoji : []; } } catch (e) {}
+}
+function myTextSave() { try { myEmojiStore().set('my-text-groups', JSON.stringify(myTextGroups)); } catch (e) {} }
+myTextLoad();
+// 当前分类+作用域的分组列表；'mine' 走面板自建文字库，其余走字卡库同名分类（getScopedGroups 已滤停用分组）
+function textScopeGroups() {
+if (emojiMode === 'mine') return myTextOf();
+return ((window.getScopedGroups && window.getScopedGroups(emojiCat, emojiMode === 'public' ? 'public' : 'own')) || []);
+}
+// 文字库很小（KB 级），不做 my-emoji-groups 那套大键 hydrate/防覆盖，只在首开时补一次 idbGet 兜底
+function reloadMyTextFromIdb() {
+if (myTextHydrated || !window.idbGet) return;
+myTextHydrated = true;
+window.idbGet(MYT_KEY).then(v => {
+if (!v) return;
+try {
+const p = JSON.parse(v);
+if (!p || typeof p !== 'object') return;
+const pk = Array.isArray(p.kaomoji) ? p.kaomoji : [], pe = Array.isArray(p.emoji) ? p.emoji : [];
+if (pk.length + pe.length > myTextGroups.kaomoji.length + myTextGroups.emoji.length) {
+myTextGroups.kaomoji = pk; myTextGroups.emoji = pe;
+try { if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel(); } catch (e) {}
+}
+} catch (e) {}
+}).catch(() => {});
+}
+// #636：分类行（表情包/颜文字/emoji）——JS 注入到 .emoji-head 之后，template 不动
+function ensureEmojiCatBar() {
+if (emojiCatBar || !emojiPanel) return;
+const head = emojiPanel.querySelector('.emoji-head');
+if (!head || !head.parentNode) return;
+emojiCatBar = document.createElement('div');
+emojiCatBar.className = 'emoji-cats';
+[['sticker', '表情包'], ['kaomoji', '颜文字'], ['emoji', 'emoji']].forEach(([cat, label]) => {
+const c = document.createElement('button');
+c.className = 'emoji-cat-chip';
+c.type = 'button';
+c.dataset.ecat = cat;
+c.textContent = label;
+c.addEventListener('click', (e) => {
+e.stopPropagation();
+if (emojiCat === cat) return;
+emojiCat = cat;
+myTextBatch = false;
+myTextSel.clear();
+saveEmojiGroupPref();
+renderEmojiPanel();
+try { c.blur(); } catch (err) {}
+});
+emojiCatBar.appendChild(c);
+});
+head.parentNode.insertBefore(emojiCatBar, head.nextSibling);
+}
+// #636：文字库工具行（批量导入 / 批量管理）——插在图片工具行前面，同槽位互斥显示
+function ensureEmojiTextTools() {
+if (emojiTextTools || !emojiPanel) return;
+const tools = emojiPanel.querySelector('.emoji-tools');
+if (!tools || !tools.parentNode) return;
+emojiTextTools = document.createElement('div');
+emojiTextTools.id = 'emoji-text-tools'; // 快照/回归脚本按 id 定位
+emojiTextTools.className = 'emoji-tools';
+emojiTextTools.hidden = true;
+const importBtn = document.createElement('button');
+importBtn.className = 'emoji-tool';
+importBtn.type = 'button';
+importBtn.textContent = '批量导入';
+mytBatchBtn = document.createElement('button');
+mytBatchBtn.className = 'emoji-tool';
+mytBatchBtn.type = 'button';
+mytBatchBtn.textContent = '批量管理';
+emojiTextTools.appendChild(importBtn);
+emojiTextTools.appendChild(mytBatchBtn);
+tools.parentNode.insertBefore(emojiTextTools, tools);
+importBtn.addEventListener('click', (e) => { e.stopPropagation(); openMyTextImport(); });
+mytBatchBtn.addEventListener('click', (e) => {
+e.stopPropagation();
+myTextBatch = !myTextBatch;
+myTextSel.clear();
+renderEmojiPanel();
+});
+}
+// #636：批量导入（一行一个，【分组名】前缀可选指定分组）——语法与表情包「链接导入」一致
+function openMyTextImport() {
+if (!window.openModal) return;
+const catName = textCatLabel();
+const fallbackGroup = textCurGroup() || '常用';
+window.openModal('批量导入' + catName + '（一行一个）', '', (raw, targetGroup) => {
+const lines = String(raw || '').split(/\r?\n|\u2028|\u2029|\u0085/).map(s => s.replace(/[\u200b-\u200f\ufeff]/g, '').trim()).filter(Boolean);
+if (!lines.length) { toast('没有可导入的内容（一行一个）'); return; }
+const groups = myTextOf();
+let newGroups = 0, added = 0, dup = 0, firstBucket = '';
+const buckets = {};
+const resolveBucket = (name) => {
+if (!buckets[name]) {
+let g = groups.find(x => x[0] === name);
+if (!g) { g = [name, []]; groups.unshift(g); newGroups++; }
+buckets[name] = { g: g, seen: new Set(g[1]) };
+if (!firstBucket) firstBucket = name;
+}
+return buckets[name];
+};
+lines.forEach(line => {
+const m = /^【([^】]+)】\s*([\s\S]+)$/.exec(line);
+const val = (m ? m[2] : line).trim();
+if (!val) { dup++; return; }
+const b = resolveBucket(m ? m[1] : (targetGroup || fallbackGroup));
+if (b.seen.has(val)) { dup++; return; }
+b.seen.add(val);
+b.g[1].push(val);
+added++;
+});
+myTextSave();
+if (added) { textCurSet(firstBucket); saveEmojiGroupPref(); }
+renderEmojiPanel();
+toast(added ? '已导入 ' + added + ' 个' + catName + (dup ? '，跳过 ' + dup + ' 行（重复/空行）' : '') + (newGroups ? '，新建 ' + newGroups + ' 个分组' : '') : '没有新增（全部重复或为空）');
+}, {
+textarea: true,
+textareaPlaceholder: '一行一个，可粘贴多个批量导入\n可用【分组名】前缀指定分组，如：【开心】(｡♥‿♥｡)\n不写前缀进「' + fallbackGroup + '」分组',
+groups: myTextOf().map(g => g[0])
+});
+}
 function saveEmojiGroupPref() {
 // v3.15.x：mode 一并持久化——每次打开表情包直接落在上次用的模式+分组，不用重复点
-store.set('emoji-last', JSON.stringify({ mode: emojiMode, ta: emojiCurGroup, mine: myCurGroup, pub: pubCurGroup }));
+// #636：cat（分类行）与 tg（文字分类的「分类\u0001作用域→分组」表）一并持久化
+store.set('emoji-last', JSON.stringify({ mode: emojiMode, ta: emojiCurGroup, mine: myCurGroup, pub: pubCurGroup, cat: emojiCat, tg: textCurGroupMap }));
 }
 // v3.26.x：把上次 tab/分组偏好恢复抽成函数，在模块初始化 + 每次打开面板 + 切换联系人时
 // 都用 store 里的 emoji-last 重新落位——确保打开表情包永远落在「上次用的顶部分组 + 上次打开的表情包分组」，
@@ -9116,6 +9498,9 @@ if (pref.mode === 'public' || pref.mode === 'ta' || pref.mode === 'mine') emojiM
 if (typeof pref.ta === 'string') emojiCurGroup = pref.ta;
 if (typeof pref.mine === 'string') myCurGroup = pref.mine;
 if (typeof pref.pub === 'string') pubCurGroup = pref.pub;
+if (pref.cat === 'sticker' || pref.cat === 'kaomoji' || pref.cat === 'emoji') emojiCat = pref.cat;
+if (pref.tg && typeof pref.tg === 'object') textCurGroupMap = pref.tg;
+if (emojiCat !== 'sticker' && textCatHidden(emojiCat)) emojiCat = 'sticker'; // #636：上次停在的分类已被隐藏则回表情包
 }
 } catch (e) {}
 }
@@ -9408,6 +9793,70 @@ function emojiNewImg(src) {
   img.alt = '表情';
   return img;
 }
+// FIX 2026-09-17 #662 表情包面板「打开/切分组时图片闪一下重新加载」（红米 K80 Chrome 等多机型，
+//   用户明说其他设备型号也有）：#457（同内容连开短路）/ #508/#509（字卡库页回收池）/ #617
+//   （池键令牌↔原文同身份）三轮都只收口了「连续两次渲染内容完全相同」这一条路径——只要内容签名
+//   一变（切分组 A→B→A、切分类/作用域、最近使用区变化、后台令牌化翻转、IDB 回填后重渲…），面板
+//   网格仍走 emojiList.innerHTML='' + 全部 img 新建：已解码节点被整批丢弃、浏览器必须从零重新
+//   解析/解码每个 dataURL（无头 390×844 实测：G1→G2→G1 回到刚看过的分组，12 个 img 节点全部
+//   新建、12 次 load ＝用户看到的「一闪 + 重新加载」）。
+//   收口＝沿用字卡库页已实证的「回收池」口径：任何整格重写之前先把旧 img 按「令牌稳定身份」
+//   (#547 ccMediaCardIdent：令牌↔原文同一身份) 收进模块级池，新建同身份卡时直接取回旧节点——
+//   已解码的零重解码、只带 data-src 的保住排队状态。真正内容变化的卡取不到同身份节点＝照旧新建。
+//   零机型 / 零内核分支、零视觉改动：只换「用哪个节点」，DOM 结构与事件绑定完全不变。
+const emojiImgPool = new Map();     // 身份 -> [img 节点, ...]（重写前收、重建时取，跨 render 存活）
+const EMOJI_IMG_POOL_MAX = 160;     // 池上限：超大库来回滚动时不无限留节点
+const EMOJI_IMG_POOL_PER_KEY = 8;   // 同一身份最多留几个（重复卡 / 多分组同图）
+function emojiPoolKey(src) {
+  try { if (window.ccMediaCardIdent) return window.ccMediaCardIdent(src); } catch (e) {}
+  return typeof src === 'string' ? src : String(src);
+}
+function emojiPoolTrim() {
+  // Map 保序：超上限先丢最早收进来的（用户已滚远、最不可能马上回看的那些）
+  let total = 0;
+  emojiImgPool.forEach(list => { total += list.length; });
+  if (total <= EMOJI_IMG_POOL_MAX) return;
+  emojiImgPool.forEach((list, k) => { if (total > EMOJI_IMG_POOL_MAX) { total -= list.length; emojiImgPool.delete(k); } });
+}
+function emojiPoolHarvest() {
+  if (!emojiList) return;
+  emojiList.querySelectorAll('img').forEach(im => {
+    const k = (im.dataset && im.dataset.emojiKey) || '';
+    if (!k) return; // 不是本机制建的图（如加载占位行）不入池
+    if (im.__pooled) return; // 幂等：同一次重写里被多次回收也只入池一次（防重复取回同一节点）
+    im.__pooled = true;
+    let list = emojiImgPool.get(k);
+    if (!list) { list = []; emojiImgPool.set(k, list); }
+    if (list.length < EMOJI_IMG_POOL_PER_KEY) list.push(im);
+  });
+  emojiPoolTrim();
+}
+function emojiAdoptImg(src) {
+  const k = emojiPoolKey(src);
+  const list = emojiImgPool.get(k);
+  if (list && list.length) {
+    const img = list.pop();
+    if (!list.length) emojiImgPool.delete(k);
+    img.__pooled = false;
+    img.dataset.emojiKey = k;
+    return img; // 复活旧节点：src 已解好的原样保留、只带 data-src 的保住排队状态
+  }
+  const img = emojiNewImg(src);
+  img.dataset.emojiKey = k;
+  return img;
+}
+// #662：面板所有「整格重写」统一入口——emojiList.innerHTML 的写入前一律先回收旧 img，
+//   renderEmojiPanel / renderEmojiTextPanel 里十余处清空与空态写入（含今后新增的）都自动覆盖，
+//   不必逐处改调用点，也就不会被后来的改动漏掉一处。只包这一个节点，作用域不外溢。
+//   回收是幂等的（__pooled），与显式的 emojiPoolHarvest() 调用不会重复入池。
+try {
+  const _emojiIH = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+  Object.defineProperty(emojiList, 'innerHTML', {
+    get: _emojiIH.get,
+    set: function (v) { emojiPoolHarvest(); _emojiIH.set.call(this, v); },
+    configurable: true
+  });
+} catch (e) {}
 // FIX 2026-09-14 #435 组内令牌批量预热：TA/公用大库贴纸卡以 @@m:hash 存在，面板图原路径
 // =IO 补 src→media-pool 观察器→miss 读 IDB（8 并发排队）→重写 src→再解码，五段异步串行
 // ＝冷启动图慢半拍。渲染分组后把组内令牌交给媒体池批量预热（map 命中后观察器同步重写）。
@@ -9516,7 +9965,12 @@ if (!emojiGroupsBar) return;
 emojiGroupsBar.innerHTML = '';
 let list = [];
 let cur = '';
-if (emojiMode === 'public') {
+if (emojiCat !== 'sticker') {
+// #636：文字分类——分组取自当前作用域；没选过（或选的分组不在了）自动落到第一个非空分组
+list = textScopeGroups();
+cur = textCurGroup();
+if (!cur || !list.some(g => g[0] === cur)) { const hit = list.find(g => g[1] && g[1].length); textCurSet(hit ? hit[0] : ''); cur = textCurGroup(); }
+} else if (emojiMode === 'public') {
 list = (window.getScopedGroups && window.getScopedGroups('sticker', 'public')) || [];
 cur = pubCurGroup;
 } else if (emojiMode === 'ta') {
@@ -9528,7 +9982,7 @@ cur = myCurGroup;
 }
 // #558 「⏱最近使用」chip 排最前；可解析到内容的才显示；我的批量管理模式不显示
 //（批量勾选只对分组原卡有意义，最近区走直发路径）；上次停在最近分组但本次不可解析时回落。
-const recChipShow = !!(rec && rec.srcs.length) && !(emojiMode === 'mine' && myBatchMode);
+const recChipShow = !!(rec && rec.srcs.length) && !(emojiMode === 'mine' && myBatchMode) && emojiCat === 'sticker';
 if (cur === '__recent__' && !recChipShow) cur = '';
 if (cur && cur !== '__recent__' && !list.some(g => g[0] === cur)) cur = '';
 const chips = (recChipShow ? [['__recent__', '⏱最近使用']] : [])
@@ -9539,7 +9993,8 @@ c.className = 'emoji-g-chip' + (cur === val ? ' sel' : '');
 c.textContent = label;
 c.addEventListener('click', (e) => {
 e.stopPropagation();
-if (emojiMode === 'public') pubCurGroup = (cur === val ? '' : val);
+if (emojiCat !== 'sticker') textCurSet(cur === val ? '' : val);
+else if (emojiMode === 'public') pubCurGroup = (cur === val ? '' : val);
 else if (emojiMode === 'ta') emojiCurGroup = (cur === val ? '' : val);
 else myCurGroup = (cur === val ? '' : val);
 saveEmojiGroupPref();
@@ -9559,7 +10014,7 @@ if (mode === 'mine' && myBatchMode) {
 const k = gname + '\u0001' + i;
 const on = mySel.has(k);
 		d.classList.toggle('sel', on);
-const img = emojiNewImg(src); // #435：统一创建（decoding=async + 懒加载）
+const img = emojiAdoptImg(src); // #662：优先取回回收池里同身份的旧 img（已解码的零重解码），取不到才新建；#435 统一创建（decoding=async + 懒加载）
 		d.appendChild(img);
 	emojiAttachLazy(img);
 if (on) {
@@ -9580,7 +10035,7 @@ ck.remove();
 }
 });
 } else {
-const img = emojiNewImg(src); // #435：统一创建（decoding=async + 懒加载）
+const img = emojiAdoptImg(src); // #662：优先取回回收池里同身份的旧 img（已解码的零重解码），取不到才新建；#435 统一创建（decoding=async + 懒加载）
 	d.appendChild(img);
 	emojiAttachLazy(img);
 	d.addEventListener('click', () => {
@@ -9602,21 +10057,118 @@ grid.appendChild(d);
 emojiList.appendChild(grid);
 }
 function updateBatchCount() {
+if (emojiCat !== 'sticker') { if (emojiBatchCount) emojiBatchCount.textContent = '已选 ' + myTextSel.size + ' 个'; return; } // #636
 if (emojiBatchCount) emojiBatchCount.textContent = '已选 ' + mySel.size + ' 张';
+}
+// ===== #636：颜文字 / emoji 文字分类渲染（无图、无懒加载，不走 #457 指纹短路） =====
+function renderEmojiTextPanel() {
+const list = textScopeGroups();
+const cur = textCurGroup();
+const catName = textCatLabel();
+if (!list.length) {
+emojiList.innerHTML = emojiMode === 'mine'
+? '<div class="emoji-empty">暂无我的' + catName + '<br>点上方「批量导入」粘贴，一行一个</div>'
+: (ccPanelsFetching
+? ccLoadRowHtml('正在加载' + catName + '…')
+: '<div class="emoji-empty">暂无' + (emojiMode === 'public' ? '公用' : '') + catName + '<br>请到 字卡库 → ' + (emojiMode === 'public' ? '公用字卡' : '专属字卡') + ' → ' + catName + ' 添加</div>');
+return;
+}
+if (!cur || !list.some(x => x[0] === cur)) {
+emojiList.innerHTML = '<div class="emoji-empty">点击上方分组查看</div>';
+return;
+}
+const g = list.find(x => x[0] === cur);
+if (!g || !g[1].length) { emojiList.innerHTML = '<div class="emoji-empty">该分组暂无内容</div>'; return; }
+renderEmojiTextGroup(g[0], g[1]);
+}
+function renderEmojiTextGroup(gname, arr) {
+const grid = document.createElement('div');
+grid.className = 'emoji-grid emoji-grid-text' + (emojiCat === 'emoji' ? ' emoji-grid-emoji' : '');
+arr.forEach((t, i) => {
+const d = document.createElement('div');
+d.className = 'emoji-item emoji-text-item';
+d.textContent = t;
+if (emojiMode === 'mine' && myTextBatch) {
+const k = gname + '\u0001' + i;
+if (myTextSel.has(k)) { d.classList.add('sel'); const ck = document.createElement('span'); ck.className = 'emoji-check'; ck.textContent = '✓'; d.appendChild(ck); }
+d.addEventListener('click', (e) => {
+e.stopPropagation();
+if (myTextSel.has(k)) myTextSel.delete(k); else myTextSel.add(k);
+updateBatchCount();
+d.classList.toggle('sel', myTextSel.has(k));
+let ck = d.querySelector('.emoji-check');
+if (myTextSel.has(k)) { if (!ck) { ck = document.createElement('span'); ck.className = 'emoji-check'; ck.textContent = '✓'; d.appendChild(ck); } }
+else if (ck) ck.remove();
+});
+} else {
+d.addEventListener('click', (e) => {
+e.stopPropagation();
+if (emojiInsertCb) {
+const cb = emojiInsertCb;
+emojiInsertCb = null;
+emojiInsertAllowUrl = false;
+cb(t, 'text');
+closeEmojiPanel();
+} else {
+sendTextCard(t);
+}
+});
+}
+grid.appendChild(d);
+});
+emojiList.appendChild(grid);
+}
+// #636：文字字卡发送——镜像 sendSticker 的引用/日志/回复链路，但载荷是纯文字
+function sendTextCard(t) {
+if (typeof t !== 'string' || !t) return;
+lastMineText = t;
+const quote = lastQuote ? { q: quoteValue(lastQuote), s: lastQuote.side, i: lastQuote.idx } : null;
+if (quote) { lastQuote = null; renderDraft(); }
+const rec = { side: 'out', text: t, parts: [{ k: 'text', v: t }] };
+if (quote) { rec.quote = quote.q; rec.qside = quote.s; if (typeof quote.i === 'number' && quote.i >= 0) rec.qidx = quote.i; }
+addRec(rec);
+if (window.logFish) window.logFish();
+scheduleReply();
+closeEmojiPanel();
 }
 function renderEmojiPanel() {
 if (!emojiList) return;
 const hts = taStickerHidden();
+// #636：分类行与文字库工具行（JS 注入，template 不动）；被「隐藏」的分类不可停留
+ensureEmojiCatBar();
+ensureEmojiTextTools();
+if (emojiCat !== 'sticker' && textCatHidden(emojiCat)) emojiCat = 'sticker';
+if (emojiCatBar) emojiCatBar.querySelectorAll('.emoji-cat-chip').forEach(c => {
+const cat = c.dataset.ecat;
+c.hidden = cat !== 'sticker' && textCatHidden(cat);
+c.classList.toggle('sel', cat === emojiCat);
+});
+if (emojiCat === 'sticker') {
 document.querySelectorAll('#emoji-panel .emoji-tab').forEach(t => { if (t.dataset.etab !== 'mine') t.hidden = hts; });
 if (hts && emojiMode !== 'mine') emojiMode = 'mine';
+}
 document.querySelectorAll('#emoji-panel .emoji-tab').forEach(t => t.classList.toggle('sel', t.dataset.etab === emojiMode));
 const taTabEl = document.querySelector('#emoji-panel .emoji-tab[data-etab="ta"]');
-if (taTabEl) taTabEl.textContent = chatPartnerName() + ' 的表情包';
-if (emojiTools) emojiTools.hidden = emojiMode !== 'mine';
-if (emojiBatch) emojiBatch.hidden = !(emojiMode === 'mine' && myBatchMode);
+// #636：作用域 tab 文案跟随分类（公用表情包/公用颜文字/公用 emoji…）
+const pubTabEl = document.querySelector('#emoji-panel .emoji-tab[data-etab="public"]');
+const mineTabEl = document.querySelector('#emoji-panel .emoji-tab[data-etab="mine"]');
+if (taTabEl) taTabEl.textContent = chatPartnerName() + ' 的' + textCatLabel();
+if (pubTabEl) pubTabEl.textContent = '公用' + textCatLabel();
+if (mineTabEl) mineTabEl.textContent = '我的' + textCatLabel();
+if (emojiTools) emojiTools.hidden = !(emojiMode === 'mine' && emojiCat === 'sticker');
+if (emojiTextTools) {
+emojiTextTools.hidden = !(emojiMode === 'mine' && emojiCat !== 'sticker');
+if (mytBatchBtn) mytBatchBtn.textContent = myTextBatch ? '退出批量' : '批量管理';
+}
+if (emojiBatch) emojiBatch.hidden = !(emojiMode === 'mine' && (emojiCat === 'sticker' ? myBatchMode : myTextBatch));
 var rec = emojiRecentResolved(); // #558：每次渲染解析一次最近使用（身份回查三池），bar 与最近分组/签名共用
 emojiRecNow = rec;
 renderEmojiGroupsBar(rec);
+if (emojiCat !== 'sticker') { // #636：颜文字/emoji 走文字网格（无图、无懒加载，不做 #457 指纹短路）
+emojiList.innerHTML = '';
+renderEmojiTextPanel();
+return;
+}
 	// FIX 2026-09-14 #457 内容指纹短路：目标与上次成功渲染一致且 DOM 仍在→跳过重建复用现有 img
 	var _sigTarget = emojiRenderSigTarget(hts, taTabEl ? taTabEl.textContent : '');
 	if (_sigTarget && _sigTarget === emojiRenderSig && emojiList.firstElementChild) return;
@@ -9698,18 +10250,47 @@ function openEmojiPanel() {
 if (!emojiPanel) return;
 loadEmojiPref(); // v3.26.x：打开即按上次用的顶部分组+分组落位（覆盖 idbRestore 晚到 / 切换联系人未重读的场景）
 reloadMyEmojiFromIdb();
+reloadMyTextFromIdb(); // #636：文字库（颜文字/emoji）首开补一次 IDB 取回
 const pc = document.getElementById('poke-card');
 if (pc) pc.hidden = true;
 if (window.closeAvlib) window.closeAvlib();
 document.body.classList.remove('mail-emoji-mode');
 myBatchMode = false;
 mySel.clear();
+myTextBatch = false; // #636
+myTextSel.clear();
 closeIme(); // v3.5.116：收起输入法，面板完整不被键盘遮挡
 renderEmojiPanel();
-emojiPanel.hidden = false;
-scrollChatBottom();
-if (morePanel) morePanel.hidden = true;
+// FIX 2026-09-17 #662：半框平时是 display:none 挂着的——图在隐藏期间浏览器可以回收已解码位图
+//   （中端/低内存机型更积极，用户报的「其他设备型号也有」正对应这条），再打开时整格重新解码
+//   ＝「每次打开都闪一下重新加载」。**这条节点身份测不出**（#457/#508/#509/#617 的断言都只看
+//   节点有没有被替换，节点一直没换、照样闪），所以在显示前主动 decode 一次：位图还在时 decode
+//   立即兑现（不可感知），被回收过时先解码完再显示＝不再出现空帧 / 逐格冒出。
+//   上限 120ms（绝不因为解码慢把面板卡住）；首开还没有已加载图＝同步显示，行为与旧版一致。
+const showEmoji = function () {
+  emojiPanel.hidden = false;
+  scrollChatBottom();
+  if (morePanel) morePanel.hidden = true;
+};
+emojiShowWhenDecoded(showEmoji);
 hydrateCcForChatPanels(() => { if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel(); });
+}
+// #662：把面板里已赋 src 的图 decode 完再执行 show（上面 openEmojiPanel 用；头像互动半框同款见
+//   avatar-lib.js 的 avShowWhenDecoded）。decode() 只影响位图缓存，不改 src、不新建节点、不动布局。
+function emojiShowWhenDecoded(show) {
+  let shown = false;
+  const fin = function () { if (shown) return; shown = true; try { show(); } catch (e) {} };
+  if (!emojiList || !window.Promise) { fin(); return; }
+  const imgs = emojiList.querySelectorAll('img[src]');
+  if (!imgs.length) { fin(); return; }
+  const jobs = [];
+  for (let i = 0; i < imgs.length; i++) {
+    const im = imgs[i];
+    try { if (im.decode) jobs.push(im.decode().catch(function () {})); } catch (e) {}
+  }
+  if (!jobs.length) { fin(); return; }
+  Promise.all(jobs).then(fin, fin);
+  setTimeout(fin, 120);
 }
 function closeEmojiPanel() {
 if (emojiPanel) emojiPanel.hidden = true;
@@ -9752,6 +10333,9 @@ loadEmojiPref(); // v3.26.x：切换联系人后按该桌面的上次 tab/分组
 if (!emojiPanel.hidden) renderEmojiPanel();
 });
 document.addEventListener('hide-ta-sticker-changed', function () {
+if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel();
+});
+document.addEventListener('hide-tab-changed', function () { // #636：颜文字/emoji 分类显隐开关
 if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel();
 });
 window.openEmojiPanelForInsert = function (cb, opts) {
@@ -9979,6 +10563,73 @@ syncBatchBtn();
 });
 document.addEventListener('batch-send-changed', syncBatchBtn);
 syncBatchBtn();
+// ============================== v3.27.x #660：输入栏按钮位置（统一管理） ==============================
+// 聊天设置 → 功能 →「输入栏按钮」：自定义底部输入栏这一排的左右顺序——含三个「开关型」按钮
+// （麦克风 cs-voice-send / 继续说 cs-trigger-bar / 批量发送 cs-batch-send，各自开关打开后才
+// 显示）与输入框本身；「发送」是固定收尾的动作按钮，恒在最后、不参与排序。
+// 显隐与位置是两件互不影响的独立配置：开关只决定「显不显示」，本项只决定「排在哪里」——
+// 开关关闭期间该按钮仍留在排序表里（面板上标「开关未开启」），打开后自动出现在保存的位置。
+// 实现用 flex order，而不是把节点 insertBefore 搬来搬去：按钮的事件绑定、其他模块按 id 的
+// 引用、以及 #page-chat > .chat-input-row 这条直系选择器依赖的结构全部原样不动，改序是纯
+// 视觉层、随时可逆。聊天页与群聊输入栏共用同一份顺序（两处同名 data-io 令牌一批处理）。
+// 保存键 cs-input-order（JSON 数组、每联系人独立，与 cs-voice-send/cs-batch-send 同域）。
+const INPUT_IO_TOKENS = ['mic', 'continue', 'more', 'emoji', 'input', 'img', 'batch'];
+const INPUT_IO_DEFAULT = INPUT_IO_TOKENS.slice();
+const INPUT_IO_ORDER_BASE = 10;  // [data-io] 起始序，依次 +10；发送按钮固定 999＝恒在最后
+const INPUT_IO_SEND_ORDER = 999;
+// 归一化：只认已知令牌、去重，缺失的按默认顺序补齐——存档被改坏或版本增删令牌，
+// 都不会让某一排按钮消失或叠在一起
+function inputIoNormalize(raw) {
+const out = [];
+(Array.isArray(raw) ? raw : []).forEach((t) => {
+if (INPUT_IO_TOKENS.indexOf(t) >= 0 && out.indexOf(t) < 0) out.push(t);
+});
+INPUT_IO_TOKENS.forEach((t) => { if (out.indexOf(t) < 0) out.push(t); });
+return out;
+}
+function inputIoRead() {
+try { return inputIoNormalize(JSON.parse(store.get('cs-input-order') || 'null')); } catch (e) { return INPUT_IO_DEFAULT.slice(); }
+}
+function inputIoIsDefault() {
+return inputIoRead().join(',') === INPUT_IO_DEFAULT.join(',');
+}
+function applyInputBtnOrder() {
+const order = inputIoRead();
+document.querySelectorAll('.chat-input-row').forEach((row) => {
+const items = row.querySelectorAll('[data-io]');
+items.forEach((el) => {
+const i = order.indexOf(el.getAttribute('data-io'));
+el.style.order = String(INPUT_IO_ORDER_BASE + (i < 0 ? items.length : i) * 10);
+});
+const send = row.querySelector('.chat-send');
+if (send) send.style.order = String(INPUT_IO_SEND_ORDER);
+});
+}
+// 排序面板（chat-settings.js）经 window.mochiInputOrder 读写同一份顺序；改完派发事件，
+// 聊天页与群聊输入栏即时重排（不必切页面，也不用刷新）
+window.mochiInputOrder = {
+TOKENS: INPUT_IO_TOKENS.slice(),
+DEFAULT: INPUT_IO_DEFAULT.slice(),
+read: inputIoRead,
+isDefault: inputIoIsDefault,
+write: function (arr) {
+const norm = inputIoNormalize(arr);
+try { store.set('cs-input-order', JSON.stringify(norm)); } catch (e) {}
+document.dispatchEvent(new Event('chat-input-order-changed'));
+return norm;
+},
+reset: function () {
+try { store.remove('cs-input-order'); } catch (e) {}
+document.dispatchEvent(new Event('chat-input-order-changed'));
+return INPUT_IO_DEFAULT.slice();
+},
+apply: applyInputBtnOrder
+};
+document.addEventListener('chat-input-order-changed', applyInputBtnOrder);
+document.addEventListener('contact-switched', applyInputBtnOrder);
+// idbRestore 异步回填可能晚于本次初始化（回填后 store 里的键才是最终值），就绪后再重排一次
+document.addEventListener('mochi-restore-done', applyInputBtnOrder);
+applyInputBtnOrder();
 // ============================== v3.16.x：我可发送语音（录音 → 试听 → 发送） ==============================
 // 聊天设置「我可发送语音」（cs-voice-send，每联系人独立）开启后，输入栏左侧显示「麦克风」按钮：
 // 点击弹出底部录音半框——MediaRecorder 录音（最长 60 秒，到时自动停）→ 试听 → 以既有语音消息
@@ -10577,6 +11228,16 @@ const emojiBatchAll = document.getElementById('emoji-batch-all');
 if (emojiBatchAll) {
 emojiBatchAll.addEventListener('click', (e) => {
 e.stopPropagation();
+if (emojiCat !== 'sticker') { // #636：文字库全选当前分组
+if (!textCurGroup()) { toast('请先点击上方分组'); return; }
+const tkeys = [];
+myTextOf().forEach(([gname, arr]) => { if (gname === textCurGroup()) arr.forEach((c, i) => tkeys.push(gname + '\u0001' + i)); });
+if (myTextSel.size === tkeys.length && tkeys.length) myTextSel.clear();
+else tkeys.forEach(k => myTextSel.add(k));
+updateBatchCount();
+renderEmojiPanel();
+return;
+}
 if (!myCurGroup) { toast('请先点击上方分组'); return; }
 const keys = [];
 const list = myGroups.filter(g => g[0] === myCurGroup);
@@ -10590,6 +11251,21 @@ const emojiBatchDel = document.getElementById('emoji-batch-del');
 if (emojiBatchDel) {
 emojiBatchDel.addEventListener('click', (e) => {
 e.stopPropagation();
+if (emojiCat !== 'sticker') { // #636：文字库删除勾选项，顺带清掉删空的分组
+if (!myTextSel.size) { toast('请先选择要删除的'); return; }
+if (window.openModal) {
+window.openModal('删除选中的 ' + myTextSel.size + ' 个？', '', () => {
+myTextOf().forEach(([gname, arr]) => {
+for (let i = arr.length - 1; i >= 0; i--) { if (myTextSel.has(gname + '\u0001' + i)) arr.splice(i, 1); }
+});
+myTextGroups[emojiCat] = myTextOf().filter(g => g[1].length);
+myTextSel.clear();
+myTextSave();
+renderEmojiPanel();
+}, { noInput: true });
+}
+return;
+}
 if (!mySel.size) { toast('请先选择要删除的表情'); return; }
 if (window.openModal) {
 window.openModal('删除选中的 ' + mySel.size + ' 个表情？', '', () => {
@@ -10609,6 +11285,7 @@ const emojiBatchExit = document.getElementById('emoji-batch-exit');
 if (emojiBatchExit) {
 emojiBatchExit.addEventListener('click', (e) => {
 e.stopPropagation();
+if (emojiCat !== 'sticker') { myTextBatch = false; myTextSel.clear(); renderEmojiPanel(); return; } // #636
 myBatchMode = false;
 mySel.clear();
 renderEmojiPanel();
@@ -10815,6 +11492,31 @@ let lastSendTxt = '', lastSendTs = 0;
 // compositionstart / insert 类 beforeinput），内核的迟到写回没有。
 let lastUserEditAt = 0, clearAppliedAt = 0;
 function userEditedAfterClear() { return lastUserEditAt > clearAppliedAt; }
+// FIX 2026-09-17 #664：输入框「仍在聚焦」自记（focusin/focusout）。
+// iOS Safari 在 contenteditable 聚焦时【常返回 document.activeElement === <body>】
+// （mobile-adapt.js iOS 分支 _textFocused 就是为这同一个内核行为而存在的），
+// 于是 clearChatInput 里 `document.activeElement === input` 这个焦点判据在 iOS 上
+// 恒不成立 → 走「非聚焦直写 textContent=''」分支——正是本函数注释点名过的那条
+// 「输入法把刚提交的组合文本整体写回输入框（迟到、且常不派发 input 事件）」的路径：
+// 发出去的消息在输入栏里复活，要等 200ms 的迟到兜底才清掉 ⇒ 用户所见
+// 「发消息时底部输入栏这一行弹跳一下然后才恢复正常」（iPhone 主屏幕打开，
+// 安卓 activeElement 正常故取 execCommand 分支，无此现象）。
+// 判据按【能力/状态】而非机型：只补一个与平台无关的焦点信号，真未聚焦时与改动前一致。
+let inputFocused = false;
+if (input) {
+input.addEventListener('focusin', function () { inputFocused = true; });
+input.addEventListener('focusout', function () { inputFocused = false; });
+}
+// 清空管线的焦点判据：activeElement 可靠时照旧；iOS 报 body 时用自记焦点兜底。
+// 刻意【不拿 DOM 选区当判据】：程序化失焦（点卡片/批量发送/切页后）选区常仍留在
+// 输入框里，用它判「聚焦」会误判 → 走 execCommand 分支并 input.focus()＝凭空弹输入法。
+// focusin/focusout 是与平台无关的真实焦点信号（iOS 上同样可靠派发，见 mobile-adapt
+// 的 _textFocused 同款取舍）。
+function inputStillFocused() {
+try {
+return document.activeElement === input || inputFocused;
+} catch (e) { return false; }
+}
 // v3.26.x #215：发送取值兜底——Edge/Chromium 部分内核在点发送的瞬间会把输入栏里
 // 尚未提交的组合文本整体撕掉（composition cancel：DOM 直接清空、不派发任何
 // input/beforeinput 事件），addMsg(input.innerText) 读到空串 → buildParts 为空 →
@@ -10848,7 +11550,9 @@ const sentTxt = lastSendTxt || '';
 // 表现为「消息发出去了，聊天框还留着刚发的内容」。聚焦态改走 execCommand 编辑
 // 管线删除（浏览器层面终结组合会话，写回无从发生）；非聚焦/不支持再退回直清。
 try {
-if (input.isContentEditable && document.activeElement === input) {
+// #664：焦点判据见 inputStillFocused 注释——iOS 上 activeElement 报 body，
+// 原判据恒假会把聚焦态误当非聚焦态直写（= 迟到写回复活窗口）
+if (input.isContentEditable && inputStillFocused()) {
 input.focus();
 if (!(document.execCommand && document.execCommand('selectAll', false, null) &&
 document.execCommand('delete', false, null))) {
@@ -10863,8 +11567,11 @@ try { input.textContent = ''; } catch (e2) {}
 try { input.value = ''; } catch (e) {}
 // v3.14.x：迟到复活兜底——部分内核重组文本不派发 input（原守卫收不到），定时
 // 复查两次；仅当内容与刚发送文本完全一致且仍在防重发窗口内才清，人工重打不受影响
+// #664：首次复查提前到 60ms——写回若仍发生（内核不派发 focusin 等极少数情形），
+// 复活窗口从 ~200ms 收到 1~2 帧，输入栏不再有肉眼可见的「弹一下」；判据与后两次
+// 完全一致（内容全等 + 防重发窗口内 + 用户清空后无真实输入），不吞用户重打的字。
 if (sentTxt && input.isContentEditable) {
-[200, 800].forEach((ms) => {
+[60, 200, 800].forEach((ms) => {
 setTimeout(() => {
 try {
 if (!input || !input.isContentEditable) return;
