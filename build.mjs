@@ -88,8 +88,8 @@ function minifyCss(code) {
 }
 
 // ===== 按顺序拼接样式 / 脚本（顺序即生效顺序） =====
-const cssFiles = ['base.css', 'home.css', 'chat-main.css', 'chat-pages.css', 'market.css', 'group-chat.css', 'setting.css', 'tabbar.css', 'dark.css', 'garden.css', 'memo.css', 'memo-arc.css', 'room.css', 'drift-bottle.css', 'applock.css', 'feature-data.css'];
-const jsFiles = ['device.js', 'idb.js', 'contacts.js', 'applock.js', 'card-lock.js', 'dcp-master.js', 'media-pool.js','storage-slim.js', 'img-compress.js', 'clock.js', 'tabs.js', 'desktop-slider.js', 'quote-cards.js', 'personalize.js', 'chat.js', 'group-chat.js', 'chatcard.js', 'chat-settings.js', 'reply-settings.js', 'fav-settings.js', 'default-cards-data.js', 'dict-ext-data.js', 'default-cards.js', 'quote-spell.js', 'dream-free.js', 'mood-followup-data.js', 'mood-reply-cards.js', 'ta-mood-data.js', 'ta-mood.js', 'music-player.js', 'calendar.js', 'divination.js', 'avatar-lib.js', 'ta-ask.js', 'ck-question.js', 'incoming-requests.js', 'ta-invite.js', 'bg-keep.js', 'records.js', 'call.js', 'mail.js', 'feed.js', 'loc-lib.js', 'p2-features.js', 'gift-shop.js', 'memo-app.js', 'memo-arc.js', 'my-arc.js', 'period.js', 'accounting.js', 'garden.js', 'room.js', 'drift-bottle.js', 'decision.js', 'group-decision.js', 'pong.js', 'snake-game.js', 'breakout.js', 'connect-four.js', 'coop-mine.js', 'fishing.js', 'memory-game.js', 'gomoku.js', 'linkup.js', 'match3.js', 'auction.js', 'arcade.js', 'mood-diary.js', 'sfx.js', 'fullscreen.js', 'data-backup.js', 'feature-data.js', 'pwa.js', 'ver-check.js', 'cjian.js', 'feature-hub.js', 'settings-help.js', 'onboarding.js', 'page-coach.js', 'card-audit.js', 'mobile-adapt.js'];
+const cssFiles = ['base.css', 'home.css', 'chat-main.css', 'chat-pages.css', 'market.css', 'group-chat.css', 'setting.css', 'tabbar.css', 'dark.css', 'garden.css', 'memo.css', 'memo-arc.css', 'room.css', 'drift-bottle.css', 'applock.css', 'feature-data.css', 'display-tune.css'];
+const jsFiles = ['device.js', 'idb.js', 'contacts.js', 'applock.js', 'card-lock.js', 'dcp-master.js', 'media-pool.js','storage-slim.js', 'perf-check.js', 'img-compress.js', 'clock.js', 'tabs.js', 'desktop-slider.js', 'quote-cards.js', 'personalize.js', 'chat.js', 'group-chat.js', 'chatcard.js', 'chat-settings.js', 'reply-settings.js', 'fav-settings.js', 'default-cards-data.js', 'dict-ext-data.js', 'default-cards.js', 'quote-spell.js', 'dream-free.js', 'mood-followup-data.js', 'mood-reply-cards.js', 'ta-mood-data.js', 'ta-mood.js', 'music-player.js', 'calendar.js', 'divination.js', 'avatar-lib.js', 'ta-ask.js', 'ck-question.js', 'incoming-requests.js', 'ta-invite.js', 'bg-keep.js', 'records.js', 'call.js', 'mail.js', 'feed.js', 'loc-lib.js', 'p2-features.js', 'gift-shop.js', 'memo-app.js', 'memo-arc.js', 'my-arc.js', 'period.js', 'accounting.js', 'garden.js', 'room.js', 'drift-bottle.js', 'decision.js', 'group-decision.js', 'pong.js', 'snake-game.js', 'breakout.js', 'connect-four.js', 'coop-mine.js', 'fishing.js', 'memory-game.js', 'gomoku.js', 'linkup.js', 'match3.js', 'auction.js', 'arcade.js', 'mood-diary.js', 'sfx.js', 'fullscreen.js', 'data-backup.js', 'feature-data.js', 'pwa.js', 'ver-check.js', 'cjian.js', 'feature-hub.js', 'settings-help.js', 'onboarding.js', 'page-coach.js', 'card-audit.js', 'mobile-adapt.js'];
 
 let html = read('template.html');
 // v3.26.x #301：模板 HTML 注释配平守卫——开屏批 07a6cab 曾在红包注释行漏写 `-->`
@@ -216,9 +216,34 @@ console.log('已复制 PWA 文件 → ' + pwaFiles.join(', ') + '（sw 缓存版
 // （防止并行会话/旧缓冲把已移除的代码改回来）。
 // 维护：新增关键修复时在此登记一行 { name, file, needle }（needle 为产物中的特征串）。
 const FIX_SENTINELS = [
+  // ==== 2026-09-18 #765 iOS 卡顿收口（壁纸层提合成层 + 贴底看门狗滚动期让路）====
+  { name: '#765a 聊天壁纸层独立成合成层（删掉＝聊天页内容变化波及壁纸层，整张 cover 位图被重新缩放光栅，「设了壁纸后滚动/发消息发涩」复发；needle=该行整体，chat-main.css 内唯一）', file: 'css/chat-main.css', needle: '#cs-bg-layer { transform:translateZ(0); }' },
+  { name: '#765b 贴底看门狗滚动期让路（删掉＝iOS 抬手后惯性滑行期仍被写 scrollTop，#716「往上滑被拽回底部」的 iPhone 残根回流；needle=200ms 让路判定行，chat.js 内唯一）', file: 'js/chat.js', needle: 'if (Date.now() - _chatScrollActTs < 200) return;' },
+  // ==== 2026-09-17 #697 群聊设置「美化聊天」升成独立顶部 tag + 完整美化（含边看边调）====
+  // 用户：「你要设置里的美化聊天功能没有在顶部变成单独tag，而且没有和聊天里一样的，完整的美化
+  // 功能包括边看边调功能。」（确认＝群聊设置面板）
+  { name: '#697a 群聊设置顶部 tag 含独立「美化」（删掉＝又退回「通用」下的一行，用户报障复发）', file: 'js/group-chat.js', needle: "['beauty', '美化']" },
+  { name: '#697b 切 tag 记忆 gcSetTab（删掉＝美化段里改一个值就整段重建弹回「形象」）', file: 'js/group-chat.js', needle: 'gcSetTab = tab.dataset.gt;' },
+  { name: '#697c 群聊美化「边看边调」抽屉（删掉 openGcBeautyDrawer＝群聊美化退回只能弹窗调、看不到效果）', file: 'js/group-chat.js', needle: 'function openGcBeautyDrawer() {' },
+  { name: '#697d 气泡透明度/栏位不透明度/位置微调五键默认值（删掉＝群聊比单聊少这三组，用户「完整的美化功能」诉求回退）', file: 'js/group-chat.js', needle: "'bubble-op': 100, 'head-op': 92, 'input-op': 92, 'head-inset': 0, 'input-inset': 0," },
+  { name: '#697e 气泡透明度→rgba 写回底色变量（删掉/改回直写 in-bg＝拖滑杆气泡颜色不变）', file: 'js/group-chat.js', needle: 'function gcApplyBubbleSurfaceWith(op) {' },
+  { name: '#697f 群聊页栏位底色/留白 CSS 作用域规则（删掉＝顶栏不透明度/位置微调无效果，且不许动 chat-main.css 共享规则）', file: 'css/group-chat.css', needle: '#page-group-chat > .chat-head { background:rgba(var(--cs-bar-rgb), var(--cs-head-opacity, .92)); }' },
+  // #698（用户直派四项）哨兵——2026-09-17
+  { name: '#698a 群聊顶栏人数含我（删掉 +1＝顶栏/群列表人数又少了「我」，用户报「群聊人数里少了用户」）', file: 'js/group-chat.js', needle: 'const n = getMembers().length + 1;' },
+  { name: '#698b 点顶部群名不再打开切换群聊面板（删掉＝弹面板回流，用户「影响我使用，删掉」；needle=该监听里仅剩的触发继续说行，文件内唯一）', file: 'js/group-chat.js', needle: "if (gcCfg()['gc-cs-trigger-name'] === 1) gcCsFireContinue();" },
+  { name: '#698c 群聊头像/昵称互动池子（删掉 openInterPanel＝群聊又没有头像互动/昵称互动）', file: 'js/group-chat.js', needle: 'function openInterPanel(mode) {' },
+  { name: '#698c 互动池子存储键（删掉＝池子数据无处落盘，互动半框空壳）', file: 'js/group-chat.js', needle: "const INTER_KEYS = { av: 'gc-avpool', nick: 'gc-nickpool' };" },
+  { name: '#698d 群聊音效键走全局根命名空间（删掉 isGcKey 分流＝群聊音效跟随当前桌面/#643 开关，全局一套失效）', file: 'js/sfx.js', needle: 'function isGcKey(k) { return typeof k === \'string\' && k.indexOf(\'sfx-gc-\') === 0; }' },
+  { name: '#698d 群聊播放入口未设置回退单聊（删掉 playSfxGc＝群聊音效设置选了也不响/回退逻辑丢失）', file: 'js/sfx.js', needle: 'window.playSfxGc = function (type) {' },
+  { name: '#698d 音效设置页群聊两张卡片 DOM（删掉＝音效设置里又没有群聊）', file: 'template.html', needle: 'id="sfx-gcin-presets"' },
+  { name: '聊天边看边调入口跟随主题色（写死浅紫＝用户「我原来是黑白风格」的配色错位复发；逻辑锚=主题色派生的淡底声明，chat-settings.js 内唯一）', file: 'js/chat-settings.js', needle: "-webkit-tap-highlight-color:transparent;flex-shrink:0';" },
+  { name: '聊天边看边调开启胶囊用主题色实底（写死 #493478/#fff＝不跟随主题色复发）', file: 'js/chat-settings.js', needle: 'border:1px solid var(--btn-bg,#111);border-radius:999px;background:var(--btn-bg,#111);color:var(--btn-ink,#fff);white-space:nowrap">点击开启 ›</span>\';' },
+  { name: '聊天桌面通知切回聊天头像：显式头像同步落值缓存', file: 'js/chat.js', needle: 'deskMsgAv.__avApplied = opts.av;' },
   { name: '#653a 查岗弹窗作答下标失效重定位（删掉＝弹窗→作答间隙 msgs 位移时回答被静默丢弃，聊天卡片不更新需再点一次，#653 报障根因；逻辑锚=重定位赋值行，chat.js 内唯一）', file: 'js/chat.js', needle: "if (_r && _r.special === 'ask-card' && _r.askStatus !== 'answered') { msgIdx = _i; rec = _r; break; }" },
   { name: '#653b ta-ask 包装层探针同款重定位（删掉＝错位下标下 deskCk 查岗卡被误写进「TA的询问」记录、askTs 取空）', file: 'js/ta-ask.js', needle: "const _fixedIdx = locateCardIdx(msgIdx, 'ask-card', 'askStatus');" },
   { name: '#650 多字卡拼接随机标点符号池（删掉/改回 join(\' \')＝六种拼接符全部失效退回纯空格，设置页「拼接符号」形同虚设；逻辑锚=省略号入池行，chat.js 内唯一）', file: 'js/chat.js', needle: "if (c['py-punct-el'] === 1) pool.push('......');" },
+  { name: '#694a 拼接符号六枚默认全开（改回 py-punct-per: 0＝句号默认又关掉，用户定稿「全部开启、自己选择开关某个」失效；逻辑锚=六键连写的默认值行，reply-settings.js 内唯一）', file: 'js/reply-settings.js', needle: "'py-punct-space': 1, 'py-punct-dou': 1, 'py-punct-per': 1, 'py-punct-ex': 1, 'py-punct-q': 1, 'py-punct-el': 1," },
+  { name: '#694b 拼接符号选中态压过 :hover（删掉/改回裸 .ppy-chip.sel＝点上去 :hover 常驻把选中底色换成浅灰，用户报「点开、点关都没有颜色变化」复发；逻辑锚=选中态 :hover 变体行，css/setting.css 内唯一）', file: 'css/setting.css', needle: '.ppy-chips .ppy-chip.sel:hover,' },
   { name: '夜间模式开关判定（开且落在 22:00–7:00）——删掉/改回恒真恒假＝设置里开了夜间模式也不生效', file: 'js/incoming-requests.js', needle: 'window.nightModeActive = function () { return nightModeEn() && isNightHours(); };' },
   { name: '夜间模式暂停跨桌面查岗/来电/求聊天（删掉 early return＝夜里其他桌面照常弹查岗/来电）', file: 'js/incoming-requests.js', needle: 'if (window.nightModeActive && window.nightModeActive()) return;' },
   { name: '夜间模式暂停联系人主动发消息（删掉＝夜里 TA 照常主动发消息，gate 失效）', file: 'js/chat.js', needle: "if (window.nightModeActive && window.nightModeActive()) { try { console.log('[mochi-auto] night mode, skip'); } catch(e){} return; }" },
@@ -442,7 +467,7 @@ const FIX_SENTINELS = [
   { name: '#151 无布局桌面还原模板排布（applyDeskLayout 无布局不再直接 return，归还被上个桌面扫进隐藏池的组件、修「切联系人回来小组件隐藏/桌面串显示」）', file: 'js/personalize.js', needle: 'if (!lay) { restoreTemplateDesk(); return; }' },
   { name: '#151 切桌面期间 buildDeskPages 删页收缩不落盘（防把上一桌面排布写成新桌面 desk-layout=跨桌面污染持久化）', file: 'js/personalize.js', needle: 'if (deskLayout() && !deskSwitchBuild) saveDeskLayout();' },
   { name: '#151 切桌面美化键缺键复位（widget-opacity 无键回 100，修上一桌面透明度残留=小组件隐身但可点/不同桌面显示不一样）', file: 'js/personalize.js', needle: 'if (!isNaN(opPct)) applyWidgetOpacity(opPct); } else applyWidgetOpacity(100); }' },
-  { name: '#151 美化抽屉透明度滑杆统一解析+存百分比整数（不再写 #146 同族小数脏值/不再把存量 90 算成 9000；#527b 重写紧凑抽屉后按新写法换锚，判定逻辑不变）', file: 'js/personalize.js', needle: "store.set('widget-opacity', String(Math.round(n * 100)))" },
+  { name: '#151 美化抽屉透明度滑杆统一解析+复用共享 applier（不再写 #146 同族小数脏值/不再把存量 90 算成 9000；边看边调优化批换锚——抽屉透明度改走 applyWidgetOpacity(整数pct)+默认 persist 落库，自制小数写法消失即回流）', file: 'js/personalize.js', needle: "applyWidgetOpacity(parseInt(v, 10))" },
   { name: '单聊联系人消息音效（addIn 播 sfx-in，read/silent 除外）', file: 'js/chat.js', needle: "opts.special !== 'read'" },
   { name: '音效等待 AudioContext resume 后再 start（Via/WebView）', file: 'js/sfx.js', needle: 'p.then(start)' },
   { name: '群聊引用防 base64 霸屏（gcQuoteTextSafe）', file: 'js/group-chat.js', needle: 'gcQuoteTextSafe' },
@@ -575,7 +600,7 @@ const FIX_SENTINELS = [
   { name: '#119 桌面美化·壁纸缩略图面板 openBgPanel（2×4 渐变色卡 + 纯色色卡 + 取色器，替换原文字 pill）', file: 'js/personalize.js', needle: 'const openBgPanel = () =>' },
   { name: '#119 桌面美化·壁纸定位/缩放 bgPosOf（phone-bg-pos-x/y/size 三键，默认 cover+center 旧数据兼容）', file: 'js/personalize.js', needle: 'const bgPosOf = () =>' },
   { name: '#119 桌面美化·撤销栈 pushBeautyUndo（beauty-undo-stack 最近 10 次，批量操作前压栈）', file: 'js/personalize.js', needle: 'const pushBeautyUndo = () =>' },
-  { name: '#119 桌面美化·边看边调抽屉 openBeautyDrawer（切桌面页 + 右侧浮层实时改 CSS 变量）', file: 'js/personalize.js', needle: 'const openBeautyDrawer = () =>' },
+  { name: '#119 桌面美化·边看边调抽屉 openBeautyDrawer（切桌面页 + 右侧浮层实时改 CSS 变量；#769 起带可选 secKey 直达指定分区）', file: 'js/personalize.js', needle: 'const openBeautyDrawer = (secKey) => {' },
   { name: '#119 桌面美化·方案分享 URL shareBeautyLink（base64 hash URL，启动读 #beauty= 自动弹导入）', file: 'js/personalize.js', needle: 'const shareBeautyLink = () =>' },
   { name: '#602 方案分享链接接收端去掉前缀偏移（#beauty= 共 8 字符；原 slice(7) 把 base64 切成 =xxx 致 atob 抛错被吞、对方打开不弹导入）', file: 'js/personalize.js', needle: 'location.hash.slice(8)' },
   { name: '#602b 分享链接处理包进独立函数（原 return 穿透 outer IIFE，用途不符/命中 0 项时跳过其后所有初始化）', file: 'js/personalize.js', needle: '(function handleSharedBeauty() {' },
@@ -748,6 +773,11 @@ const FIX_SENTINELS = [
   { name: '#204 跨桌面后台来电改走挂起（incoming-requests hidden 分支不再只发通知即丢弃）', file: 'js/incoming-requests.js', needle: 'if (window.callHoldIncoming) window.callHoldIncoming(name, req.cid, av);' },
   { name: '#161 挂起恢复（resumeHeldCall：回前台/冷启动有效挂起重响来电，超时补写未接）', file: 'js/call.js', needle: 'function resumeHeldCall() {' },
   { name: '#161 endCall 静默收尾通道（holdSilent 第二参：响铃挂起切后台只清 UI 不写未接）', file: 'js/call.js', needle: 'function endCall(text, holdSilent) {' },
+  // ==== 2026-09-18 #722 接通的电话切后台回前台被记「未接」（vivo/Edge/iOS 多机型）：挂起孤儿三闸 ====
+  { name: '#722a 挂起带写入运行期标识（跨运行期持久层幸存值不再保有「超时补未接」语义）', file: 'js/call.js', needle: 'sid: HOLD_SID' },
+  { name: '#722b IDB 兜底挂起卡 3 分钟新鲜度（超窗孤儿＝墓碑 flush 被杀打断/iOS 清 LS 回填，只重写墓碑自愈、绝不补未接——接通电话回前台记未接的主根）', file: 'js/call.js', needle: 'if (Date.now() - ih.ts > CALL_HOLD_MS) { clearCallHold(); return; }' },
+  { name: '#722c 补写未接双闸（同运行期挂起＋无活通话；通话在场补未接＝接了电话记未接的第二保险）', file: 'js/call.js', needle: "if (!crossRun && !currentCall) notifyCallEnd(h.cid || cur, heldMissedHtml(h.name || partnerName()), 'in', '未接听');" },
+  { name: '#722d 消费侧把 sid 对照结果传给补未接判定（LS 路径跨运行期孤儿同走静默清）', file: 'js/call.js', needle: 'resumeProcessHold(h, h.sid !== HOLD_SID);' },
   { name: '#152 聊天「继续说」按钮防键盘收起吞 click（触摸 pointerdown 按下即触发+鼠标排除）', file: 'js/chat.js', needle: "csBtn.addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse') return; csFireContinue(); });" },
   { name: '#152 群聊「继续说」按钮防键盘收起吞 click（同单聊 pointerdown+防重入）', file: 'js/group-chat.js', needle: "gcContinueBtn.addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse') return; gcCsFireContinue(); });" },
   { name: '#153 后台冻结1分钟(Chromium139 stop-in-background)保活自愈·切后台音频暂停立即补播+最快档重试（防静默窗口跨冻结线整页冻结=后台消息/通知全停）', file: 'js/bg-keep.js', needle: "if (document.visibilityState !== 'hidden') return;" },
@@ -779,7 +809,10 @@ const FIX_SENTINELS = [
   { name: '#157+#531 聊天getPool默认主字卡兜底门＝「自定义 text 池没有可读句子卡」（#157 修 dc-overall 概率形同虚设；#531 放宽自 !text.length，用户只加颜文字/符号卡时旧门不触发＝池里没有句子卡，联系人只反复发那几张符号）', file: 'js/chat.js', needle: "if (catOn('main') && !chatHasReadableTextCard(text)) {" },
   { name: '#157 群聊gcPool主字卡兜底语义对齐聊天页（同#157概率失效修复）', file: 'js/group-chat.js', needle: "if (catOn('main') && text.length === 0) {" },
   { name: '#157 经期温柔前缀/动作随默认字卡总开关停用（修总开关关闭后聊天仍偶发前缀/动作字卡）', file: 'js/period.js', needle: 'if (_dcfg.enabled === false) return text;' },
-  { name: '#159 跨桌面来电去掉前台门控（后台命中走 deliver hidden 分支发「XX来电」系统通知，修后台永不弹窗）', file: 'js/incoming-requests.js', needle: 'if (deskCallEn()) {' },
+  // needle 随 #666 通话占用闸门更新：原锚点是分支条件行 `if (deskCallEn()) {`，该行已带上
+  // callInProgress 占用判定（文字变了）；改锚到同一分支的概率掷骰行——它同样证明「跨桌面来电
+  // 分支仍在、且不被 document.hidden 前台词门控地照常掷」，与 #677c 的条件行锚点互不共用。
+  { name: '#159 跨桌面来电去掉前台门控（后台命中走 deliver hidden 分支发「XX来电」系统通知，修后台永不弹窗；逻辑锚=该分支的概率掷骰行仍无 document.hidden 前置）', file: 'js/incoming-requests.js', needle: "if (Date.now() - lastAt(cid, 'call') >= callCool * 60000 && Math.random() * 100 < callProb) {" },
   { name: '#159 跨桌面来电通知 force 通道（与 #150 同口径，绕过 15s 过渡期/去重闸门）', file: 'js/incoming-requests.js', needle: 'avFixed: true, force: true }' },
   { name: '#160 GIF 上传上限砍到 512KB base64（修 iOS 字卡库堆到 62.8MB 每次整库 stringify/parse 秒级长任务卡死；逻辑锚点是数值表达式，改回大上限即消失）', file: 'js/chatcard.js', needle: 'const CC_GIF_MAX_B64 = 512 * 1024;' },
   { name: '#162 贴底钉住态 chatPinnedBottom（程序化滚底置真/用户触摸滚轮解除，修 iPadOS 26 Safari 回消息视图上漂）', file: 'js/chat.js', needle: 'let chatPinnedBottom = true;' },
@@ -812,7 +845,7 @@ const FIX_SENTINELS = [
   { name: '#173 桌面美化导入补回粘贴文本通道（textarea+文件并存，修 standalone 文件选择器不弹=无法导入）', file: 'js/personalize.js', needle: '粘贴美化方案文本' },
   { name: '#173 聊天美化导出接统一导出链（裸 a[download] 降为兜底）', file: 'js/chat-settings.js', needle: "window.mochiExportFile(json, fname, 'mochi聊天美化方案')" },
   { name: '#180 刷新重开丢最近聊天·同步尾巴日志（每条新消息先同步落 LS <cid>:chat-tail 再交低频整包落盘；删掉 append 调用此行即消失）', file: 'js/chat.js', needle: 'chatTailAppend(rec); // #180：同步尾巴日志先落 LS，再交低频整包落盘' },
-  { name: '#180 尾巴日志权威就绪后回放（读库成功合并未落盘的最近消息；拆掉 merge 调用此行即消失）', file: 'js/chat.js', needle: 'chatTailMerge() > 0) changed = true; } catch (e) {} // #180' },
+  { name: '#180 尾巴日志权威就绪后回放（读库成功合并未落盘的最近消息；拆掉 merge 调用此行即消失）', file: 'js/chat.js', needle: 'chatTailMerge(myPrefix) > 0) changed = true; } catch (e) {} // #180' },
   { name: '#180 LS 快照超限保尾不弃写（折半丢最旧保最近；改回静默 return 此循环即消失）', file: 'js/chat.js', needle: 'while (snap.length > LS_SNAP_LIMIT && snapArr.length > 1 && round < 5)' },
   { name: '#181 气泡 CSS 通用映射导出（单聊/群聊共用；删掉导出则两处注入全瘫）', file: 'js/chat.js', needle: 'window.mochiMapBubbleCss = function' },
   // #181 单聊气泡 CSS 走通用映射（未认出模板类名时整包声明兜底，修上传零变化）。
@@ -831,7 +864,7 @@ const FIX_SENTINELS = [
   { name: '#185 删除消息防复活·del 分支同步摘尾巴日志（漏 chatTailDrop 则刷新后 chatTailMerge 把删掉的消息拼回）', file: 'js/chat.js', needle: 'chatTailDrop(msgs[idx]); // FIX 2026-09-05 #185' },
   // 2026-09-17 #663 对齐：REFS 已被并行批（#660 朋友圈配图/贴纸令牌）扩入 feed-posts 两键，
   // 锚点按现行实现同步（只加不减，删任一键仍会失配转红）。
-  { name: '#186 表情/图片空白·GC 引用扫描补全（旧正则漏群聊键/LS 快照→清理孤儿媒体误删池数据）', file: 'js/media-pool.js', needle: 'const REFS = /(?:^|:)(?:chat-msgs|fav-msgs|group-chat-msgs|gc-msgs-[0-9A-Za-z_-]+|chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?)$/;' },
+  { name: '#186 表情/图片空白·GC 引用扫描补全（旧正则漏群聊键/LS 快照→清理孤儿媒体误删池数据）', file: 'js/media-pool.js', needle: 'const REFS = /(?:^|:)(?:chat-msgs|chat-blk-idx|chat-blk-[0-9]+|fav-msgs|group-chat-msgs|gc-msgs-[0-9A-Za-z_-]+|chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?|chat-arch)$/;' },
   { name: '#186 表情/图片空白·写池失败回滚令牌化（flush 返回 false 不得带令牌 saveMsgs，防令牌入库池数据丢失）', file: 'js/chat.js', needle: 'if (_ok === false) {' },
   { name: '#187 专属字卡串桌面·主动消息跨桌面守卫（tryAutoSend 入口捕获 cid，await 取回后放行前拦截；删掉则 B 桌面触发的主动消息把 B 池专属卡发进 A 桌面聊天）', file: 'js/chat.js', needle: 'const sameAutoCid = () => (window.__activeCid || \'default\') === autoCid;' },
   { name: '#187 专属字卡串桌面·取回后与消息定时器逐层拦截（await 后 + 每条 setTimeout 入口）', file: 'js/chat.js', needle: 'if (!sameAutoCid()) return; // FIX #187 取回期间已切桌面：池子是旧桌面的，整条主动消息放弃' },
@@ -849,6 +882,13 @@ const FIX_SENTINELS = [
   { name: '#667c 正文择优同款（含媒体的一版优先，两侧同为有图/无图才退回长度口径；删则剥图版「[图片]」文字可能被当成更完整留下）', file: 'js/feed.js', needle: 'oMedia !== nMedia ? oMedia :' },
   { name: '#667d 降级兜底（权威键没读到、靠剥图快照顶）不得当本会话内存真相（旧实现无条件 feedMem=merged → load() 被剥图版遮蔽 → 点赞/评论的写回把剥图版当最新整包写进权威键，#188 写守卫查持久层看不见写入源被掉包＝图片永久变文字）', file: 'js/feed.js', needle: 'const degraded = !authOk && curFromSnap;' },
   { name: '#667e 剥图快照 800ms 去抖落盘复活（旧写法回调里先置空 snapTimer，而 flushSnap 头部以 snapTimer 判活 → 整条尾随落盘静默失效，快照只在切后台/离页才更新，陈旧剥图版长期遮住完整内容）', file: 'js/feed.js', needle: 'snapTimer = setTimeout(() => { flushSnap(); }, 800);' },
+  // ==== 2026-09-17 #669 朋友圈贴纸面板「不能像表情包面板那样打开分类」＋「没有联系人用的 emoji 贴纸」＋「点桌面朋友圈图标进页有点卡顿」（用户直派·红米K80 Chrome，明说多机型同现），见 FIX-REGRESSION #669 ====
+  { name: '#669a TA 回贴的 emoji 与贴纸面板共用同一常量（删/改回内联数组＝面板里「emoji 贴纸」组与 TA 实际会贴的又不是同一批，「没有联系人用的 emoji 贴纸」复发）', file: 'js/feed.js', needle: 'return { emoji: FEED_STICKER_EMOJI[Math.floor(Math.random() * FEED_STICKER_EMOJI.length)] };' },
+  { name: '#669b 贴纸面板分组清单含「emoji 贴纸」组（删＝面板只剩图片贴纸、TA 会后贴的 emoji 选不到）', file: 'js/feed.js', needle: "out.push({ key: 'em', label: 'emoji \\u8d34\\u7eb8', kind: 'emoji', items: FEED_STICKER_EMOJI });" },
+  { name: '#669c emoji 贴纸按 emoji 落位（删/改成传 src＝点 emoji 会贴成空图或坏图）', file: 'js/feed.js', needle: "if (it.kind === 'emoji') feedPickStickerPos(feedStickerCard.dataset.pid, '', it.v);" },
+  { name: '#669d emoji 一路带到贴纸记录（feedPickStickerPos 第三参 → addFeedSticker 的 emoji 字段；删＝emoji 点照片后不落位/落成空 src）', file: 'js/feed.js', needle: 'addFeedSticker(pid, { src: src, emoji: emoji, x: x, y: y });' },
+  { name: '#669e 渲染签名命中即跳过整包重建（删＝桌面图标每次点击都重建数 MB 列表＝「点进朋友圈有点卡顿」复发；本批核心逻辑）', file: 'js/feed.js', needle: 'if (sig === feedRenderSig && listEl.firstChild) return;' },
+  { name: '#669f 签名必须覆盖窗口内每条动态的身份/正文/赞/评论/贴纸/配图（删成常量＝数据变了也不重建＝显示旧数据，比卡顿更糟）', file: 'js/feed.js', needle: "parts.push(p.id, p.ts, (p.content || '').length, (p.likes || []).join('/')," },
   // ==== 2026-09-15 #501 信箱回信页「下滑被拉回、无法正常滑动」（vivo S20 Edge 等多机型，#399 同页二次复发族）——nudgeInputVisible 被键盘看门狗聚焦期每 250ms 调用，输入框在滚动容器内时（回信/写信页 .cal-scroll、日历留言等）用户下滑即被拽回「输入框可见」位；修=几何记忆（容器几何与输入框高度不变=现状出自用户滚动，不补位）====
   // #501 几何记忆闸的哨兵由 #535h 承接（#538 换键后仍是同一行早退判定，避免共用锚点被判哑哨兵）
   // v3.26.x #189：全屏滑动闪烁 + iPad 全屏开关无效果（三根因五处修复，见 FIX-REGRESSION #189）
@@ -876,8 +916,8 @@ const FIX_SENTINELS = [
   { name: '#199 浏览器覆盖形态·状态栏顶部避让（特异性夺回被 .statusbar{padding:4px} 压死的 env 避让，#114 同根因；删此规则该形态顶位回 4px 钻系统栏）', file: 'css/base.css', needle: 'html.mochi-cover-top .phone .statusbar' },
   { name: '#199 Gecko 滚动锚定关闭（锚定自行调 scrollTop 与 #162 贴底钉住对打=删消息/回消息屏幕上移；删此行雨见/Firefox 复发）', file: 'css/base.css', needle: '.chat-body { overflow-anchor: none; }' },
   { name: '#199/#236 判定器·浏览器覆盖形态期望底边=可视区底（.phone 刻意不超 inner，仍按 envTop+inner 判则修好后误报 #179 少填；#210 起判式收敛到共享判定器；#236 扩安卓壳 sig.andr——删扩展 HeyTapBrowser 类壳回退 covered/期望 envTop+inner 误报少填）', file: 'js/device.js', needle: 'const coverBrowser = !standalone && envTop >= 20 && (diff <= 2 || !!sig.andr);' },
-  { name: '#236 诊断③覆盖形态有效顶位（元素顶+实测 padding：该形态 .statusbar 靠自身 padding 抬升、.phone 无 padding 兜底链，单量元素顶恒 0=顶部重叠误报/漏报双向失真。锚点随 #537 扩 iosCover 换锚——逻辑扩为「浏览器覆盖壳 OR iOS 独立应用覆盖形态」，两者都靠自身 padding 抬升；判式被改掉/退回单条件即失配）', file: 'js/device.js', needle: 'const sbEffTop = (Fm.coverBrowser || Fm.iosCover) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;' },
-  { name: '#236 安卓浏览器覆盖形态执行器（env 探针→共享判定器→写 --mochi-safe-top+挂 mochi-cover-top：执行侧此前整体在 isIOS 分支，安卓壳 #114 形态永无修复；摘除即回归）', file: 'js/mobile-adapt.js', needle: 'var _fc = window.mochiViewportForm({ standalone: false, envTop: _aCoverEnvCache, innerH: _ih, screenH: _sh, iosMajor: 0, safMajor: 0, andr: true, safeTopForce: false });' },
+  { name: '#236 诊断③覆盖形态有效顶位（元素顶+实测 padding：该形态 .statusbar 靠自身 padding 抬升、.phone 无 padding 兜底链，单量元素顶恒 0=顶部重叠误报/漏报双向失真。锚点随 #537 扩 iosCover、2026-09-18 #719 再扩 e2eBrowser 换锚——逻辑扩为「浏览器覆盖壳 OR iOS 独立应用覆盖形态 OR e2e 浏览器」，都靠自身 padding 抬升；判式被改掉/退回单条件即失配）', file: 'js/device.js', needle: 'const sbEffTop = (Fm.coverBrowser || Fm.iosCover || Fm.e2eBrowser) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;' },
+  { name: '#236 安卓浏览器覆盖形态执行器（env 探针→共享判定器→写 --mochi-safe-top+挂 mochi-cover-top：执行侧此前整体在 isIOS 分支，安卓壳 #114 形态永无修复；摘除即回归；2026-09-18 #719 补 innerW/screenW/e2eLatch 参数，登记同步）', file: 'js/mobile-adapt.js', needle: 'var _fc = window.mochiViewportForm({ standalone: false, envTop: _aCoverEnvCache, innerH: _ih, screenH: _sh, innerW: window.innerWidth || 0, screenW: (window.screen && window.screen.width) || 0, iosMajor: 0, safMajor: 0, andr: true, safeTopForce: false, e2eLatch: !!window.__mochiE2eLatch });' },
   { name: '#236 安卓键盘会话卡死自愈判据（HeyTapBrowser 收键盘 vv 恒卡 inner−底栏：缩幅落残留带 13~22%+inner 回基准+会话超 1.5s+vv 稳 1.2s 才清 _aKb 置 _aVvStale——真键盘缩幅>22% 永不误清）', file: 'js/mobile-adapt.js', needle: '&& Date.now() - _aKbAt > 1500 && Date.now() - _aVvChgAt > 1200' },
   { name: '#236 open 判定残留闩门（_aVvStale 抑制纯 vv 收缩再触发键盘会话，防 652↔720 抖动把 .phone 来回抽；触摸/聚焦/回基准解除。#479 同批同步：判定式追加 _focNow 焦点闸——改这里必须连 #479 语境一起看。#657 同批同步：追加 _aKbMute 几何反证静音闩；本锚与 #479 原为同一整行，改取闩门半段以免两条共用同一 needle 判哑哨兵）', file: 'js/mobile-adapt.js', needle: '(!_aVvStale && !_aKbMute && h < _aH - 60' },
   { name: '#479 窗口改尺寸（Edge小窗/分屏）焦点闸——真键盘必然在文本聚焦期弹出（focusin 先于 vv 收缩），无聚焦深缩=窗口被改小；删掉 _focNow 闸则小窗重新触发幽灵键盘会话（面板停靠/alignSelf 残留）', file: 'js/mobile-adapt.js', needle: '&& _focNow);' },
@@ -890,7 +930,7 @@ const FIX_SENTINELS = [
   { name: '#203 iOS18 保留形态甄别式（standalone+env∈[20,160]+diff≈envTop+iOS≥18，命中即 safeTop 归 0：否则 #179 公式把 .phone 顶出布局视口=居中裁切+文档溢出与 pin 对打=滑动/切换卡顿；#210 起判式收敛到共享判定器，删门槛或改比较符即回归）', file: 'js/device.js', needle: 'diff >= envTop - 8 && iosMajor >= 18' },
   { name: '#203 iOS18 保留形态显式写 0px（摘除属性会回落 env() 变双重避让，Mochi 行上方 59px 空白）', file: 'js/mobile-adapt.js', needle: "var _topPx = _safeTop ? _safeTop + 'px' : (_resStand ? '0px' : '');" },
   { name: '#203 执行器接入共享判定器（syncVvFit 形态判定单一事实源 #210；执行器回退手抄判式此行即消失）', file: 'js/mobile-adapt.js', needle: 'var _f = window.mochiViewportForm(_sig0);' },
-  { name: '#203 判定器·保留形态期望底边=inner（.phone 超 inner=文档滚动量；#184 iPad 形态/#186 force 声明同走 inner 分支；#210 起收敛到共享判定器 expBase 单点）', file: 'js/device.js', needle: 'const expBase = (coverBrowser || resStand || ipadForm) ? innerH' },
+  { name: '#203 判定器·保留形态期望底边=inner（.phone 超 inner=文档滚动量；#184 iPad 形态/#186 force 声明同走 inner 分支；#210 起收敛到共享判定器 expBase 单点；2026-09-18 #719 e2e 形态并入同分支，登记同步）', file: 'js/device.js', needle: 'const expBase = (coverBrowser || resStand || ipadForm || e2eBrowser) ? innerH' },
   { name: '#200 通话防误挂·挂断掷骰硬闸（总开关或概率<=0 不掷骰——挂断几率为 0 仍被挂断的兜底闸门，删此条件设 0 即回到「读默认 2% 照挂」）', file: 'js/call.js', needle: 'if (!(hp.nohangup || hp.hangup <= 0) && Math.random() * 100 < hp.hangup) {' },
   { name: '#200 通话防误挂·总开关配置读取（callCfg 不读 call-no-hangup 则开关形同虚设）', file: 'js/call.js', needle: "nohangup: c['call-no-hangup'] === 1 || c['call-no-hangup'] === '1'," },
   { name: '#200 通话防误挂·设置项默认值（reply-settings 不登记该键则开关永不落盘/读取恒缺）', file: 'js/reply-settings.js', needle: "'call-no-hangup': 0," },
@@ -902,7 +942,7 @@ const FIX_SENTINELS = [
   { name: '#205 表情空白·全透明空图检测（加载成功但内容无画面=最后一类真空白；采样 alpha 全 0 才占位，多设备共用坏字卡库现场）', file: 'js/chat.js', needle: 'if (im.dataset.alphaChecked) return;' },
   { name: '#206 表情重复+乱码+空白·尾巴日志拒收媒体型消息（sticker/image 的 text=媒体本体，回放丢 type + 令牌化后签名漂移被当新消息回放=同一表情旁多出乱码/坏图复制）', file: 'js/chat.js', needle: "if (rec.type === 'sticker' || rec.type === 'image' || rec.type === 'voice') return;" },
   { name: '#206 表情重复+乱码+空白·超长文本/parts 不进尾巴日志（截断存储与丢图回放同样失真）', file: 'js/chat.js', needle: "if (typeof rec.text !== 'string' || rec.text.length > CHAT_TAIL_TEXT_MAX) return;" },
-  { name: '#206 表情重复+乱码+空白·回放端拦截旧版存量媒体存根（data:/@@m: 开头无 type 的条目跳过，防 normCell 误迁移成坏图 image）', file: 'js/chat.js', needle: "if (jt.indexOf('data:') === 0 || jt.indexOf('@@m:') === 0) continue;" },
+  { name: '#206 表情重复+乱码+空白·回放端拦截旧版存量媒体存根（data:/@@m: 开头无 type 的条目跳过，防 normCell 误迁移成坏图 image）', file: 'js/chat.js', needle: "if (jt.indexOf('data:') === 0 || jt.indexOf('@@m:') === 0) { keep.push(j); continue; }" },
   { name: '#207+#340 保活音频电流声/嗡鸣·频率统一换 18kHz（220Hz 在人耳最敏感频段：#190 降幅度后安卓多机型仍实听嗡声→#207 换 18kHz；#340 iPhone 16 Pro Safari 同根因复发——iOS 忽略 audio.volume，220Hz@0.002 实听比安卓被投诉电平还大 4 倍=「打开一直震动响声重启无用」；iOS 无 Chromium audible 判定，amp 分支不动=电平语义零回归）', file: 'js/bg-keep.js', needle: 'const freq = 18000;' },
   { name: '#208 聊天输入栏上移白边·键盘收起视口未还原自愈（iOS standalone 键盘收起 WebKit 偶发不还原视口，restoreKb 的 60px 还原门槛永不满足=kbActive 卡真 .phone 卡收缩高；失焦>4s 且视口仍<基线−60 强制复原）', file: 'js/mobile-adapt.js', needle: 'Date.now() - _focLostAt > 4000 && _vv && _vv.height < _fullVv - 60' },
   { name: '#208 聊天输入栏上移白边·tabbar 隐藏跳过采集（全屏页 tabs.js 给 tabbar 挂 hidden，矩形全 0 被判悬空 860px 每 5s 刷假错误环）', file: 'js/device.js', needle: 'if (!tb || tb.hidden) return null;' },
@@ -1261,7 +1301,9 @@ const FIX_SENTINELS = [
   { name: '#337 VirtualKeyboard 实测尺拉起（删则悬浮键盘只能 58% 盲猜，高占比输入法停靠不足仍被盖）', file: 'js/mobile-adapt.js', needle: 'vk.overlaysContent = true;' },
   { name: '#337 欠深自纠逐拍收紧（删则保底停靠不足时输入栏仍被盖不自愈）', file: 'js/mobile-adapt.js', needle: 'var ph = Math.max(Math.round(base * 0.34), cur - Math.round(base * 0.08));' },
   // ==== 2026-09-11 #336 信息诊断导出 docx 无反应（荣耀畅玩80Pro 自带浏览器对合成 a[download]+blob URL 静默忽略）：接入数据备份同款三级降级链 window.mochiExportBlob（①系统分享面板 ②系统保存框 ③确认后 a[download]），裸下载只作兜底；两处诊断弹窗统一走 diagExportDocx。行为断言 tools/verify-docx-export.mjs E5~E11 ====
-  { name: '#336 诊断 docx 走三级降级链（删则壳浏览器点导出docx无反应=用户报障回流）', file: 'js/device.js', needle: "window.mochiExportBlob(blob, fname, 'mochi 诊断报告'" },
+  // #746 同批换 needle：diagExportDocx 第 5 参 shareTitle 参数化分享标题后，原锚 'mochi 诊断报告'
+  //   硬编码已改为 shareTitle || 'mochi 诊断报告'——#336 锚点随之收到新表达式（同批换锚，见 AGENTS.md）。
+  { name: '#336 诊断 docx 走三级降级链（删则壳浏览器点导出docx无反应=用户报障回流）', file: 'js/device.js', needle: 'window.mochiExportBlob(blob, fname, shareTitle' },
   { name: '#336 mochiExportBlob Blob 版导出（删则分享面板/保存框通道断链，仅剩裸下载）', file: 'js/data-backup.js', needle: 'window.mochiExportBlob = function (blob, fname, shareTitle, saveTypes)' },
   { name: '#338 心情日记 TA心情独立（删则 taMoodFor 恢复读我的当日记录、35% 概率跟随＝我记录心情后 TA 心情被改成同款）', file: 'js/mood-diary.js', needle: "hashStr('ta-mood-indep|'" },
   // ==== 2026-09-12 #339 设置改完退后台/等一两小时回退成默认值（默认字卡概率/回复速度/emoji 概率等全站小键，多机型；LS 回滚家族第五层 #82/#88/#226/#229/#233/#265）：wrj 启动回放 wrjReplay 把回滚日志里的旧值 idbSet 回写 IDB 踩掉新值，wrjMergeFromIdb 按「标记更新→取 IDB 值自愈」读到的恰是被踩掉的旧值＝自愈被自己废掉。修复：回放只救 内存+LS，绝不回写 IDB。行为断言 tools/verify-wrj-replay-no-stomp.mjs 红绿对照 ====
@@ -1275,7 +1317,10 @@ const FIX_SENTINELS = [
   { name: '#345 撤回先掷签后投递·silent 接线（改回 silent: i > 0＝撤回消息重新弹通知、进聊天内容消失＝「刚主动发的消息被吞」回归）', file: 'js/chat.js', needle: 'silent: i > 0 || willRetract' },
   // ==== 2026-09-16 #556 回复链/拍一拍撤回先掷签（#345 同族收口②③，OPPO Reno6 5G 雨见 Firefox 报障「弹窗显示的字卡进聊天压根没有、是别的字卡（弹窗说早安、进聊只剩撤回墓碑+别的卡）」，用户明说多机型同现与设备无关；#550~#552 编号已被并行批次占用故顺延）：#345 只收口了 tryAutoSend，replyOnce（scheduleReply/continueChat/拍一拍追问共经）与 sendPoke 仍在 addIn 弹桌面横幅/系统通知后才掷 rc-prob——900ms 后 partialRetractMsg/retractMsg 撤回＝通知承诺的内容进聊天只剩墓碑/缺段＋同批其它字卡。修复：同 #345 投递前定生死，命中撤回的本条 silent 落地（不弹通知、不播音效、角标照增），900ms 后照常撤回，rc-refix 补发正常投递。行为断言 tools/verify-reply-retract-order.mjs 18 断言 ====
   { name: '#556 回复链撤回先掷签（replyOnce 掷签挪回 addIn 之前；删＝通知先弹再撤回吞内容＝「弹窗说的那句进聊天没有」回归）', file: 'js/chat.js', needle: "const willRetractR = hit(c['rc-prob'])" },
-  { name: '#556 拍一拍撤回先掷签·silent 接线（sendPoke 命中撤回必须静默落地；删 silent＝撤回消息重新弹通知＝同族回归）', file: 'js/chat.js', needle: 'addIn(r.text, { type: r.type, silent: willRetractP })' },
+  // 锚点 2026-09-17 收窄：并行批 #693 在同一行追加 tag/tagNoDup（多字卡回复来源 chip）后原整行
+  // needle 失配变哑哨兵——改取「命中撤回才可能出现的 silent 入参」半段（chat.js 内 willRetractP
+  // 仅此处一处），#693 的 tag 增删都不影响本锚，删 silent＝本锚立即消失。
+  { name: '#556 拍一拍撤回先掷签·silent 接线（sendPoke 命中撤回必须静默落地；删 silent＝撤回消息重新弹通知＝同族回归）', file: 'js/chat.js', needle: 'silent: willRetractP,' },
   // ==== 2026-09-12 #346 拍卖会余缺陷批（用户「全部修复」）：结算后开🎒回不去汇总／转赠无确认易误触／寄到时背包列表 data-i 错位可能送错件／余额不足出价键静默置灰／TA掂量中返回文案误报／音效开关不记忆／矮屏(横屏)半框 68% 太挤。行为断言 tools/verify-auction-overlay.mjs G 组 ====
   { name: '#346 结算汇总 showSummary 独立成函数（内联回 endSession＝结算被🎒覆盖后回不去本场汇总）', file: 'js/auction.js', needle: 'function showSummary() {' },
   { name: '#346 转赠走全站 openModal 确认（删＝点「送TA」立即移出不可撤回＝误触丢拍品）', file: 'js/auction.js', needle: '送出后不可撤回。' },
@@ -1360,7 +1405,7 @@ const FIX_SENTINELS = [
   // ==== 2026-09-17 拍一拍发出后不自动滑到最新消息（用户报）：sendPoke 是用户主动触发的 in 侧消息，置 #492 同款 chatUserFollowScroll 一次性跟底标记；TA 自发消息与 TA 回拍不受影响 ====
   { name: '拍一拍发出跟底标记（删则上翻历史后发拍一拍不自动滑到最新复发）', file: 'js/chat.js', needle: "chatUserFollowScroll = true;\naddRec({ side: 'in', text: text, special: 'poke' });" },
   { name: '#492 多人决定结果发送接 follow 通道（删则发到聊天后不滑到最新复发；#544 该行追加 dedupExempt，锚点随契约同步）', file: 'js/group-decision.js', needle: 'window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true }); // FIX 2026-09-15 #492 多人决定结果' },
-  { name: '#378/#416 单聊手动滚回贴底回钉（解钉后自动跟底可恢复；#416 起只认真的贴到底 ≤8px，防上翻读最新时误回钉拽底）', file: 'js/chat.js', needle: 'else if (!chatPinnedBottom && chatAtBottom())' },
+  { name: '#378/#416 单聊手动滚回贴底回钉（解钉后自动跟底可恢复；#416 起只认真的贴到底 ≤8px，防上翻读最新时误回钉拽底；2026-09-18 随 #716d 手势闸演进，锚收到未变的 ≤8px 判定本体，回钉调用点锚归 #716d）', file: 'js/chat.js', needle: 'cb.clientHeight <= 8;' },
   { name: '#378 单聊轻点不杀跟底（位移<10px 且贴底=回钉，点气泡不再永久解钉）', file: 'js/chat.js', needle: 'const dy = Math.abs(e.changedTouches[0].clientY - chatUnpinTsY);' },
   { name: '#378 群聊跟底闸改按接管标记（同单聊距离闸问题）', file: 'js/group-chat.js', needle: 'if (!force && gcUserGcScrollTouched) return;' },
   { name: '#378/#416 群聊轻点不杀跟底 + 滚回贴底解除接管（#396 随行补锚定摘除；#416 起轻点回跟只认真的贴到底 ≤8px，防上翻读最新时一点气泡就恢复跟底被拽回）', file: 'js/group-chat.js', needle: 'if (dy < 10 && gcAtBottom()) { gcUserGcScrollTouched = false;' },
@@ -1375,7 +1420,7 @@ const FIX_SENTINELS = [
   // ==== 2026-09-13 #407 引用预览串条（华为 P50E Edge 报障「引用联系人的消息，输入栏预览显示的不是被引那条」，多机型同族）——菜单打开后 msgs 被权威读库合并/尾巴日志回放重排（中段插入/删除 ⇒ 后续下标整体位移）而 DOM 未重渲（#220 不贴底跳过重渲的防闪路径），点「引用」按陈旧 data-idx 解析＝msgs[idx] 指向另一条消息。修复=菜单打开时快照消息身份（对象引用+ts/side/text80 签名），动作执行时 resolveActiveMsg 四级重定位（①快路径 ②对象同一性 ③签名唯一命中 ④回退旧下标），引用/收藏/复制/编辑/撤回/删除全动作覆盖；群聊同族 gcResolveActiveMsg；chatTailMerge 回放条数并入 changed 走重渲；不贴底 changed 置 windowStale 作废同窗凭据 ====
   { name: '#407 聊天菜单动作身份重定位（删则 msgs 重排+DOM 未重渲窗口期引用/收藏/编辑/撤回串条）', file: 'js/chat.js', needle: 'function resolveActiveMsg() {' },
   { name: '#407 群聊菜单动作身份重定位（同族）', file: 'js/group-chat.js', needle: 'function gcResolveActiveMsg() {' },
-  { name: '#407 尾巴回放位移并入 changed（删则回放插入后不重渲＝屏上 data-idx 整体陈旧）', file: 'js/chat.js', needle: 'if (chatTailMerge() > 0) changed = true;' },
+  { name: '#407 尾巴回放位移并入 changed（删则回放插入后不重渲＝屏上 data-idx 整体陈旧）', file: 'js/chat.js', needle: 'if (chatTailMerge(myPrefix) > 0) changed = true;' },
   // ==== 2026-09-13 #404 米15夸克 LS 配额满（同域 ml2_* 他方键占 20MB，写探针 QuotaExceededError）二级密码解锁刷新即回锁——解锁后盲等 900ms reload，夸克等内核杀进程会中止在途 IDB 事务＝权威值未提交；LS 配额满设备项目 LS 键恒空、IDB 是唯一凭证，一次提交失败必现。修复=解锁/重锁改「确认 IDB 落库再刷新」（cardLockConfirmPersisted 轮询 200ms×15 兜底），诊断体检补 cardlock-state 全局根键三层值 ====
   { name: '#404 解锁/重锁落库确认接口（删则刷新回锁家族失去提交确认，回退盲等 900ms 竞态）', file: 'js/card-lock.js', needle: 'window.cardLockConfirmPersisted = function (expect, cb) {' },
   { name: '#404 开屏解锁等 IDB 确认 open 再刷新（删则夸克内核 reload 中止在途事务＝解锁刷新即回锁）', file: 'js/clock.js', needle: "cardLockConfirmPersisted('open', goReloadAfterPersist)" },
@@ -1454,8 +1499,13 @@ const FIX_SENTINELS = [
   { name: '#398 令牌化管线串行化+世代计数（#455 演进=pub/own 分槽：改回并发 Promise 链或删分槽世代则大库设备持续卡死/跨库互杀令牌化）', file: 'js/chatcard.js', needle: 'const gen = ++ccTokGen[sl];' },
   // ==== 2026-09-13 #402 进聊天界面跳动一下（多机型偶发，#352 无头诊断实锤）——归一化收尾对「窗口内改动」走 renderWindow 整窗重建＝rem+add ~200 节点同批＝进入聊天 ~0.5s 后整屏跳一下；修复=无结构删除时对 normChangedIdxs 命中下标原位换节点（patchChangedInPlace），其余节点零重建 ====
   { name: '#402 归一化收尾原位补丁函数（删则窗口内改动回退整窗重建＝进聊天整屏跳一下复发）', file: 'js/chat.js', needle: 'function patchChangedInPlace(changedIdxs, start) {' },
-  { name: '#402 归一化改动下标登记（删则原位补丁拿不到命中清单＝静默回退整窗）', file: 'js/chat.js', needle: 'if (normChangedIdxs.indexOf(i) < 0) normChangedIdxs.push(i); } }' },
+  { name: '#402 归一化改动下标登记（删则原位补丁拿不到命中清单＝静默回退整窗；#675 起同行同步登记改动记录对象）', file: 'js/chat.js', needle: 'if (normChangedIdxs.indexOf(i) < 0) normChangedIdxs.push(i); try { normChangedRecs.push(msgs[i]); } catch (e) {} } }' },
   { name: '#402 收尾优先原位补丁分支（删/改回无条件 renderWindow 则闪跳复发）', file: 'js/chat.js', needle: 'patchChangedInPlace(normChangedIdxs, renderStart)' },
+  // ==== 2026-09-17 #675 打开聊天「消息全部弹一下再恢复」（同族第五轮，用户复发报障）——归一化删相邻重复（removedAll>0）时 finish 仍 renderWindow 整窗重建＝进聊天 ~250ms 后 200 气泡连 img 整批销毁重建、图片逐张重新解码＝肉眼全弹一下；修复=patchNormRemovalsInPlace 按记录→原始下标原地删节点+幸存 data-idx 回推，零整窗重建 ====
+  { name: '#675a 删除原位收敛函数（删回整窗重建＝打开聊天全弹一下复发）', file: 'js/chat.js', needle: 'function patchNormRemovalsInPlace(removedRecs) {' },
+  { name: '#675b 归一化原始下标映射（无映射则删除路径静默回退整窗）', file: 'js/chat.js', needle: 'normOrigIdx.set(msgs[_oi], _oi); } catch (e) { normOrigIdx = null; }' },
+  { name: '#675c 删除记录对象登记（删了不登记＝原位收敛拿不到删除清单回退整窗）', file: 'js/chat.js', needle: 'try { if (normRemovedRecs) normRemovedRecs.push(a); } catch (e) {} // FIX #675' },
+  { name: '#675d 收尾删除路径接线（改回 removedAll>0 无条件 renderWindow 则复发）', file: 'js/chat.js', needle: 'patched = patchChangedInPlace(newIdxs, renderStart);' },
   // ==== 2026-09-13 #403 漂流瓶都是空白没有留言（多机型）——dcf-drift 概率/总开关关断时 poolLine 返回空串，normal/special/TA 兜底全落空＝瓶子装空白信纸；修复=三道来源全空回退内置兜底话术（FB），瓶内文案永不落空 ====
   { name: '#403 TA 瓶三道来源全空回退内置兜底（删则 dcf 关断+无历史时出空白信纸）', file: 'js/drift-bottle.js', needle: "note = sampleHistLine() || poolLine('TA的话', 'ta') || rnd(FB.ta);" },
   { name: '#403 普通/特殊瓶文案永不落空（删则 dcf 关断时 normal/special 瓶空白）', file: 'js/drift-bottle.js', needle: "note = poolLine('海风', 'sea') || rnd(FB.sea);" },
@@ -1464,6 +1514,158 @@ const FIX_SENTINELS = [
   { name: '#406 挂起双写拆开（删则 LS 配额满一抛整块中止、IDB 也不写＝通知照发回前台什么也没有）', file: 'js/call.js', needle: 'window.idbSet(CALL_HOLD_KEY, h);' },
   { name: '#406 回前台/冷启动挂起回读 IDB 兜底（删则 LS 配额满时挂起只落 IDB、回前台读不到＝无弹窗也无未接）', file: 'js/call.js', needle: 'window.idbGet(CALL_HOLD_KEY)' },
   { name: '#406 后台来电重响补首发系统消息（删/改回 !isReplay 则后台触发来电聊天里永远没有来电系统消息）', file: 'js/call.js', needle: '(!isReplay || !msgWritten) && window.chatAddSystem' },
+  // ==== 2026-09-17 #699 刷新后通话没续上、也没补「通话中断」记录（多机型，用户直派）——saveCallActive 里 sessionStorage 与 localStorage 双写同处一个 try，存储亚健康机型（LS 配额满 QuotaExceededError 同 #406 实锤 / 隐私模式 / WebView 禁用 sessionStorage）第一句一抛整块中止，call-active 一份都没落盘＝recoverCall 读不到任何标记，通话不续也不记；且该标记从没写 IDB（call-hold #406 补了、call-active 漏了）。修复=①三路写入拆开各吃各的 try＋追加 IDB 副本；②recoverCall 回读链 sessionStorage→localStorage→IDB；③clearCallActive 写 {ts:0} 墓碑防 idbRestore 幽灵回填；④IDB 副本卡 10 分钟新鲜度窗（同 #120/callInProgress 口径），防数天后翻旧通话 ====
+  { name: '#699a call-active 三路写入拆开＋IDB 副本（删/并回同一 try 则存储亚健康机型一抛全丢＝刷新后通话不续也不记）', file: 'js/call.js', needle: 'window.idbSet(CALL_ACTIVE_KEY, JSON.parse(payload))' },
+  { name: '#699b clearCallActive 写 {ts:0} 墓碑（删则 idbRestore 用 IDB 旧值回填出幽灵标记）', file: 'js/call.js', needle: 'window.idbSet(CALL_ACTIVE_KEY, { ts: 0 })' },
+  { name: '#699c recoverCall 回读链补 IDB 兜底（删则两路 LS 都没写成时永远读不回）', file: 'js/call.js', needle: "recoverProcess(ih, 'idb')" },
+  // ==== 2026-09-17 #700 音乐：本地上传 m4a「导入一直不成功/无法播放」+ 网易云分享链接「导进去但无法播放」（荣耀X50i/Edge 实报、多机型同现，用户直派）——
+  //      实测：短链歌本身免费可播（injahow 302→https CDN），坏在 163cn.tv 解析环节——proxy.cors.sh 域名失联/allorigins 超时＝全机型一致解析必败，且解析失败后导入与播放双双静默返回＝「点播放毫无反应」；
+  //      fetchNeteaseInfo 歌名识别全押死代理→歌名停在「网易云音乐-数字」；本地 m4a 导入时 tmp 探测 onerror（加密格式/ALAC 编码解不动）代码不看不报、播放双路白试 8s 只给笼统提示；面板说明「先下载成音频文件再传」与事实不符（App 下载的多带加密）＝用户指「说明有错误」。
+  //      修复=短链解析失败两处给可执行指引不再静默；歌名识别首选 meting type=song（CORS 开放、实测存活）；本地上传文件头 MIME 嗅探＋探测反馈（probeFail 徽标+toast 计数+onplay 自愈）＋MediaError.code=4 跳过徒劳 dataURL 重试给「转 mp3」精确提示（其余失败 blob↔dataURL 互备原样保留，不碰永恒/夸克兜底）；说明三处纠错 ====
+  { name: '#700a 本地文件 MIME 嗅探链（删则 m4a/安卓空 type 一律标 audio/mpeg，严格内核拒载回归）', file: 'js/music-player.js', needle: "sniffAudioMime(buf) || file.type || mimeFromName(file.name) || 'audio/mpeg'" },
+  { name: '#700b 导入时探测解不动的文件即计数（删则顶着「已上传」成功提示反复重传回归）', file: 'js/music-player.js', needle: 'probeBad++;' },
+  { name: '#700c 列表「放不了」徽标接线（删则用户看不出哪首是解不动的文件）', file: 'js/music-player.js', needle: "m.probeFail ? '<span class=\"sm-src sm-src-bad\">放不了</span>'" },
+  { name: '#700d 真播放成功自愈清 probeFail（删则探测误报永不消失）', file: 'js/music-player.js', needle: 'delete m.probeFail; saveLibrary(); renderLibrary();' },
+  { name: '#700e MediaError.code=4 跳过徒劳 dataURL 重试＋精确提示（删回则加密/ALAC 文件白等 8 秒只剩笼统报错；其余失败路径仍互备不受影响）', file: 'js/music-player.js', needle: '放不了这个文件：编码不被本机浏览器支持' },
+  { name: '#700f 短链播放时解析失败不再静默返回（删则点播放毫无反应＝主诉回归）', file: 'js/music-player.js', needle: '分享链接解析失败（解析服务受限）' },
+  { name: '#700g 短链导入时解析失败不再静默（删则短链原样入库毫无提示回归）', file: 'js/music-player.js', needle: '网易云分享链接解析失败：先用浏览器打开这条链接' },
+  { name: '#700h 歌名识别首选 meting song 接口（删回死代理抓页链路则歌名全停在「网易云音乐-数字」）', file: 'js/music-player.js', needle: 'meting/?server=netease&type=song&id=' },
+  { name: '#700i 功能介绍页「上传音乐只认不加密的标准音频」说明（删则加密文件放不出又被当网站 bug）', file: 'template.html', needle: '上传音乐只认不加密的标准音频' },
+  { name: '#700j 「放不了」徽标样式（删则徽标无色不可辨）', file: 'css/chat-pages.css', needle: '.sm-src-bad' },
+  // ==== 2026-09-17 #703 聊天冷进「没有加载缓冲动画、卡几秒」（用户直派：切桌面后点开聊天，屏上零反馈数秒）——切桌面后进聊天，LS 尾部快照（或快速预读）先把 msgs 填上几条，updateChatLoading 的「!msgs.length」前置把进度条压掉；权威大包继续读数秒后 200 气泡+百张图集中渲染解码（无头 4× 节流实证：进度条全程未显示、803ms 长任务）。修复=①条件去掉 msgs 前置（聊天页可见且权威未就绪即显示）；②enterChat 先置位再 loadMsgs（LS 同步 parse 前先让进度条就位）；③权威读库收尾补一次收起（覆盖 changed=false 且屏上已有内容、不走 renderWindow 的路径） ====
+  { name: '#703a 进度条条件去掉 msgs 为空前置（删回则快照先到时整段权威读取窗口零加载反馈＝主诉回归；表达式锚归 #526，本条锚行尾注释）', file: 'js/chat.js', needle: '// #703：去掉「msgs 为空」前置' },
+  { name: '#703b enterChat 先置位进度条再 loadMsgs（删回则 LS 同步 parse 期间零反馈）', file: 'js/chat.js', needle: 'updateChatLoading(); // #703：先于 loadMsgs 置位' },
+  { name: '#703c 权威读库收尾收起进度条（删则 changed=false 且屏上已有快照时进度条挂死不收）', file: 'js/chat.js', needle: '// #703：权威就绪即收起进度条' },
+  // ==== 2026-09-17 #704 表情包面板「每次打开所有图片重新加载」大库残留（用户直派：#662/#692 后真机仍现）——emojiShowWhenDecoded 对面板里全部 img[src] await decode，大库几十上百张在低内存机型隐藏期被回收位图，总解码时长远超 1s 兜底＝兜底放行后剩余图逐张冒出（1s 兜底在大库机型是常规路径而非保险）。修复=首屏优先：前 16 张 data-src 图同步补 src、按 DOM 序前 24 张 await decode 后即显示、其余 fire-and-forget 预热不挡显示 ====
+  { name: '#704a 面板显示只等首屏解码（删回 await 全部则大库机型超 1s 兜底放行＝逐张冒出回归）', file: 'js/chat.js', needle: 'const EMOJI_DECODE_AWAIT_MAX = 24;' },
+  { name: '#704b 首屏 data-src 图同步补 src 不等懒加载泵（删回则首屏图干等 50ms/4 张泵＝打开变慢）', file: 'js/chat.js', needle: "im.setAttribute('src', im.dataset.src); // #704：首屏图不等懒加载泵，立即起解码" },
+  // ==== 2026-09-17 #701 自定义字卡「全量导出点击没反应」（红米 Note 11 5G 夸克实报、多机型同现，用户直派）——点击后整条前置 Promise 链（hydrateLibScopes IDB 大键取回 / ccExportExpandTokens 媒体池还原）任一环在部分安卓壳上挂起不落定＝.then 干等，无 toast 无弹窗零反馈；且全量导出/导入缺范围说明（专属部分=当前桌面联系人，用户直派补说明）。修复=①导出先弹范围说明弹窗（开始导出才跑链）＋点后立刻「正在准备导出…」toast；②取回/还原两环 ccFullWithTimeout 超时兜底（4s/8s）按已就绪数据继续，catch 不再吞；③导入链同款超时兜底＋导入弹窗补「专属导入到当前桌面」说明；④模板两入口副标题补专属归属说明 ====
+  { name: '#701a 全量导出前置链超时兜底（删回 .then 干等则安卓壳 IDB 取回挂起＝点导出零反应回归）', file: 'js/chatcard.js', needle: 'ccFullWithTimeout(Promise.resolve(hydrateLibScopes([\'public\', \'own\'])).catch(() => {}), 4000, null).then(build)' },
+  { name: '#701b 媒体池令牌还原超时兜底＋catch（删则 @@m 令牌还原挂起同样静默卡死；旧 needle 带字面 \\n 永不匹配＝哑哨兵，2026-09-17 收口）', file: 'js/chatcard.js', needle: 'Promise.all([ccExportExpandTokens(data.ccPub), ccExportExpandTokens(data.ccOwn)]).catch(() => [{ ok: 0, miss: 0 }, { ok: 0, miss: 0 }])' },
+  { name: '#701c 全量导出范围说明弹窗（专属=当前桌面；删则用户不知道导了什么、专属归属哪桌面）', file: 'js/chatcard.js', needle: '「专属」部分换机恢复时，请切到对应联系人桌面再导入' },
+  { name: '#701d 导出点击即有反馈 toast（删则说明弹窗外链路期间零反馈）', file: 'js/chatcard.js', needle: "toast('正在准备导出…')" },
+  { name: '#701e 全量导入链超时兜底（删回 .then 干等则安卓壳导入选完方式后无反应）', file: 'js/chatcard.js', needle: "ccFullWithTimeout(Promise.resolve(hydrateLibScopes(['public', 'own'])).catch(() => {}), 4000, null).then(() => { ccFullApply(d, mode); })" },
+  { name: '#701f 导入弹窗补专属归属说明（删则跨桌面导入弄丢专属字卡不可知）', file: 'js/chatcard.js', needle: '如文件来自别的桌面，请先切到对应联系人桌面再导入' },
+  { name: '#701g 全量导出入口副标题标明专属=当前桌面（删则列表页看不出导出归属）', file: 'template.html', needle: '专属部分=当前桌面联系人）</div>' },
+  // ==== 2026-09-17 #706 聊天「所有消息不贴底、停在上半屏/中部；输入栏只有打字时可见；发消息低栏弹跳」（iPhone 17 Safari 26.6 iOS 独立应用实报、多机型同现，用户直派要求勿致他型回归）——#466/#643 两级回钉都是「事件触发+60ms 单次防抖」，iOS 26 Safari 起 interactive-widget=resizes-content 被真正执行（键盘期 innerHeight 本体参与变形、vv/inner 分多帧落位），回钉写入落在中间态布局后无人再校正＝列表永久停错位。修复=几何看门狗：聊天页可见且钉住态时每 250ms 复核 scrollTop 是否等于 chatScrollMax（行隐藏态口径），差 >8px 且视口变形落定（最近 180ms 无 vv/inner 变化）才补钉——只认几何事实、机型零分支；仍受 #162 钉住闸（用户翻历史解钉绝不拽底）与 #416 ≤8px 口径约束 ====
+  { name: '#706a 贴底几何看门狗补钉判定（删回事件单发制则 iOS 26 键盘变形后消息永久停半屏＝主诉回归）', file: 'js/chat.js', needle: 'if (cb706.scrollTop < chatScrollMax() - 8) scrollChatBottom();' },
+  { name: '#706b 看门狗视口变形落定闸（删回变形中就写则发消息低栏钳位回弹＝弹跳回归）', file: 'js/chat.js', needle: 'if (Date.now() - _vvGeomChangeTs < 180) return; // 视口变形进行中不写，等落定' },
+  // ==== 2026-09-18 #707 屏幕位置微调（用户直派：「设置自由一点，用户自己调和设置」——跨设备屏幕适配修不完，给本机永久手动三轴偏移）——mobile-adapt.js 包装 documentElement.style 的 set/remove/get 做「系统基准+用户偏移」双层（写入方无感、DOM 同值写零重排零抖动），底部独立写 calc(env()+偏移)（安卓键盘期钉 0 照旧、收键后 1s 复述补回）；personalize.js 三行弹窗接线（±80px，0=恢复默认）；偏移存根命名空间 LS（跨桌面共用） ====
+  { name: '#707a 顶层样式双层值包装（删回直写则用户偏移被系统写入方按基准覆写＝微调失效回归）', file: 'js/mobile-adapt.js', needle: "if (NAMES[n] !== undefined && base[n] !== undefined) return (base[n] + adj[NAMES[n]]) + 'px';" },
+  { name: '#707b 底部偏移 calc(env) 写入（删回写裸 px 则无 env 基准的机型手势条区算错）', file: 'js/mobile-adapt.js', needle: "'calc(env(safe-area-inset-bottom, 0px) + ' + adj.bottom + 'px)'" },
+  { name: '#707c 设置页统一面板接线走 mochiScreenAdj（删则步进/输入改值不落层＝改了没反应）', file: 'js/personalize.js', needle: 'function applyAxis(ax, nv, silent) {' },
+  { name: '#707l 整体位移轴消费规则（删则整页偏移遮挡无处拉回＝.phone top 位移失效）', file: 'css/base.css', needle: '.phone { top: var(--mochi-shift-adj, 0px); }' },
+  { name: '#707m 整体位移轴写入（删则设了位移也不落 var＝整体位移没反应）', file: 'js/mobile-adapt.js', needle: "if (adj.shift) origSet('--mochi-shift-adj', adj.shift + 'px');" },
+  { name: '#707j 桌面轴消费规则（删则全屏图标偏上无处拉回＝#desktop-pages padding-top 失效）', file: 'css/home.css', needle: '#desktop-pages { padding-top: var(--mochi-desk-adj, 0px); }' },
+  { name: '#707k 桌面轴写入（删则设了偏移也不落 var＝桌面微调没反应）', file: 'js/mobile-adapt.js', needle: "if (adj.desk) origSet('--mochi-desk-adj', adj.desk + 'px');" },
+  // ==== 2026-09-18 #764 屏幕适配微调（用户拍板：#707「屏幕位置设置」合并升级为独立显眼功能——
+  // 工具区首位 + 六轴滑杆实时预览 + 双击复位 + 「文字大小」第六轴）——文字轴走 --mochi-text-adj
+  // 由 display-tune.css 逐条 calc 叠加（气泡/输入框/设置行等文字组），刻意不走 zoom/scale（红线）；
+  // all() 旧版只回三轴＝面板上桌面/整体位移显示 undefinedpx，本批一并补齐 ====
+  { name: '#764a 文字轴写入 --mochi-text-adj（删＝文字大小拖了没反应＝第六轴失效复发）', file: 'js/mobile-adapt.js', needle: "if (adj.text) origSet('--mochi-text-adj', adj.text + 'px');" },
+  { name: '#764b all() 回满六轴（删回三轴＝面板桌面/整体位移显示 undefinedpx、滑杆初值丢）', file: 'js/mobile-adapt.js', needle: "all: function () { return { top: adj.top, bottom: adj.bottom, h: adj.h, desk: adj.desk, shift: adj.shift, text: adj.text }; }," },
+  { name: '#764c 文字大小轴注册（删行＝面板只剩五轴、字号诉求回流）', file: 'js/personalize.js', needle: "{ k: 'text', name: '文字大小', min: 0, max: 12" },
+  { name: '#764d 滑杆实时预览接线（删＝又退回步进/手输猜值模式）', file: 'js/personalize.js', needle: "rng.setAttribute('data-adj-slider', ax.k);" },
+  { name: '#764e 文字轴消费规则（删＝--mochi-text-adj 无人消费，字号轴空转）', file: 'css/display-tune.css', needle: '.msg-bubble { font-size: calc(var(--chat-font-size, 14px) + var(--mochi-text-adj, 0px)); }' },
+  { name: '#764f 面板 hidden 真隐藏规则（删＝内联 display:flex 压过 UA，返回键置 hidden 面板不消失）', file: 'css/display-tune.css', needle: '#screen-adj-panel[hidden] { display: none !important; }' },
+  { name: '#764g 工具区首位独立入口行（删＝功能又藏进诊断组不显眼，用户报「找不到」复发）', file: 'template.html', needle: '屏幕适配微调<span class="sub">' },
+  { name: '#764h 返回键先关微调面板（删回不含＝安卓返回直接退页不关面板）', file: 'js/tabs.js', needle: "'screen-adj-panel'];" },
+  { name: '#764i 输入框 contenteditable 形态字号消费（删＝base.css 防 iOS 聚焦缩放的 .phone [contenteditable=16px] 截胡，文字轴对输入框永远无效——隔离构建真浏览器实测）', file: 'css/display-tune.css', needle: '.phone .chat-input[contenteditable="true"] { font-size: calc(15px + var(--mochi-text-adj, 0px)); }' },
+  // ==== 2026-09-18 信箱纯性能批（收口者按其 WORKLOG 委托补登）——该批曾被并行会话旧缓冲回写整文件打回 HEAD 一次，
+  // 哨兵是唯一能拦住它再来一遍的东西；needle 均为「逻辑锚点」：实现被改坏即消失 ====
+  { name: '信箱 load 解析缓存接线（删 cachedParse 调用＝每帧全量 JSON.parse 数百 KB dataURL 键，卡顿回归）', file: 'js/mail.js', needle: 'cachedParse(prefixFor(cid)' },
+  { name: '信箱 render 可见性门槛（删＝页面隐藏时仍整列表重绘，不可见不渲染优化回流）', file: 'js/mail.js', needle: 'if (mpEl && mpEl.hidden) return;' },
+  // ==== 2026-09-18 #709 音乐遗留（自查发现，#700 同族收尾；编号让位：#707 已被屏幕微调/滑动卡顿两批占用、#708 已被通知自检占用）——歌单导入的 VIP 自动移除依赖官方 v6 详情走公共 CORS 代理，proxy.cors.sh 等已域名级失联（#700 实测）＝全机型 VIP 歌都不再被自动移除，与常见问题「歌单导入会自动移除这类歌曲」承诺不符。修复=时长探测（meting <audio>）失败的歌用 meting type=url 二次确认（免费歌必 302→音频 CDN；VIP/失效歌 200+非音频正文且无跳转；fetch 失败＝离线＝宁可不删），确认 VIP 才按 v6 fee 路径同口径移除（仅 sm_pl_ 歌单批次，单曲链接维持既有文档口径）；移除逻辑收敛 removeBatchVipSongs 共享助手；移除已死 meting 镜像 api.i-meto.com（2026-09-17 实测整体 401）====
+  { name: '#709a meting type=url VIP 二次确认判据（删则歌单导入的 VIP 永不移除＝FAQ 承诺落空回归）', file: 'js/music-player.js', needle: 'var free = !!(r.redirected || /^audio\\//i.test(ct));' },
+  { name: '#709b 探测失败仅对 sm_pl_ 歌单批次二次确认＋_vipChecked 去重（删/放开到单曲则断网误删或重复请求）', file: 'js/music-player.js', needle: "if (m && m.neteaseId && /^sm_pl_/.test(m.id) && !m._vipChecked && findTrack(m.id))" },
+  { name: '#709c VIP 移除收敛共享助手（v6 fee 路径与探测兜底同口径；删回两份内联则改一处漏一处）', file: 'js/music-player.js', needle: 'function removeBatchVipSongs(tracks)' },
+  // ==== 2026-09-18 #710 群聊「进群白屏干等无加载反馈」（#703 同族收尾，用户确认补；编号让位：#708 已被通知自检批占用）——enterGroupChat→loadMsgs 先渲 LS 快照、再 IDB 异步读群消息大键，大群/LS 空窗口整屏空白零提示（群聊页此前连进度条元素都没有）。修复=①template 群聊页加 #gc-loading（复用单聊 .chat-loading 同款样式类，跨域改 template 仅追加此锚）；②loadMsgs 读库前置位、落定/切群/兜底 12s 即收起（gcLoadSeq 作废旧等待，#243 串群守卫路径不误收） ====
+  { name: '#710a 群聊页加载条模板锚点（删则进度条无处挂载＝进群白屏无反馈回归）', file: 'template.html', needle: 'id="gc-loading"' },
+  { name: '#710b 进度条显隐绑「页面可见且权威在途」（删回则 LS 快照先到时读库窗口零反馈）', file: 'js/group-chat.js', needle: 'gcLoadingEl.hidden = !(page && !page.hidden && gcAuthPending);' },
+  { name: '#710c 读库落定收起＋切群作废旧等待（删则进度条挂死/旧群等待误收新群进度条）', file: 'js/group-chat.js', needle: 'function gcLoadSettle(seq)' },
+  // ==== 2026-09-18 #716 红米 K80 Chrome 三联实报（多机型同族，用户直派「不要覆盖修改导致不同型号设备反复出现」）——①表情包面板/头像互动「每次打开图片闪烁重载」：#704 后表情侧兜底仍 1s、大库机型首屏 24 张解码超 1s 半途放行＝可见逐格冒出；头像互动半框（avatar-lib avShowWhenDecoded）还是「等全部 img[src] 解码」的 #704 修前形态。②桌面进聊天「正在加载聊天记录」挂很久进不去：idbGet 固定 4s+4s 读等待，41.2MB 的 default:chat-msgs 单次读取+反序列化超 8s ⇒ 每次尝试都超时=undefined → chat.js 6 次×5s 重试每次重读 41MB 全失败（写入侧 idbSetAll 早已按字节放大超时，读取侧漏了同款）。③聊天底部上滑看历史「反复回弹、刚开始滑动最明显」：touchstart 即解钉，但手势刚开始离底 ≤8px 时 #378「解钉后滚回贴底＝回钉」100ms 防抖误判回钉 → #706 看门狗每 250ms 与进行中的手势对打。修复=①表情兜底 1s→2.5s＋头像半框同款首屏 24 张 await/其余预热；②idbGet 支持 minWaitMs 按量放大（≤60s、其余调用方零变化）＋账本 b 字节回填＋loadMsgs 按量给提示窗；③chatTouchActive 手势闸——触摸期禁 #378 自动回钉、看门狗让路。④开屏「正在加载数据…」加省略号步进动画（缓冲感，纯 CSS） ====
+  { name: '#716a idbGet 读等待窗可按量放大（删回固定 4s+4s 则 41MB 级历史永远读不出来＝加载不进去回归）', file: 'js/idb.js', needle: 'const minWait = (ambiable && typeof ambiable.minWaitMs === ' },
+  { name: '#716b loadMsgs 按账本字节给读取提示窗（删则大键读取提示永不生效＝超时循环回归）', file: 'js/chat.js', needle: 'bigReadMs > 4000 ? { minWaitMs: bigReadMs } : undefined' },
+  { name: '#716c 账本补读回填 b 字节（删则冷启动会话首读拿不到体积=提示窗缺位）', file: 'js/chat.js', needle: 'chatLedgerBytes[prefix] = o.b' },
+  { name: '#716d 手势期禁 #378 自动回钉（删回则刚开始上滑离底 ≤8px 被误判回钉拽回＝反复回弹回归）', file: 'js/chat.js', needle: 'else if (!chatPinnedBottom && !chatTouchActive && chatAtBottom()) {' },
+  { name: '#716e 看门狗手势期让路（删回则 250ms 周期与用户上滑对打＝反复回弹回归）', file: 'js/chat.js', needle: '_ccSmoothT || chatTouchActive) return;' },
+  { name: '#716f 触摸手势旗标接线（删则 d/e 两处闸恒不生效）', file: 'js/chat.js', needle: 'chatTouchActive = true;' },
+  { name: '#716g 表情面板显示兜底 1s→2.5s（删回 1s 则大库机型首屏解码半途放行＝闪烁重载回归）', file: 'js/chat.js', needle: 'setTimeout(fin, 2500);' },
+  { name: '#716h 头像半框只等首屏解码（删回 await 全部则大头像库打开半途放行＝闪烁重载回归）', file: 'js/avatar-lib.js', needle: 'const AV_DECODE_AWAIT_MAX = 24;' },
+  { name: '#716i 开屏加载省略号动画（删则大数据桌面恢复期无缓冲感）', file: 'css/base.css', needle: '@keyframes splashDots' },
+  // ==== 2026-09-18 #720 两项「优化」批（用户点名做 2/3，K80 诊断单画像：JS 堆 631MB、两条 898/924ms 长任务）——②整窗渲染分帧：冷路径（keepScroll=false）renderMsg 一口气建 200 条＝单条数百毫秒长任务（权威到达/冷进那一下「卡住＋进度条冻结」）→ 每批 50 条进 fragment、帧间让路、世代令牌防重入、keepScroll 同步路径零变化；③LS 残留大键补扫：xyStore.set 对 >200KB 值只进 IDB+内存并删 LS 副本，但老版本写入的键内容涨过限后未再 set＝LS 挂着残留双倍副本（实测 fav-msgs 207KB）→ 回填就绪后 20s 一次性补扫（仅内存缓存已持有该键时删、chat-msgs/gc-msgs/chat-arch/chat-meta 兜底族不碰） ====
+  { name: '#720a 整窗渲染分帧构建（删回一口气渲染则冷进/权威到达单条数百毫秒长任务回归）', file: 'js/chat.js', needle: 'const RENDER_CHUNK = 50;' },
+  { name: '#720b 分帧世代令牌防重入（删则新一轮渲染与旧构建交错＝窗口错乱）', file: 'js/chat.js', needle: 'if (myToken !== _rwToken) { try { restoreInplaceDrafts(); } catch (e) {} return; }' },
+  { name: '#720c 分帧路径补贴底（删则冷进时调用方的 scrollToBottom 跑在换装前＝空操作，页面不贴底）', file: 'js/chat.js', needle: 'scrollChatBottom(); // #718 分帧路径' },
+  { name: '#720d forceSync 路径（addRec 重钳位返回 body.lastElementChild 必须同步）', file: 'js/chat.js', needle: 'renderWindow(false, true, true); // #718 forceSync' },
+  { name: '#721a LS 残留补扫失败重试闸（删回一次闩到底则存储繁忙那轮没清掉的残留整会话不再清＝用户诊断单里 207KB 跨会话存活形态）', file: 'js/idb.js', needle: 'if (_lsSweepFail && _lsSweepTries < 2) {' },
+  { name: '#721b 追平写失败计数（删则写失败静默当成功、重试闸永不触发）', file: 'js/idb.js', needle: 'const markFail = function () { _lsSweepFail = true; };' },
+  { name: '#722a 分块格式门（blk-idx 在位只读热片，删回整读 41MB＝冷进聊天数秒卡顿回归）', file: 'js/chat.js', needle: "return chatBlkHotLoad(myPrefix, bidxRaw);" },
+  { name: '#722b 大历史读成功后台分块迁移（删则存量 41MB 桌面永远停在旧整包格式＝懒读不生效）', file: 'js/chat.js', needle: 'if (!chatBlkIdx && msgsBytes(idbArr) > CHAT_BLK_MIN) {' },
+  { name: '#722c 分块写路径分流（删回 forceFull 整组重写＝每次落盘 41MB 写放大回归）', file: 'js/chat.js', needle: 'chatBlkRewriteTail(prefix, arr); // 热片对齐尾部块重写' },
+  { name: '#722d 账本守卫分块感知（删回拿全量条数比热片内存＝每次保存被缩水守卫拦死＝消息永不落盘）', file: 'js/chat.js', needle: 'if (chatBlkIdx && typeof chatHotBaseN === ' },
+  { name: '#722e getChatMsgs 永远全量（删则统计/导出/补投递在热片窗口内少算历史）', file: 'js/chat.js', needle: 'return chatColdHead.length ? chatColdHead.concat(msgs) : msgs; }' },
+  { name: '#722f 上滑边界 rebase＋下标位移（删则热片之上历史不可达＝看起来记录丢失）', file: 'js/chat.js', needle: 'if (chatColdHead.length) { chatRebaseCold(); loadOlderIncremental(); return; }' },
+  { name: '#722g 头块水合失败不前移（删则失败块静默跳过＝该块消息从统计/导出消失）', file: 'js/chat.js', needle: 'if (!Array.isArray(v)) { chatColdHydrating = false; return; } // #722 读失败' },
+  { name: '#722h 备份「仅聊天记录」收块键（删则分块后备份缺聊天历史＝备份完整性破坏）', file: 'js/data-backup.js', needle: 'const CHAT_KEY_RE = /(?:^|:)(?:chat-msgs|chat-blk-idx|chat-blk-[0-9]+)$/;' },
+  { name: '#722i 块格式备份组装回整包（删则块备份无法导回聊天记录）', file: 'js/data-backup.js', needle: "if (!/:chat-blk-idx$/.test(k)) return;" },
+  { name: '#722j 导入写整包时清目标桌面旧块键（删则残留 blk-idx 遮蔽刚导入的整包）', file: 'js/data-backup.js', needle: "k.indexOf(key + ':chat-blk-') === 0" },
+  { name: '#722k 媒体重建引用面收块键（删则清池重建丢聊天令牌图）', file: 'js/media-pool.js', needle: 'chat-blk-idx|chat-blk-[0-9]+|fav-msgs' },
+  { name: '#722l 清空聊天同步清块键与索引（删则清空后 blk-idx 回放复活全部历史）', file: 'js/chat.js', needle: 'chatBlkResetState(); // #722：分块状态复位（此后保存走旧格式/重新分块）' },
+  { name: '#722m 末块必成/更早热块尽力而为（删回「任一块失败整体返 null」则一次超时即退回全量读重试＝开聊被拖到十几秒）', file: 'js/chat.js', needle: 'if (isLast) { miss = true; return; }' },
+  { name: '#722n 块清理按前缀扫盘（删回只按内存 chatBlkIdx 删＝会话没读过该桌面时漏删磁盘块：清空的历史下次启动复活、导入被旧索引遮蔽）', file: 'js/chat.js', needle: 'function chatBlkPurgePrefix(prefix) {' },
+  { name: '#722o rebase 后重算 lastMine*（删则引用「我最后一条」的回复在并入冷头后指错位）', file: 'js/chat.js', needle: 'try { syncLastMineText(); } catch (e) {} // #722 自查：lastMineIdx 是 msgs 下标' },
+
+
+
+
+  // ==== 2026-09-18 #711 聊天美化「顶栏/底栏位置」只能单向（顶栏仅下移、底栏仅上移，值域 0~80 且 surfaceValue 把负值钳回 0＝反方向物理不可达，用户直派「只能上调不能下调」）→ 双向化：正值走原留白高度（max 取正部），负值走负 margin（min 取负部）——顶栏上移＝::before 负 margin-bottom 整列上提（底栏被 flex:1 消息区锚在原地）；底栏下移＝输入栏负 margin-bottom 越过容器底沿（overflow:hidden 裁掉）。底栏基准 margin 分环境镜像（宽屏悬浮 16px / ≤900px 通栏、force-mobile、tablet 均 0），避免 ID 特异性覆盖把 16px 基准打没。存值语义不变，旧数据 0~80 原样兼容 ====
+  { name: '#711a 顶栏负值（上移）＝::before 负 margin-bottom（改回单向留白即消失＝顶栏再也不能上移）', file: 'css/chat-main.css', needle: 'margin-bottom:min(var(--cs-head-inset, 0px), 0px);' },
+  { name: '#711b 底栏负值（下移）＝负 margin-bottom 叠加 --cs-input-mb-base 环境基准（改成裸 min() 直写＝宽屏悬浮 16px 底距被 ID 特异性打没、输入栏默认位上飘）', file: 'css/chat-main.css', needle: 'margin-bottom:calc(var(--cs-input-mb-base, 0px) + min(var(--cs-input-inset, 0px), 0px));' },
+  { name: '#711c 位置值域双向钳制（surfaceClamp 吃 item.min；改回 Math.max(0,…)＝负值一律被打回 0＝双向退化回单向）', file: 'js/chat-settings.js', needle: 'const surfaceClamp = (item, n) => Math.max(item.min != null ? item.min : 0, Math.min(item.max, Math.round(n)));' },
+  // ==== 2026-09-18 #712 多字卡「拼接符号」新增内置「——」（默认开）＋自定义符号（用户直派「拼接符号新增一个：—— 默认开启」「系统自带的不变，只能开关，但是用户可以自己添加」）——内置七枚（空格/，/。/！/？/....../——）只能点亮/取消；「＋」弹 openModal 添加自定义（≤6 字符、≤8 个、与内置/已有去重），自定义 chip 点本体开关、点「×」删除，「至少保留一个」改按内置+自定义合计判。自定义存 reply-py-punct-custom＝JSON [{s,on}]（非数值键、故意不进 DEFAULTS——getCfg 数字兜底与 saveAllContactsDo 全键同步都会写坏数组；随 getCfg/replyCfgFor 附带原串），pyJoinCards 只取 on=1 入池 ====
+  { name: '#712a 内置「——」入池（删则——永远不会被拼进多字卡，设置页开关变摆设）', file: 'js/chat.js', needle: "if (c['py-punct-dash'] === 1) pool.push('——');" },
+  { name: '#712b 自定义符号按 on=1 入池（改成无脑全收＝关掉的自定义符号照样出现、开关失效）', file: 'js/chat.js', needle: "if (it && typeof it.s === 'string' && it.s && it.on === 1) pool.push(it.s);" },
+  { name: '#712c cfg 附带自定义原串（DEFAULTS 外挂直读；删则 pyJoinCards 永远读不到自定义符号）', file: 'js/reply-settings.js', needle: "out['py-punct-custom'] = String(ls.get('reply-py-punct-custom')" },
+  { name: '#712d 自定义符号落盘（删则添加/删除/开关都不持久化、刷新即丢）', file: 'js/reply-settings.js', needle: 'ls.set(CUST_KEY, JSON.stringify(list))' },
+  { name: '#712e 模板「——」chip 与「＋」添加钮（删则设置页看不到新符号、没法加自定义）', file: 'template.html', needle: 'data-k="py-punct-dash"' },
+  // ==== 2026-09-18 #713 批量问卷收藏两缺（用户直派：「问问ta批量问卷，点击查看详情，没有整体的卡片的收藏功能，没有单个问题的批量收藏功能」）——①问卷卡（special:'ask-survey'）渲染没挂 favHeartHtml、cardSnapshot 也不认识它＝整卡无法收藏进聊天收藏夹：卡片加常显心形（问卷卡整卡点击=看详情，没有单题卡的 show-fav 浮现机制）＋快照存题目列表 qarr/TA 作答 aarr，收藏页按问卷卡重放；②问卷详情原是 openModal 纯文本＝没法挂任何按钮：改 openTCPanel 面板，「♡ 收藏整份问卷」复用 favCardFromMsg，「☆ 收藏所选/★ 全部收藏」把题目按文本查重后存入 问问TA 题库（我的添加·日常，单选题带 options ≥2 成单选与批量导入同口径）====
+  { name: '#713a 问卷卡常显收藏心形（删则整卡收藏入口消失＝「没有整体的卡片的收藏功能」回归）', file: 'js/chat.js', needle: 'favHeartHtml(rec, true)' },
+  { name: '#713b cardSnapshot 问卷分支存 qarr/aarr（删则点心形静默无效＝#660 同族回归）', file: 'js/chat.js', needle: "else if (special === 'ask-survey') {" },
+  { name: '#713c 收藏页问卷重放（删则收藏夹里问卷只剩一行摘要、题目与 TA 作答丢失）', file: 'js/chat.js', needle: "f.special === 'ask-survey' && Array.isArray(f.qarr)" },
+  { name: '#713d 问卷详情收藏操作条（删则详情里没有整卡收藏与单题批量收藏入口＝主诉回归）', file: 'js/ta-ask.js', needle: 'id="sv-fav-allbtn"' },
+  { name: '#713e 单题收藏写入题库（删则勾选收藏只弹 toast 不落库、题库永远收不到题）', file: 'js/ta-ask.js', needle: '道题到问问TA题库' },
+  // ==== 2026-09-18 #714 电脑端宽屏「很多按钮飞出屏幕」（用户直派）——手机上视口=手机壳，视口 fixed 通栏条/贴边钮贴边即贴壳；电脑（>900px 桌面模拟器外壳）上视口 1440+，ver-update-bar 备份/更新提醒条、pwa-install/pwa-ios-hint 右下钮、字卡批量管理条、位置面板（含 loc-full 全屏）、音乐批量条、sm-float 悬浮小框、群聊设置整页/@提及面板全部落到浏览器窗口边缘＝按钮飞出屏幕。修复=按壳几何锚回：壳中线=视口中线、壳宽 390 ⇒ 水平 50%±195px（壳内偏移按原值折算），body padding24+双轴 flex 居中+壳高 min(844,100dvh-48) ⇒ 垂直沿 max(24px, 50vh-422px)（900 高实测 28px 吻合）；老内核不识 max()/嵌套 calc 整条丢弃=回退原视口贴边，≤900px 不进查询零影响。游戏全屏（pong/brick/snake-fs）、通话/图片查看器/组件库等居中遮罩类为沉浸设计刻意不动 ====
+  { name: '#714a 顶部提醒条锚回壳顶（删/去 :not 门控则电脑端提醒条横跨窗口、或满屏形态下错误钳成 390 居中）', file: 'css/base.css', needle: 'html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .ver-update-bar { top: max(24px, 50vh - 422px); left: calc(50% - 195px); right: calc(50% - 195px); }' },
+  { name: '#714b 字卡批量管理条锚回壳内（删则电脑端管理时操作条按钮落到窗口左右边缘）', file: 'css/chat-pages.css', needle: 'html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .cc-manage-bar { left: calc(50% - 177px); right: calc(50% - 177px); bottom: calc(max(24px, 50vh - 422px) + 18px); }' },
+  { name: '#714c 音乐悬浮小框锚回壳内（删则电脑端悬浮播放器落到窗口最左、远离手机壳）', file: 'css/chat-pages.css', needle: 'html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .sm-float { left: calc(50% - 183px); top: calc(max(24px, 50vh - 422px) + 80px); }' },
+  { name: '#714d 群聊设置整页锚回壳内（删则电脑端进群聊设置整页横向铺满窗口、开关落到屏幕右缘）', file: 'css/group-chat.css', needle: 'html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .gc-settings-panel { left: calc(50% - 195px); right: calc(50% - 195px); top: max(24px, 50vh - 422px); height: min(844px, calc(100vh - 48px)); }' },
+  { name: '#714e 手选桌面外壳不被伪装兜底改写（applyViewportFix 吃 layoutPref=pc 早退；删则触屏/小屏 PC + ?pc=1 或设置强制桌面时，异步 rAF 链仍加 force-mobile＝JS 桌面态+CSS 满屏混合态、外壳丢失）', file: 'js/device.js', needle: "if (layoutPref === 'pc') return;" },
+  // ==== 2026-09-18 #725 iPad/平板「没适配、很多按钮点不到」（用户直派、多机型）——#714 宽屏锚定在 4 个 CSS 文件的 10 条选择器都漏了排除 html.tablet：平板 .phone=100vw 全宽铺满（#186 用户决策、无 390 外壳），≥901px 视口（iPad 横屏 1024-1366 / iPad Pro 竖屏 1024）全被锚到「幽灵外壳」＝提醒条/安装钮/字卡管理条/位置面板/音乐批量条/悬浮小框/群设置整页/@面板全挤到屏幕中央一条 390 窄带（隔离副本真渲染实测：1180×820 平板上 vub 落 395..785、群设置整页仅 390 宽）；全页面 elementFromPoint 命中测试另证 7 形态（手机/平板竖横/PC）×44 页其余无遮盖缺陷。修复=:not 链补 :not(.tablet)（平板贴视口边=贴壳，与 force-mobile/真全屏同语义；call-mini 保持 fixed 与 JS 拖拽视口坐标一致）；#714a~d needle 同步演进。编号说明：#724 已被 K80 测试失效批与后台保活取证批（两批同号）占用，顺延 #725 ====
+  { name: '#725a 宽屏锚定排除平板·右下安装钮（删 :not(.tablet) 则 iPad 横屏/Pro 竖屏上安装钮从贴壳角落到屏幕中央 50%-179px）', file: 'css/base.css', needle: 'html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .pwa-install' },
+  { name: '#725b 宽屏锚定排除平板·音乐批量条（删 :not(.tablet) 则平板全宽布局上批量操作条被钳成 390 居中窄带）', file: 'css/chat-pages.css', needle: 'html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .music-batch-bar { left: calc(50% - 195px); right: calc(50% - 195px); bottom: max(24px, 50vh - 422px); }' },
+  { name: '#725c 宽屏锚定排除平板·群聊@面板（删 :not(.tablet) 则平板上@提及面板被钳成 390 居中窄带）', file: 'css/group-chat.css', needle: 'html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .gc-at-panel { left: calc(50% - 195px); right: calc(50% - 195px); bottom: max(24px, 50vh - 422px); }' },
+  { name: '#725d 通话小框不随外壳 absolute 化（删 :not(.tablet) 则平板上小框 absolute 定位与 JS 拖拽视口坐标在整页位移轴上打架）', file: 'css/chat-main.css', needle: 'html:not(.force-mobile):not(.tablet) .call-mini' },
+  // ==== 2026-09-18 #717 换头像「点导入图片没反应」（小米8 实报、用户明说其他机型也有；#677 同族收尾）——头像导入还有三处是「点击时动态创建 input、未挂进文档就 click()」的旧写法（红米/真我等 Android Edge 系静默忽略不弹选择器＝点了没反应；iOS Safari 对未挂载 input 不保证派发 change，#677 实锤）：桌面头像 personalize.js bindAvatar、群聊头像 group-chat.js pickAvatarFile、朋友圈头像 feed.js coverAvEl；另有头像互动面板 avatar-lib.js bindPoolUpload 虽常驻挂 body 但用 display:none（老 WebView 对它同样可能不弹选择器）且 click 无 try/catch（失败全静默）。修复=四处统一到全站已验证套路（chat-settings headInput / chatcard pickFiles 同款）：常驻单个 input 永久挂 body、移出屏幕可见（不用 display:none）、复用前清 value、click 包 try/catch 失败给可见提示；压缩/落库管线一字不动 ====
+  { name: '#717a 桌面头像选择器常驻挂文档（改回点击时动态创建未挂文档＝红米/真我 Edge 不弹选择器、iOS 选完不派发 change）', file: 'js/personalize.js', needle: 'document.body.appendChild(avatarPickInput);' },
+  { name: '#717b 群聊头像选择器常驻挂文档（同 #717a，改回动态分离创建＝点了没反应复发）', file: 'js/group-chat.js', needle: 'document.body.appendChild(gcAvatarPickInput);' },
+  { name: '#717c 朋友圈头像选择器常驻挂文档（同 #717a）', file: 'js/feed.js', needle: 'document.body.appendChild(feedAvPickInput);' },
+  { name: '#717d 头像互动池选择器 offscreen+常驻身份（display:none 回归＝老 WebView 点添加头像没反应；id 按按钮唯一供诊断/测试定位）', file: 'js/avatar-lib.js', needle: "input.id = (btn.id || 'avlib') + '-file-pick';" },
+  // ==== 2026-09-18 #718 机型兼容自查四小批（用户对检查报告派单「2345」；原拟 #717，登记时发现已被换头像批占用，顺延 #718）——①群聊设置面板补 height:100vh 前置兜底（<Chrome 108/iOS <15.4 无 dvh＝整条 min() 失效、面板塌成内容高长列表不可滚；聊天设置面板同款双声明早已有，v3.42.x 改全屏时漏带）；②device.js applyViewportFix 的 interactive-widget 按平台选（原两处写死 resizes-visual，iOS 桌面伪装+内核不认 viewport 改写时 rAF 晚跑会把 mobile-adapt 已改的 resizes-content 盖回去＝键盘适配退回异常形态；顺带把两处重复 meta 串收敛 viewportMetaContent 单一出口、isIOS 判定收 isIOSUa 具名函数防同步段 TDZ）；③auction.js beep 补 AudioContext suspended→resume（全站音效模块最后一个漏网，iOS 锁屏/切后台回来整局哑音）；④⑤ max(...,env(...)) 补 ,0px 内定值（base.css 键盘期弹窗顶距 / personalize.js 自愈提示条，老内核不支持 env 时整条 max() 失效）====
+  { name: '#718a 群聊设置面板 100vh 前置兜底（删则无 dvh 老内核面板高度塌成内容高、设置列表不可滚）', file: 'css/group-chat.css', needle: 'height: 100vh;\nheight: min(var(--mochi-ios-h, 100dvh), 100dvh);' },
+  { name: '#718b viewport 关键字按平台选（改回写死 resizes-visual＝iOS 桌面伪装机型被 rAF 晚跑盖回、键盘适配退回异常形态）', file: 'js/device.js', needle: "interactive-widget=' + (isIOSUa() ? 'resizes-content' : 'resizes-visual')" },
+  { name: '#718c 拍卖会音效挂起自愈（删则 iOS 锁屏/切后台回来整局哑音；全站音效模块同款修法的最后一个）', file: 'js/auction.js', needle: "if (audioCtx.state === 'suspended' && audioCtx.resume) audioCtx.resume().catch(function () {});" },
+  { name: '#718d 键盘期弹窗顶距 env 带 0px 内定（删则不支持 env 的老内核整条 max() 失效＝弹窗贴死状态栏）', file: 'css/base.css', needle: 'max(10px, env(safe-area-inset-top, 0px))' },
+  { name: '#718e 自愈提示条 bottom env 带 0px 内定（删则同上＝提示条贴出屏外）', file: 'js/personalize.js', needle: 'max(16px,env(safe-area-inset-bottom,0px))' },
+  // ==== 2026-09-18 #719 OPPO Find X9 Pro + Edge「桌面和聊天上下缘遮挡」（用户直派、明说多机型；#114/#199/#236/#537 同族新姊妹形态）——Android 15+ edge-to-edge 浏览器在 viewport-fit=cover 下把页面画进系统状态栏/手势条区，但 env(safe-area-inset-*) 恒报 0（#236 HeyTapBrowser 报 env≥40 走 coverBrowser，本形态 env=0 靠几何签名识别：inner=400×810 超出 screen=360×785、innerW>screenW＋DPR 2.699≈0.9×系统密度＝缩放渲染实锤，810×0.9=729=785−Edge 底部工具条 56 全数对账＝页面顶到物理屏顶、状态栏悬浮其上）。全部既有避让链因「env≥20」门槛不触发＝状态栏盖住 Mochi 行、手势条盖住 tabbar/输入栏底缘。修复=共享判定器 mochiViewportForm 新增 e2e-browser 形态（顶部 28/z、底部 16/z 估式自动避让，带内 [3,64] 排除 #278 screen 坏值家族；window.__mochiE2eLatch 闩住 Edge 工具条隐匿瞬间的带外波动，旋转重探自清），复用既有 mochi-cover-top/--mochi-safe-bottom 消费链，CSS 零改动；仍偏可经 屏幕位置设置 五轴本机精调 ====
+  { name: '#719a 判定器 e2e-browser 形态门（删回则该形态永远 plain＝状态栏/手势条遮挡复发且诊断不再对号）', file: 'js/device.js', needle: 'e2eBrowser = e2eBase && (e2eOverH <= 64 || !!sig.e2eLatch);' },
+  { name: '#719b 安卓执行器 e2e 顶避让接线（补宽度信号+闩；删回则 safe-top 不落盘、Mochi 行仍钻系统状态栏）', file: 'js/mobile-adapt.js', needle: 'if (_fc.e2eBrowser && !window.__mochiE2eLatch) window.__mochiE2eLatch = true;' },
+  { name: '#719c 安卓键盘收起回落 e2e 底避让（改回摘除属性＝tabbar/输入栏退回 0 避让被手势条盖住）', file: 'js/mobile-adapt.js', needle: "_next = _kbOn ? '0px' : ((_fcB && _fcB.e2eBrowser && _fcB.safeBottom) ? _fcB.safeBottom + 'px' : '');" },
+  // ==== 2026-09-18 #721 低端机触摸滚动被动化（用户「还有没有能优化的，不要出错」；编号说明：#715~#720 已分别被滚动旗标/K80 三联/换头像/兼容四小批/e2e 形态/渲染分帧各批占用，本批由 #719 二次顺延改 #721）——全库 touchmove 审计（共 13 处）发现仅两处处理体只 clearTimeout、从不 preventDefault 却未标 passive：聊天收藏长按 chat.js、美食长按删除 p2-features.js。未标 passive ＝ 手指每次滑动都要等主线程执行完回调才滚动（低端安卓＝列表滚动被阻塞掉帧）。审计结论：文档/窗口级 touchmove 与 breakout/pong（需 preventDefault 保持 passive:false）、snake（已 passive）均正确标注。零行为变化 ====
+  { name: '#721a 聊天收藏长按 touchmove 被动化（改回非被动＝低端机列表滑动被该主线程回调阻塞）', file: 'js/chat.js', needle: 'clearTimeout(pressTimer), { passive: true }' },
+  { name: '#721b 美食长按 touchmove 被动化（同 #721a）', file: 'js/p2-features.js', needle: 'pressTimer = null; } }, { passive: true });' },
+  // ==== 2026-09-18 #722 设置→关于「项目周期 + 内容仅供参考」说明条（用户直派：项目功能太多工程量太大，8.12 开搓 ~ 9.30 完结永久停更，没全查完错，所有内容仅供参考）——about 分区顶部 .set-alert 常驻说明条 #about-eol-note（纯静态文案；不新增 set-group，verify-about-cat B1/B2/B5 口径不变） ====
+  { name: '#722a 关于段顶部项目周期/仅供参考说明条（删则停更与内容免责说明从设置→关于消失）', file: 'template.html', needle: '2026.9.30 完结，之后永久停更' },
   // ==== 2026-09-13 #408 美化导入「解析失败」（IQOO Neo10 vivo 浏览器实报，多机型同族）——美化/聊天美化导入裸 JSON.parse(v.trim()) 一刀切，安卓各浏览器 ce-box 粘贴链路（nbsp/零宽字符/换行块）与聊天 App 转发链路（包裹说明文字/中文引号/全角标点/尾逗号）弄脏 JSON 即失败；#171 字卡导入已修同族，美化两处没跟。修复=personalize.js 全局自救解析器 mochiParsePastedJSON（隐形字符清洗→裁剪首{到末}→字符串外全角标点/尾逗号归一，只在真解析成功且为顶层对象时采用），两处导入接入 + 失败带真实报错并写 __jsErrors 诊断现场；聊天美化空文本静默 return 的「无反应」补提示 ====
   { name: '#408 粘贴导入 JSON 自救解析器（删则安卓各机型粘贴/转发弄脏的方案 JSON 直接解析失败）', file: 'js/personalize.js', needle: "new Error('不是有效的方案 JSON')" },
   { name: '#408 桌面美化导入接入自救解析+诊断现场（删则报障只见「解析失败」无真因）', file: 'js/personalize.js', needle: "'[美化导入] '" },
@@ -1789,7 +1991,7 @@ const FIX_SENTINELS = [
   { name: '#506 导出接线·导出数据先还原再落文件', file: 'js/chatcard.js', needle: 'ccExportExpandTokens(out).then(exp => {' },
   { name: '#506 媒体池令牌完整解析 API（导出还原的取数来源）', file: 'js/media-pool.js', needle: 'window.mochiMediaResolve = function (s) {' },
   // 2026-09-17 #663 对齐：同上，Coverage 侧的 REFS 与 GC 侧同文（源里两处本就一致），锚点同步扩入 feed-posts。
-  { name: '#506 媒体池 GC/Coverage 引用面补字卡库两键（删则库内令牌引用的池条目被误判孤儿删除＝图片永久丢失）', file: 'js/media-pool.js', needle: 'chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?)$' },
+  { name: '#506 媒体池 GC/Coverage 引用面补字卡库两键（删则库内令牌引用的池条目被误判孤儿删除＝图片永久丢失）', file: 'js/media-pool.js', needle: 'chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?|chat-arch)$' },
   { name: '#504a 进聊天页回弹·rAF 稳定窗（删则回退固定 400ms 复写＝视口内图片迟到长高当帧以旧 scrollTop 绘制，聊天记录回弹一下再恢复复发）', file: 'js/chat.js', needle: 'let chatEntrySettleToken = 0;' },
   { name: '#504b 稳定窗守卫：token/离页/解钉即停（删则用户上翻期稳定窗仍抢滚动权＝#162 不打扰契约被破坏）', file: 'js/chat.js', needle: 'chatEntrySettleToken || !chatVisible() || !chatPinnedBottom' },
   { name: '#504c 稳定窗变高当帧同步回钉（删则内容长高后到下一帧才修正＝回弹帧可见）', file: 'js/chat.js', needle: 'if (h !== lastH) { lastH = h; scrollChatBottom(); }' },
@@ -1895,7 +2097,7 @@ const FIX_SENTINELS = [
   { name: '#525a 清除本地数据落在「工具」段且为该段末项（搬回「关于」段＝用户报的分类错位复发；锚在段闭合注释上，行被搬走时锚同步消失）', file: 'template.html', needle: '</div><!-- /them-sec tools · row-reset -->' },
   { name: '#525b 「关于」段不再承载清除本地数据（旧分组注释复活＝清除本地数据被搬回关于段）', file: 'template.html', needle: '<!-- 关于：清除本地数据 + 版本 + 防骗声明（常驻底部，不随标签切换） -->', absent: true },
   // ==== 2026-09-15 #526 新建联系人首次进聊天不再显示「正在加载聊天记录…」（空桌面白等 2.5s 空库二次复核） ====
-  { name: '#526 已知空库（新联系人/空桌面）不显示聊天记录加载进度条（删 chatKnownEmpty 判定＝新建联系人首次进聊天又白等 2.5s 空库复核才收起进度条）', file: 'js/chat.js', needle: 'chatLoadingEl.hidden = !(chatVisible() && !chatDbReady && !chatKnownEmpty && !msgs.length);' },
+  { name: '#526 已知空库（新联系人/空桌面）不显示聊天记录加载进度条（删 chatKnownEmpty 判定＝新建联系人首次进聊天又白等 2.5s 空库复核才收起进度条；needle 随 #703 去 msgs 前置演进，2026-09-17）', file: 'js/chat.js', needle: 'chatLoadingEl.hidden = !(chatVisible() && !chatDbReady && !chatKnownEmpty);' },
   // ==== 2026-09-15 #527 模块加载体检：诊断「启动文件异常」带文件名 + 语法错致整段未加载可自查 ====
   { name: '#527 模块加载体检（__mochiLoaded 对比 __mochiJsFiles 定位整段未加载的文件；删掉＝语法错/启动抛错导致的功能整块失效无法自查）', file: 'js/device.js', needle: "'模块加载体检 ' + mc.loaded.length + '/' + mc.expected.length" },
   // ==== 2026-09-15 #528 诊断置顶结论聚合 + 桌面模拟器外壳底部几何误报豁免 ====
@@ -1938,7 +2140,7 @@ const FIX_SENTINELS = [
   { name: '#531c 主动消息按可用分类归一化权重（原固定累计阈值 15/25/40/55 在贴纸/图片池为空时把颜文字顶到 40%、emoji 15%＝用户「联系人连发颜文字」；改回固定阈值即回归）', file: 'js/chat.js', needle: '[pool.kaomoji.length ? 15 : 0, () => ({ text: pick(pool.kaomoji), type: \'text\' })]' },
   { name: '#531d 信件正文可读性判定（自定义文字池全是颜文字/符号时退回系统预设正文；改回 pool.text.length > 0＝信件又被符号占满）', file: 'js/mail.js', needle: "const hasCustom = pool.text.some(s => typeof s === 'string' && /[A-Za-z0-9\\u4e00-\\u9fff\\u3041-\\u3096\\u30a1-\\u30fa]/.test(s));" },
   // ==== 2026-09-15 #532 字卡使用状态自检（设置→工具 #row-card-audit）====
-  { name: '#532a 一键修复批量执行器（删掉＝「一键修复系统预设可用」点了不生效，问题分类仍不可用）', file: 'js/card-audit.js', needle: 'bulkFixes.forEach(function (id) { try { if (fixMap[id]) fixMap[id](); } catch (e) {} });' },
+  { name: '#532a 一键修复批量执行器（删掉＝「一键修复系统预设可用」点了不生效，问题分类仍不可用）', file: 'js/card-audit.js', needle: "if (r !== false && r !== 'fail') n++; } } catch (e) {} });\ntry { if (window.dcfRefreshUI) DCF.forEach(function (d) { window.dcfRefreshUI(d[0]); }); } catch (e) {}\nreturn n > 0 ? true : false;" },
   { name: '#532b 字卡数据健康探针（删掉＝自检第九节「丢失图卡/超大图/坏语音」读数恒 0，坏卡查不出）', file: 'js/chatcard.js', needle: 'window.__ccAuditHealth = function () {' },
   { name: '#532c 大库未取回提示·「加载完整字卡」接线（删掉＝字卡未从 IDB 取回时用户无法手动取回，自检可用数一直偏少、不可信）', file: 'js/card-audit.js', needle: "window.hydrateLibScopes(['public', 'own'], function () { render(); toast('已取回完整字卡，重新自检完成'); });" },
   // ==== 2026-09-15 #533 链接导入的媒体字卡（裸 http(s) 图链）漏进文字池 → 联系人把图片 URL 当文字发出（聊天 + 信箱）====
@@ -2175,6 +2377,11 @@ const FIX_SENTINELS = [
   { name: '#562d 美化页每个颜色行注入可见「默认」恢复按钮（删＝只剩弹窗里隐藏的恢复默认 pill，用户报「没有恢复默认颜色的按钮」复发）', file: 'js/personalize.js', needle: "row.querySelector('.bfy-reset-btn')" },
   { name: '#562e 按钮颜色/文字颜色恢复默认改摘内联变量（回落到主题色链；改回写死 #111111/#ffffff＝内联截断主题色链）', file: 'js/personalize.js', needle: "removeProperty('--widget-btn'); paintBeautyVal(widgetBtnVal" },
   { name: '#562f 主题色走设置页同一 applier（同时写 --btn-bg/--btn-ink；删 onSet 分支＝边看边调点主题色只改底色不改文字色）', file: 'js/personalize.js', needle: 'if (onSet) { try { onSet(v); } catch (e) {} paint(); return; }' },
+  // ==== 2026-09-18 边看边调抽屉内部优化（P0 背景分区死变量致实时预览失效 / P1 拖动逐帧写库掉帧 / P2 抽屉改动进不了撤销） ====
+  { name: '#bty-a 边看边调「背景模糊」复用 applyBgBlur（旧写死 --bg-blur 无人消费＝抽屉里拖模糊桌面当场没反应、刷新才变；改回 setProperty(\"--bg-blur\") 即回流）', file: 'js/personalize.js', needle: 'applyBgBlur(parseInt(v, 10))' },
+  { name: '#bty-b 边看边调「背景遮罩」复用 applyBgMaskOp（旧写死 --bg-mask-op 无人消费＝同上实时失效）', file: 'js/personalize.js', needle: 'applyBgMaskOp(parseInt(v, 10))' },
+  { name: '#bty-c 滑杆落库挪到 change（旧实现 input 里同步 store.set＝拖动每帧写 localStorage 掉帧；删此行＝退回逐帧写库）', file: 'js/personalize.js', needle: "inp.addEventListener('change', () => { doPersist(inp.value); });" },
+  { name: '#bty-d 边看边调首次改动压撤销快照（旧抽屉全程不 pushBeautyUndo＝乱调无从撤销；删 armUndo 定义＝撤销断链复发）', file: 'js/personalize.js', needle: 'const armUndo = () => { if (undoArmed) return;' },
   // ==== 2026-09-16 #572 页面内「先做这个」提示（AI-A 新模块 page-coach.js + feature-hub 只读查询
   // + 三页空状态动作；用户问「复杂页面里不知道先点哪儿」；#553~#562/#570/#571 已被并行批次占用故取 #572） ====
   { name: '#572a 页面提示条插入（删/改＝复杂页首访不再自述「先做这个」，用户回到站在页里发懵）', file: 'js/page-coach.js', needle: 'page.insertBefore(buildBar(cfg), page.firstChild);' },
@@ -2243,6 +2450,8 @@ const FIX_SENTINELS = [
   // 位置与体量的行为断言 tools/verify-beauty-cta-first.mjs（RED 基线＝还原旧形态 6/7 红）====
   { name: '#579a 边看边调入口改整宽主色条（改回 dq-btn 小胶囊＝用户「找不到边看边调」复发；类名即形态锚点）', file: 'template.html', needle: 'class="dq-primary" id="dq-drawer"' },
   { name: '#579b 边看边调不得退回 desk-quick 行的小按钮形态（旧形态是行内最后一个 dq-btn；加回＝入口重新淹没在四个跳转按钮里）', file: 'template.html', needle: '边看边调</button>', absent: true },
+  { name: '#579c 边看边调入口跟随主题色（写死浅紫 #f0eaff/#493478＝与用户黑白风格冲突复发；逻辑锚=主题色派生淡底声明，template.html 内唯一）', file: 'template.html', needle: 'border:1px solid color-mix(in srgb, var(--btn-bg,#111) 40%, var(--card-bg,#fff))' },
+  { name: '#579d 边看边调开启胶囊用主题色实底（写死白底紫字＝不跟随主题色复发）', file: 'template.html', needle: 'background:var(--btn-bg,#111);color:var(--btn-ink,#fff);white-space:nowrap">点击开启 ›</span>' },
   // ==== 2026-09-16 #580 桌面翻页圆点与滑动不同步（用户：「切换 1/2/3 桌面页时，底部导航
   // 圆点反应慢，没有与我滑动完全同步」）。根因：desktop-slider.js 的 scroll 监听里
   // clearTimeout + setTimeout(sync,120)，每次滚动事件都把同步推到 120ms 后 ＝ 滚动全程圆点
@@ -2346,10 +2555,21 @@ const FIX_SENTINELS = [
   { name: '#581b 放大后位移+缩放表达式（改回只 object-position＝正方形原图放大后无法移动，用户「移动按钮里图片的位置」诉求落空）', file: 'js/personalize.js', needle: "translate(' + tx + '%, ' + ty + '%) scale(" },
   { name: '#581h 位移方向与「壁纸定位/object-position」同口径（负号：值大＝看更靠右/靠下的一段；改回正号＝同一根滑杆在放大前后把画面推向相反一侧，用户会觉得「位置滑杆时灵时不灵」）', file: 'js/personalize.js', needle: 'const tx = -Math.round(((x - 50) / 50) * ((z - 100) / 2) * 100) / 100;' },
   { name: '#581c 边看边调抽屉补批量上传图标图片入口（删＝用户报的「边看边调里缺少批量上传按钮」复发）', file: 'js/personalize.js', needle: '批量上传桌面图标图片（可多选）' },
-  { name: '#581d 「调整图片位置」待选标记（删＝从抽屉/设置页进去后点图标不开位置面板，只弹普通图标菜单）', file: 'js/personalize.js', needle: 'if (window.__iconAdjustPick) { openIconFitPanel(app); return; }' },
+  { name: '#581d 「调整图片位置」待选标记（删＝从抽屉/设置页进去后点图标不开位置面板，只弹普通图标菜单；逻辑锚=待选分支里有图才开面板那一行）', file: 'js/personalize.js', needle: "if (app && app.dataset.app && store.get('app-icon-' + app.dataset.app)) { openIconFitPanel(app); return; }" },
   { name: '#581e 设置页「调整图标图片位置」行（删＝该功能在设置页无入口，只能靠装修模式摸到）', file: 'template.html', needle: 'id="row-icon-fit"' },
   { name: '#581f 位置面板登记进 FLOAT_SELECTORS（删＝面板打开时底层桌面仍可滑动，与抽屉 #527n 同族）', file: 'js/mobile-adapt.js', needle: "'#beauty-drawer', '#icon-fit-panel'];" },
   { name: '#581g 功能大全补「调整图标图片位置」条目（删＝搜「图标 位置」找不到该功能）', file: 'js/feature-hub.js', needle: "{ n: '调整图标图片位置'," },
+  // ==== 2026-09-17 #696 装修模式「点桌面图标上传图片」失效（用户直派：「桌面的边看边调功能，不能
+  // 上传单个图标的图片」「原装修模式点击桌面图标上传图片失效了」）。根因＝#581 的「调整图片位置」待选
+  // 标记 __iconAdjustPick 悬空：走到「没有自定义图片」的图标时 openIconFitPanel 早退、标记没消费，
+  // 此后每次点图标都被劫持（有图弹位置面板 / 无图只弹提示），图标菜单不再出现、整会话不自愈。
+  // 三条逻辑锚分别锁定「消费标记后才分支」「退出装修收掉挂起状态」「边看边调补单个上传入口」。
+  // ⚠️ 多行 needle 必须按**压缩后的样子**写（minifyJs 去行首缩进）：续行前面不能带源码缩进，
+  // 否则 src 里能命中（哑哨兵体检放过多行针）、产物里永远命中不了＝构建恒定报缺失（实测踩过）。
+  // 行为断言 tools/verify-icon-img-fit.mjs（F1~F7）====
+  { name: '#696a 待选标记先消费再分支（改回先转 openIconFitPanel＝无图图标让它早退，标记悬空把之后每次点图标都劫持进位置面板，「点图标上传图片失效」复发）', file: 'js/personalize.js', needle: "window.__iconAdjustPick = false;\nif (app && app.dataset.app && store.get('app-icon-' + app.dataset.app)) { openIconFitPanel(app); return; }" },
+  { name: '#696b 退出装修收掉挂起标记与位置面板（删＝点了「调整图片位置」没点图标就退出，标记留到下次进装修，那次点图标弹的是位置面板）', file: 'js/personalize.js', needle: "window.__iconAdjustPick = false;\nconst fitPanelEl = document.getElementById('icon-fit-panel');" },
+  { name: '#696c 边看边调「图标」分区补单个上传入口（删＝抽屉里只有批量与调整位置，用户报的「边看边调不能上传单个图标的图片」复发）', file: 'js/personalize.js', needle: "mkAct('上传单个图标图片（点图标）'" },
   // ==== #588 卡顿/误判为 bug 的性能批（gift-shop 每件一次 JSON.parse / records 关心页 O(n²) / garden 空花园无提示）====
   // 行为断言 tools/verify-jank-batch2.mjs（RED=1 内联还原三处旧形态，断言逐条转红）
   { name: '#588a TA 心愿 id 集合记忆化入口（删＝giftItemHtml 每件礼物重解析一次心愿单，302 件＝302 次 JSON.parse）', file: 'js/gift-shop.js', needle: 'function taWishIds() {' },
@@ -2382,8 +2602,11 @@ const FIX_SENTINELS = [
   { name: '#594f 写侧 LS 快照合并接了互补判定（删＝LS 里长期存两份同一条，下次进页照样先 2 后 1）', file: 'js/chat.js', needle: '!recKindCovers(kinds, m)' },
   { name: '#594g 旧「原文直比」权威签名不得复活（absent：直接比 m.text＝跨形态判不出同一条，半修征兆）', file: 'js/chat.js', needle: 't: m && m.text, s: m && m.side', absent: true },
   // ===== #603 字卡库「导出数据 / 导入数据」在壳浏览器上点了没反应（红米 K70 至尊版 MIUI 自带浏览器，用户明说其他机型也有）=====
-  { name: '#603a 文件选择 input 常驻复用的单一实例（退回每次新建＝壳浏览器不认这次激活，选择器打不开）', file: 'js/chatcard.js', needle: 'let ccFileInput = null, ccPickSeq = 0;' },
-  { name: '#603b pickFiles 的 change 处理器按调用序号丢弃迟到批次（常驻复用的配套；删＝上一次选择的迟到回调喂给本次调用方，选完文件却导入了上一次那个）', file: 'js/chatcard.js', needle: 'if (seq !== ccPickSeq) return;' },
+  // #755（2026-09-18）后这两条锚点从 chatcard.js 迁到 device.js：原来字卡库有一支手抄的常驻 input
+  // 实现（let ccFileInput / ccPickSeq），本轮已收编进全站统一入口 window.mochiFilePick —— 锚点语义
+  // 不变（常驻复用单一实例 + change 处理器不串台），只是保护对象换成了统一实现。
+  { name: '#603a 文件选择 input 常驻复用的单一实例（退回每次新建＝壳浏览器不认这次激活，选择器打不开；#755 后保护对象迁到统一入口）', file: 'js/device.js', needle: "var input = null; // 常驻单例：同一 id 复用，绝不随点按堆积节点 mochi-755-single" },
+  { name: '#603b change 处理器不串台（每次调用重设 onchange，上次选择的迟到回调绝不喂给本次调用方；#755 后保护对象迁到统一入口）', file: 'js/device.js', needle: 'input.onchange = function () {' },
   { name: '#603c 字卡库导出落到 data-backup 三级降级链（删＝退回裸 a[download]，小米/华为等壳静默不落文件）', file: 'js/chatcard.js', needle: 'window.mochiExportFile(json, fname, title)' },
   { name: '#603d 导出给「导出文件 / 复制文字」两种通道（删＝文件通道整条不可用时没有任何退路）', file: 'js/chatcard.js', needle: '导出文件（推荐）' },
   { name: '#603e 导入模式弹窗第四条路「粘贴文本导入」（删＝文件选择器打不开的机型整条导入功能不可用）', file: 'js/chatcard.js', needle: "label: '粘贴文本导入', value: 'paste'" },
@@ -2425,12 +2648,29 @@ const FIX_SENTINELS = [
   //    dec-opts/gd-opts 早已是 auto，这两条盯的就是漏网的两处；改回 contain 即回归（verify-modal-scroll-chain B2/B3 变红）。
   //    同族未收口两处（在他人有在途改动的 chat-main.css / chat-pages.css，留待对应会话）：.ce-box.chat-ask-opts、
   //    .ce-box[data-for^="ta-opts-"] ====
-  { name: '#612 弹窗多行框滚动链放行·contain→auto（改回 contain 则框内滚到底后手指落在框上整个弹窗滚不动＝链接导入无法下滑导入复发）', file: 'css/base.css', needle: 'max-height:38vh;\noverflow-y:auto;\n-webkit-overflow-scrolling:touch;\noverscroll-behavior:auto;' },
-  { name: '#612 弹窗目标分组胶囊行滚动链放行·contain→auto（同族第二处；改回 contain 则胶囊行到边界后弹窗同样滚不动）', file: 'css/base.css', needle: 'max-height:36vh; overflow-y:auto; -webkit-overflow-scrolling:touch;\noverscroll-behavior:auto;' },
+  // #717 收窄：原 needle 含 -webkit-overflow-scrolling:touch 段，该旗标已按 #707 同族口径全站清理
+  //（见 tools/verify-scroll-momentum-purge.mjs），语义锚＝overscroll-behavior:auto 滚动链放行，本段与 #612 修复无关
+  { name: '#612 弹窗多行框滚动链放行·contain→auto（改回 contain 则框内滚到底后手指落在框上整个弹窗滚不动＝链接导入无法下滑导入复发）', file: 'css/base.css', needle: 'max-height:38vh;\noverflow-y:auto;\noverscroll-behavior:auto;' },
+  { name: '#612 弹窗目标分组胶囊行滚动链放行·contain→auto（同族第二处；改回 contain 则胶囊行到边界后弹窗同样滚不动）', file: 'css/base.css', needle: 'max-height:36vh; overflow-y:auto;\noverscroll-behavior:auto;' },
   { name: '#614 通知发送链 SW.ready 超时兜底（删掉＝SW 被回收/注册失败时 ready 永不落地，后台通知「点测试没反应」+ 弹窗不发复发）', file: 'js/bg-keep.js', needle: 'kaWithTimeout(navigator.serviceWorker.ready, 4000)' },
-  { name: '#614 ready 拿不到现役 SW 时回退页面通知路径（删掉＝不可用时永远 pending、测试按钮无反馈）', file: 'js/bg-keep.js', needle: 'if (!reg) { pageFallback(); return; }' },
-  { name: '#614 showNotification 自身也加超时（删掉＝个别内核返回的 Promise 不落地时发送链卡死）', file: 'js/bg-keep.js', needle: 'kaWithTimeout(reg.showNotification(title, attempt), 4000)' },
+  { name: '#614/#673 ready 拿不到现役 SW 时回退页面通知路径（隐藏态先挂「就绪即补发」，删掉＝不可用时永远 pending、测试按钮无反馈）', file: 'js/bg-keep.js', needle: 'if (!reg) { if (hidden) swNotifyLater(title, opts, chanOut); pageFallback(); return; }' },
+  { name: '#614/#673 showNotification 超时用 thunk 形式（删掉 thunk 退回先求值写法＝同步 throw 穿透回调，发送链卡死且降级重发不跑）', file: 'js/bg-keep.js', needle: 'kaWithTimeout(function () { return reg.showNotification(title, attempt); }, 4000)' },
   { name: '#614 测试按钮点击即时反馈（删掉＝要等发送链 settle 才有提示，SW 卡住时用户看到「点了没反应」）', file: 'js/bg-keep.js', needle: "toast('正在检查通知环境…');" },
+  // ==== 2026-09-17 #673 后台弹窗「又收不到」：过渡期不再整条吞新消息 + 发送链静默丢失口子（红米K80 Chrome 等多机型） ====
+  { name: '#673 过渡期（切后台头15秒）由「一律不弹」改为按内容判定（退回无条件 return 则 TA 回复在 1~40 秒延迟内落窗＝聊天有、通知栏没有复发）', file: 'js/bg-keep.js', needle: 'recentChatDup(nkey, ts, NOTIFY_FRESH_CHAT_DUP_MS)) { gateStats.tooFresh++; return; }' },
+  { name: '#673 过渡期内容判定窗 30 分钟（缩短到常规 5 分钟＝切后台瞬间重放几分钟前看过的字卡又弹，#498 防重弹面失守）', file: 'js/bg-keep.js', needle: 'const NOTIFY_FRESH_CHAT_DUP_MS = 30 * 60000;' },
+  { name: '#673 隐藏态页面通道不谎报成功（删掉 resolve(!hidden) 改回无条件 true＝用户侧什么都没弹、调用方却记「已通知」且测试按钮写「已发送」）', file: 'js/bg-keep.js', needle: 'resolve(!hidden);' },
+  { name: '#673 SW 未就绪时「就绪即补发」（删掉＝弱网/被回收重建窗口里的通知整条丢，后台关屏再也收不到）', file: 'js/bg-keep.js', needle: 'function swNotifyLater(title, opts, chanOut) {' },
+  { name: '#673 通知通道如实上报（删掉＝测试按钮又把页面回退说成「已发送（Service Worker）」，故障层被指错）', file: 'js/bg-keep.js', needle: 'window.bgNotifyLastChannel = function () { return lastNotifyChannel; };' },
+  { name: '#673 头像裁剪截止时间（删掉＝Image 回调不来时 showSysNotification 永不调用，通知静默消失）', file: 'js/bg-keep.js', needle: "if (!cropFired.v) { cropFired.v = true; sendFinal(''); }" },
+  { name: '#673 过渡期运营判定探针 transitionBlocks（删掉＝回归脚本测不到「过渡期内全新消息放行/重放拦截」，跨机型回归失守）', file: 'js/bg-keep.js', needle: 'transitionBlocks: transitionBlocks,' },
+  // ==== 2026-09-17 音乐互动台词静默通道（用户报障 vivo iQOO Z9x Edge 等多机型「播放导入的本地歌时出现消息
+  //     提示音、音乐没法正常听」；与后台弹窗 #673 撞编号，本批即该音乐 #673 的哨兵，接在后台 #673 块之后）====
+  { name: '音乐互动台词静默通道·chatAddSystem 带 silent（删掉＝音乐互动系统消息重回响铃通道，听歌时每掷中一次概率就响一次提示音盖在音乐上复发；needle 唯一于 music-player.js 的 taMusicSys）', file: 'js/music-player.js', needle: 'window.chatAddSystem(text, { silent: true })' },
+  { name: '音乐互动台词静默通道·chatAddIn 带 silent（删掉＝「TA 暂停播放/恢复播放」字卡重回响铃通道，听歌时被消息提示音盖住复发；needle 唯一于 music-player.js 的 taMusicSay）', file: 'js/music-player.js', needle: 'window.chatAddIn(text, { silent: true })' },
+  { name: '音乐互动台词静默·chatAddSystem 透传 silent：true（删掉＝调用方传的 silent 被就地吞掉，上面两条静默通道全部失效＝听歌提示音复发；needle 唯一于 chat.js 的 chatAddSystem）', file: 'js/chat.js', needle: "special: opts.special || 'poke', silent: opts.silent," },
+  { name: '音乐互动静默·TA 暂停交互被用户介入打断也要记账（删掉＝用户点播放打断 TA 暂停后同歌/下一首还能再掷中＝「不管点哪首歌一播放就被打断、还响一声提示音」复发；needle 唯一于 music-player.js 的 cancelTaPause）', file: 'js/music-player.js', needle: 'if (taPauseActive && taPauseFiredId) bookTaPauseFired(taPauseFiredId);' },
+  { name: '音乐互动静默·TA 暂停冷却用 `??` 让「无冷却」=0 生效（删改回 `\|\| 600000` 则设置成 0 的「无冷却」又被当 10 分钟，与 3913/3978 两处不一致＝交互频率异常且打断复现难测；needle 唯一于 music-player.js 的 scheduleTaPauseIfLucky）', file: 'js/music-player.js', needle: '(settings.cooldownMs ?? 600000)' },
   // ==== 2026-09-16 #616 新增【昵称互动】并入原【头像互动】并改名【头像和昵称互动】（用户原话：「我想新增一个和聊天里的【头像互动】逻辑和机制一样的【昵称互动】功能，可以存入多个文字昵称，联系人给我还有自己更换聊天昵称，直接在【头像互动】功能里加，【头像互动】的功能名字修改为【头像和昵称互动】」）====
   // 昵称池与头像池同机制（点击即换 + 邀请同意/拒绝 + 定时随机 1-8 小时），四条哨兵各守一个「删掉就静默失效」的面。
   { name: '#616a 昵称池点击换昵称入口（删掉＝半框里点昵称没反应，只剩头像还能换）', file: 'js/avatar-lib.js', needle: 'function switchNickFromLib(name) {' },
@@ -2627,8 +2867,8 @@ const FIX_SENTINELS = [
   { name: '#662a 面板重建走回收池取回旧节点（删掉/改回无条件新建＝切分组回来时已解码图整批重新解码，回归「一闪+重新加载」）', file: 'js/chat.js', needle: 'const img = emojiAdoptImg(src);' },
   { name: '#662b 整格重写前统一回收旧 img（删掉＝重建时节点成孤儿、池永远取不到，回收池形同虚设）', file: 'js/chat.js', needle: 'set: function (v) { emojiPoolHarvest(); _emojiIH.set.call(this, v); },' },
   { name: '#662c 池身份走令牌稳定身份（改回按原文算键＝令牌化翻转后同图换身份、池 miss，退化成整批新建）', file: 'js/chat.js', needle: 'if (window.ccMediaCardIdent) return window.ccMediaCardIdent(src);' },
-  { name: '#662d 打开面板前先解码再显示（删掉＝位图被浏览器回收的机型上重开面板照旧整格重新解码/逐个冒出）', file: 'js/chat.js', needle: 'emojiShowWhenDecoded(showEmoji);' },
-  { name: '#662e 头像互动半框显示前同样先解码（删掉＝头像库那一格图片重开照旧闪一下）', file: 'js/avatar-lib.js', needle: 'avShowWhenDecoded(function () { avPage.hidden = false; });' },
+  { name: '#662d 打开面板前先解码再显示（删掉＝位图被浏览器回收的机型上重开面板照旧整格重新解码/逐个冒出）', file: 'js/chat.js', needle: 'if (token !== undefined && token !== emojiShowToken) return;' },
+  { name: '#662e 头像互动半框显示前同样先解码（删掉＝头像库那一格图片重开照旧闪一下）', file: 'js/avatar-lib.js', needle: 'if (token !== undefined && token !== avShowToken) return;' },
   { name: '#662f 新头像落列前离屏预热解码（删掉＝换一次头像时顶栏+整列气泡头像各自等解码，低端机「一个个换/闪一下」）', file: 'js/avatar-lib.js', needle: 'const _warm = new Image();' },
   // ===== #663（2026-09-17 用户直派）「TA 把商品放进清单时有概率发到聊天，让我给 TA 买」：
   //   心意集市侧 TA 把商品加进【自己的心愿单】那一刻，按「TA 的心愿发到聊天」开关 + 概率
@@ -2674,8 +2914,8 @@ const FIX_SENTINELS = [
   { name: '#665d 池侧读失败不拉黑（删/改回 missing.add＝贴纸从面板整条消失、坏图不自愈，报障复发）', file: 'js/media-pool.js', needle: 'if (info.ambiguous) { softMissImg(img, h); return; }' },
   { name: '#665d 读失败重试预算（删掉＝要么不重试（坏图不自愈）要么无限重试（读槽被饿死，#450 族））', file: 'js/media-pool.js', needle: 'const SOFT_RETRY_MS = [1200, 4000, 10000];' },
   { name: '#665e 确认缺失的「图片缺失」占位真能落地（slice.call(Set) 恒空＝#402 占位从未生效，坏图照发 404）', file: 'js/media-pool.js', needle: 'const list = Array.from(markQueue); markQueue.clear();' },
-  { name: '#665f GC 引用面含朋友圈（删＝只被朋友圈动态引用的贴纸令牌被当孤儿删掉，照片上贴纸永久缺失）', file: 'js/media-pool.js', needle: 'const REFS = /(?:^|:)(?:chat-msgs|fav-msgs|group-chat-msgs|gc-msgs-[0-9A-Za-z_-]+|chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?)$/;\nconst refKeys = keys.filter(function (k) { return REFS.test(String(k)); });\ntry {\nfor (let li = 0; li < localStorage.length; li++) {' },
-  { name: '#665f Coverage 引用面同口径含朋友圈（GC/Coverage 两处必须同步，漏一处＝统计与体检口径不一致）', file: 'js/media-pool.js', needle: 'const REFS = /(?:^|:)(?:chat-msgs|fav-msgs|group-chat-msgs|gc-msgs-[0-9A-Za-z_-]+|chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?)$/;\nconst SCAN_RE = /@@m:([0-9a-f]{32})/g;' },
+  { name: '#665f GC 引用面含朋友圈（删＝只被朋友圈动态引用的贴纸令牌被当孤儿删掉，照片上贴纸永久缺失）', file: 'js/media-pool.js', needle: 'const REFS = /(?:^|:)(?:chat-msgs|chat-blk-idx|chat-blk-[0-9]+|fav-msgs|group-chat-msgs|gc-msgs-[0-9A-Za-z_-]+|chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?|chat-arch)$/;\nconst refKeys = keys.filter(function (k) { return REFS.test(String(k)); });\ntry {\nfor (let li = 0; li < localStorage.length; li++) {' },
+  { name: '#665f Coverage 引用面同口径含朋友圈（GC/Coverage 两处必须同步，漏一处＝统计与体检口径不一致）', file: 'js/media-pool.js', needle: 'const REFS = /(?:^|:)(?:chat-msgs|chat-blk-idx|chat-blk-[0-9]+|fav-msgs|group-chat-msgs|gc-msgs-[0-9A-Za-z_-]+|chat-tail|cc-groups(?:-public)?|feed-posts(?:-snap)?|chat-arch)$/;\nconst SCAN_RE = /@@m:([0-9a-f]{32})/g;' },
   // ===== #666（2026-09-17 用户直派）表情包面板 emoji 分类「一行四个，但中间的两个没有线分开，缺一条线」=====
   // 根因（纯 CSS 优先级、零 JS）：emoji 子分类的网格由 chat.js renderEmojiTextGroup 同时挂
   //   .emoji-grid-text（文字 2 列网格样式）与 .emoji-grid-emoji；那条为 2 列文字网格写的
@@ -2695,6 +2935,485 @@ const FIX_SENTINELS = [
   { name: '#668b 功能键按当前桌面隔离（删＝清一个功能会连带删掉其他桌面同名功能的数据）', file: 'js/feature-data.js', needle: 'if (info.cid === cid || (isTop && cid === \'default\')) return f;' },
   { name: '#668c 导入落点收进当前桌面命名空间（删＝导入别桌面的文件写串桌面，数据回不去）', file: 'js/feature-data.js', needle: 'return { ns: G + \':\' + cid, suffix: info.suffix };' },
   { name: '#668d 导出带上值里引用到的媒体池条目（删＝导出文件换机后该功能的图片/语音全是坏图）', file: 'js/feature-data.js', needle: 'var media = mediaRefsOf(values);' },
+
+  // ===== #670（2026-09-17 用户直派）设置 → 工具 →【占卜】入口 ＋ 群聊模式隐藏占卜图标这件事的说明 =====
+  //   编号说明：#667/#668/#669 已被同日并行批占用，本批取 #670。
+  // 背景：群聊模式开启时桌面占卜图标按 #156 收进隐藏池（第一页留给「群聊」入口），用户
+  // 桌面找不到占卜；用户要求「打开桌面占卜的功能放在设置的工具里」＋「这点也需要说明」。
+  // 锚点守两件事：①入口存在且真的接上了（点它＝与点桌面图标同一条路径，含打开即渲染历史）；
+  //              ②小字判据按「群聊开启 且 用户没在装修里固定过占卜（#393 的 pin 豁免）」—— 
+  //                写反会把已固定用户的图标说成「已收起」（用户会照着小字去设置里找占卜）。
+  { name: '#670a 设置 → 工具 →【占卜】入口行存在（删掉＝群聊模式下桌面无图标、设置里也没入口，用户完全进不去占卜）', file: 'template.html', needle: 'id="row-open-divination"' },
+  { name: '#670b 功能介绍「占卜」组写明群聊模式收起桌面图标＋改走设置入口（删掉＝用户以为图标丢了）', file: 'template.html', needle: '<b>开启群聊模式期间桌面占卜图标会收起</b>' },
+  { name: '#670c 入口点击接线（删掉＝行还在、点了没反应，用户以为坏了）', file: 'js/personalize.js', needle: "row.addEventListener('click', openDivinePage);" },
+  { name: '#670d 小字「图标是否真被收起」判据＝群聊开启且未被装修固定（#393 豁免；写反＝固定过占卜的用户被告知图标已收起）', file: 'js/personalize.js', needle: "try { return store.get('divination-desk-pin') !== '1'; } catch (e) { return true; }" },
+  { name: '#670e 「开启群聊」功能说明里同步写明占卜图标收起与设置入口（删掉＝设置页说明与行为不一致）', file: 'js/settings-help.js', needle: '桌面占卜图标会收进隐藏池——第一页留给群聊入口' },
+  { name: '#670f 功能大全收录「占卜（设置 → 工具 入口）」（删掉＝搜「占卜 图标不见了」找不到那条路）', file: 'js/feature-hub.js', needle: "go: ['#row-open-divination']" },
+  { name: '#671a 全局提示通道 window.toast 的渲染体（删掉＝全项目 20+ 文件的「已开启/已关闭」反馈重新变回死通道，设置开关点了屏幕上零变化）', file: 'js/device.js', needle: "t.className = 'cc-toast'; void t.offsetWidth; t.className = 'cc-toast show';" },
+  { name: '#671b 设置开关统一反馈的去重判据（删掉＝通用文案会当场盖掉模块自己的专属文案，或每个开关都补一条重复文案）', file: 'js/settings-help.js', needle: 'if ((window.__lastToastAt || 0) !== before) return;' },
+  { name: '#671c 入口三行挂在数据回填完成上重同步（删掉＝LS 副本丢失而 IDB 有值时开关永远显示「未开启」、入口流程却按真实值每次进此间＝用户报的「没开却每次都进」复发）', file: 'js/contacts.js', needle: "document.addEventListener('mochi-restore-done', syncEntryUI);" },
+  { name: '#671d 入口开关按存储值重读（删掉＝开关回显不再与真实值对齐，UI 说谎）', file: 'js/contacts.js', needle: 'if (cbC && !cbC.disabled) cbC.checked = entryCjianFirstOn();' },
+
+  // ===== #672（2026-09-17 用户直派）卡顿说明口径：不写死「某一块最大」 =====
+  //   用户原话：「这个写的是什么玩意，写的不是全部情况，而是我之前的案例」——原文案把某一台手机上
+  //   测出的排序（聊天记录第一、字卡库第二，附 155MB / 1656 条、44MB）当成所有人的结论，用户照着自己
+  //   不一定成立的那一行去删数据。口径改为：成因分几类 + 先到「查看存储」看用户自己哪一块最大、再对症。
+  { name: '#672a 卡顿行下小字改为「哪一样最多每台手机不一样 + 先看清自己这一项」（改回写死排序＝又照搬单一案例，用户被引去删根本不吃体积的那一块）', file: 'template.html', needle: '看你自己哪一项最大' },
+  { name: '#672b 功能中心收录「卡顿自检」条目同口径（删掉＝搜索进来的人只看得到旧结论）', file: 'js/feature-hub.js', needle: '哪一块最占地方因人而异' },
+  // 2026-09-17 追加（用户当场质疑两处说法后定的平台口径）：iPhone 装到桌面**不是**「能多用内存」——
+  //   #377 修的就是 iOS 独立 PWA 的 OOM 家族，装在桌面上一样会被系统关掉重开；安卓只是内存大得多。
+  { name: '#672c iPhone 侧的准确解释（改回「更不容易被系统清内存 / 内存表现也更稳」＝又变成暗示装到桌面就不 OOM，用户被误导）', file: 'template.html', needle: '这不是「能多用内存」' },
+  { name: '#672d iPhone / 安卓两句差异（删掉＝安卓用户以为自己也随时会被系统关页面，或以为只有 iPhone 需要清理）', file: 'template.html', needle: '长期用也要定期清' },
+  // 2026-09-17 追加（用户直派「这两句话要加到开屏」）：开屏「开屏偶尔慢一下」章 + 离线兜底 DOM
+  //   都要有 iOS/安卓这两句；notice.json 是联网用户实际看到的权威源，只改静态 DOM ＝ 线上看不到。
+  { name: '#672e 开屏离线兜底 DOM 带上 iOS/安卓两句卡顿建议（删掉＝断网/兜底路径的用户看不到）', file: 'template.html', needle: '另外别存太多数据' },
+  { name: '#672f 开屏在线权威源 notice.json 同章同内容（删掉＝联网用户实际看到的开屏没有这两句，静态 DOM 改了也白改）', file: 'pwa/notice.json', needle: '图片最占地方。安卓' },
+  // ===== #674（2026-09-17 用户直派）群聊页顶部加「让对方继续说」入口 =====
+  //   编号避让：同日的 #673 已被并行会话占用（音乐互动台词静默通道），本批取 #674。
+  //   用户原话：「群聊设置的图标按钮的左边新增一个让对方继续说的功能」。群聊昵称点击已被「切换群聊」
+  //   占用，顶部只能另起一枚图标；动作复用 group-chat.js 的 gcContinueSay（与输入栏那枚同一动作、同防重入）。
+  { name: '#674a 群聊页顶部三点菜单左侧的「让对方继续说」按钮（删掉＝入口消失，用户只能去输入栏找开关打开）', file: 'template.html', needle: 'id="gc-head-continue"' },
+  { name: '#674b 顶部继续说按钮接线走 gcCsFireContinue（换成别的调用＝丢掉 pointerdown 按下即触发 / 防键盘吞 click）', file: 'js/group-chat.js', needle: "gcHeadContinueBtn.addEventListener('pointerdown'" },
+  // ===== #127（TASKS 待认领·2026-09-17 本会话实现）聊天记录分片：新消息先写增量日志，基准包低频重写 =====
+  //   根因：chat-msgs 单键可达数百 MB，发 1KB 文字也整包重写（写放大数百倍）＝iOS OOM/读写超时的上游。
+  //   锚点守的是「分片成立且安全闸还在」，删任一＝退回每次整包重写（或丢掉安全闸导致错数据落盘）。
+  { name: '#127a 增量日志键与阈值（删＝退回整包重写，写放大回归）', file: 'js/chat.js', needle: "const CHAT_ARCH_KEY = 'chat-arch';" },
+  { name: '#127b 基准段「未被动过」安全闸（删/放宽＝删改旧消息后仍只写日志→旧内容被覆盖不回，数据错乱）', file: 'js/chat.js', needle: 'if (chatArchPrefix !== prefix || !Array.isArray(chatArchRef) || !Array.isArray(arr)) return false;' },
+  { name: '#127c 落盘入口分片判定（删＝每次仍整包重写基准包）', file: 'js/chat.js', needle: 'if (log.length <= CHAT_ARCH_MAX && msgsBytes(log) <= CHAT_ARCH_BYTES) {' },
+  { name: '#127d 读侧基准包+日志拼接去重（删＝压缩崩溃窗口留两份，消息翻倍；或日志不被读取＝新消息丢）', file: 'js/chat.js', needle: 'archArr = archArr.filter(function (m) { return m && !ckptSigs.has(sigOf(m)); });' },
+  { name: '#127e 读库成功后设基准段（删＝每次保存都判定不复用，分片失效退回整包）', file: 'js/chat.js', needle: 'try { chatArchSetBaseline(myPrefix, ckptArr); } catch (e) {}' },
+  { name: '#127f 日志键不回填 LS（删＝聊天增量日志被回填进 localStorage，白占 5MB 配额）', file: 'js/idb.js', needle: "if (tail === 'chat-arch' || /^[^:]+:chat-arch$/.test(tail)) return true;" },
+  { name: '#127g 导入写回前清日志键（删＝旧日志被当新消息回放，叠到刚导入的历史上）', file: 'js/data-backup.js', needle: "window.xyStore(ns).remove('chat-arch');" },
+
+  // ===== #676（2026-09-17 用户直派）心意集市/心意柜/TA 心愿卡黑白简约统一 =====
+  //   用户原话：「ta发送的卡片让我给他买东西，按钮是紫色的，与我现在黑白简约的风格不符合」
+  //   「心意集市和心意柜也是颜色风格和黑白简约不符」。本轮把 market.css 残留的紫色系
+  //   （#8b7ac8/#6d5bb0/#4a3d6b 渐变、淡紫底、紫描边）全量收敛为黑白灰；锚点守「实底 #111」
+  //   这一黑白实现表达式——被改回紫色渐变即消失报警。分类 emoji 淡彩圆底是既有设计语言，保留。
+  { name: '#676a TA 心愿卡【送 TA】按钮黑白实底（改回紫色渐变 linear-gradient(#8b7ac8,#6d5bb0)＝用户报的「按钮是紫色的」复发）', file: 'css/market.css', needle: '.msg-wish-buy { width: 100%; padding: 11px 0; border-radius: 13px; border: none; background: #111; color: #fff;' },
+  { name: '#676b 购买弹窗确定按钮黑白实底（改回紫渐变＝心意集市买礼物弹窗仍是紫按钮）', file: 'css/market.css', needle: '.gb-ok { background: #111; color: #fff;' },
+  { name: '#676c 聊天送礼面板分类选中黑白实底（改回紫渐变＝送礼面板还是紫色调）', file: 'css/market.css', needle: '.gift-cat.sel { background: #111; color: #fff;' },
+  { name: '#676d 心愿单「送 TA」小按钮黑白实底（改回紫渐变＝心愿单面板残留紫色按钮）', file: 'css/market.css', needle: '.wish-act { padding: 7px 14px; border-radius: 99px; border: none; background: #111; color: #fff;' },
+  // ===== #679（2026-09-17 用户直派）各功能页内补「数据管理」卡（导出/导入/清空此前只在集中页）=====
+  //   用户原话：「每一个单独的桌面的功能的导出数据，导入数据，清空数据，现在没有在每个功能里面
+  //   显示啊，只显示在了集中里」。做法＝把一张 data-fbar 卡注进各功能自己的页面，按钮复用集中页
+  //   同一条引擎（桌面隔离/媒体池保全/确认弹窗全继承）。锚点守「注入 + 委托 + 可见性 + 引擎复用」
+  //   四条，注入链被拆（按钮从功能页里消失）即报警。
+  { name: '#679a 功能页内数据卡注入（删掉 mountFdBars＝用户报的「只在集中里有、功能里没有」复发）', file: 'js/feature-data.js', needle: 'mountFdBars();' },
+  { name: '#679b 功能页内数据卡按钮委托到统一引擎（换成各自实现＝桌面隔离/媒体池保全/确认弹窗任一丢守）', file: 'js/feature-data.js', needle: "var b = e.target.closest ? e.target.closest('.fd-btn, .fd-fbar-go') : null;" },
+  { name: '#679c 数据卡身份属性（删掉＝注入卡与集中页行无法区分，验证脚本测不到「功能页里真的有」）', file: 'js/feature-data.js', needle: "card.setAttribute('data-fbar', f.id);" },
+  { name: '#679d 运行时生成的功能页补注入（删掉＝同频/伸手/喝水/吃什么/存钱罐/番茄钟/备忘录里没有数据卡）', file: 'js/feature-data.js', needle: 'setTimeout(mountFdBars, 800);' },
+  { name: '#679e 已有自带三行数据入口的功能页不重复注入（删掉＝聊天设置/信箱/朋友圈里出现两套导出导入清空）', file: 'js/feature-data.js', needle: 'if (!f.page || f.btns) return;' },
+  { name: '#679g 功能页显示时重算数据量（删掉＝加了数据后卡上还显示旧项数/旧体积，计数谎报）', file: 'js/feature-data.js', needle: "attributeFilter: ['hidden'], subtree: true" },
+  { name: '#679h 重算按「功能登记的 page」匹配页面 id（误写成 f.id 比较＝重算永不触发，卡上计数长期停在陈旧值）', file: 'js/feature-data.js', needle: 'if (!f.page || f.page !== pageEl.id) return;' },
+  { name: '#679i 容器被功能模块整块重写后补挂数据卡（删掉＝打开「我的档案」等页时卡被 innerHTML 冲掉，用户根本看不到入口；实测 #myarc-root 每次打开都重建）', file: 'js/feature-data.js', needle: 'if (!host.isConnected || host.querySelector(\'[data-fbar="\' + f.id + \'"]\')) return;' },
+  { name: '#679j 消息列表型页面不注入数据卡（删掉 gc 跳过＝卡混进群聊消息流、每次渲染被重建，且可能干扰贴底）', file: 'js/feature-data.js', needle: 'var FD_SKIP = { room: 1, gc: 1 };' },
+  { name: '#679f 功能页数据卡样式类（删掉＝卡内按钮裸排无布局，挤压原功能页内容）', file: 'css/feature-data.css', needle: '.fd-fbar { margin:10px 12px; padding:12px 14px; }' },
+  // #678 通话中仍被跨桌面来电打扰（OPPO Reno6 5G + 雨见浏览器，明说多机型）：跨桌面来电调度
+  //   只看了 layerBusy() 的 #call-mask，通话最小化到小框后该层是 hidden，且浮层让路上限到期会
+  //   强制顶屏 → 通话中照样弹「XX 来电了」（切桌面后连正在通话的人都再打一次，弹窗「接听」
+  //   还会挂断当前通话）。锚点守「占用门 + 两处闸门」三条，改回旧口径即消失报警。
+  { name: '#678a call.js 通话占用门 callInProgress（删掉＝跨桌面来电又能在通话中弹窗；currentCall 分支为逻辑锚）', file: 'js/call.js', needle: 'window.callInProgress = function () {\nif (currentCall) return true;\ntry {\nconst raw = sessionStorage.getItem(CALL_ACTIVE_KEY) || localStorage.getItem(CALL_ACTIVE_KEY);' },
+  { name: '#678b call.js 占用门读 call-active 标记的新鲜度窗（删掉/放宽＝刷新中断的通话在占用门里变成「没在通话」）', file: 'js/call.js', needle: 'if (info && info.connectedTime && Date.now() - (info.ts || 0) <= 600000) return true;' },
+  { name: '#678c 跨桌面来电调度：通话中整轮不掷（删掉＝通话中照常掷来电并投递，报障复发）', file: 'js/incoming-requests.js', needle: "if (deskCallEn() && !(window.callInProgress && window.callInProgress())) {" },
+  { name: '#678d 跨桌面来电交付硬闸（删掉＝手动触发/后台路径绕过调度层闸门，通话中仍弹来电或发「快回来接听」通知）', file: 'js/incoming-requests.js', needle: "if (req.kind === 'call' && window.callInProgress && window.callInProgress()) return false;" },
+  // ===== #677（2026-09-17 用户直派，iPhone 13 Pro Max Safari＋主屏幕打开，明说其他机型也出现）=====
+  // 三症状：①聊天页发不了图片（加进去就没了/进不了聊天）②字卡自检「按恢复没有反应」
+  //   ③「字卡使用状态自检报告导出没有内容」。
+  // ②③ 是两条独立的静默缺陷，锚点必须锚「逻辑」而不是函数名：
+  //   ②根因＝单卡关闭态存在【值】里（default-cards.js setCardOff 写 '1'/'0'，重开不删键），
+  //     自检却按「键在不在」计数 ⇒ 修复写 '0' 后计数不变、告警与按钮原样重画。锚定值判据。
+  //   ③根因＝lastText 只在 build() 末行赋值而 build() 无兜底，openAudit/refreshAll 又把异常
+  //     吞掉 ⇒ 未打开过/中途抛错时 report 恒为空串。锚定「导出前现取一次 + 错误写进报告」。
+  { name: '#677a 自检单卡关闭按值判据（改回按键存在计数＝「恢复单卡」变空转、告警与按钮不消失＝「按恢复没反应」复发）', file: 'js/card-audit.js', needle: "function isOffRel(rel) { return offValue(rel) === '1'; }" },
+  { name: '#677b 自检关闭键索引/收集同走值判据（任一处改回 keys 直收＝计数与修复目标不一致）', file: 'js/card-audit.js', needle: 'if (isOffRel(rel)) out.push(rel);                 // 只收真·关闭（值 = \'1\'）的卡' },
+  { name: '#677i 关闭索引的相对键推导（写成 k.slice(前缀+":dc-off-") 会传成 <cat>:<内容> ⇒ store 读到不存在的键、offCount 恒 0、告警全不出现）', file: 'js/card-audit.js', needle: "var rel = k.slice(pre.length);\nif (rel.indexOf(OFF_PREFIX) !== 0) continue;" },
+  { name: '#677c 自检渲染的异常兜底（删掉＝build 抛错时页面停在旧帧、lastText 为空＝「导出没有内容」复发）', file: 'js/card-audit.js', needle: "function render() {\nvar r;\nbuildErr = '';\ntry { r = build(); }" },
+  { name: '#677d 导出前报告空则现取一次（删掉＝未打开过自检页直接导出时 report 又是空串）', file: 'js/card-audit.js', needle: 'if (!lastText) { try { render(); } catch (e) {} }' },
+  { name: '#677e 一键修复按实际落地数回报（改回无条件 return true＝全部空转也报「已修复」的假反馈）', file: 'js/card-audit.js', needle: 'bulkFixes.forEach(function (id) { try { if (fixMap[id]) { var r = fixMap[id](); if (r !== false && r !== \'fail\') n++; } } catch (e) {} });' },
+  { name: '#677f 图片选择器 input 常驻并挂进文档再 click（改回 detached／每次新建＝iOS Safari 选完图不派发 change、图片进不了聊天复发）', file: 'js/chat.js', needle: "document.body.appendChild(fi);\nchatImgInput = fi;" },
+  { name: '#677g 选图链路失败可见（删掉 reader.onerror/解码超时＝读取或解码失败时彻底静默，用户只看到「加了图片但没了」）', file: 'js/chat.js', needle: "reader.onerror = () => { settled = true; toast('图片读取失败，请换一张再试'); };" },
+  { name: '#677h 空 FileList 可见反馈（改回 if (!files.length) return;＝iOS 选完没带上文件时一点提示都没有）', file: 'js/chat.js', needle: "if (!files.length) { toast('没有取到图片，请再选一次'); return; }" },
+  // ===== #680（2026-09-17 用户直派）字卡库顶部搜索直出图片令牌乱码 ＋ 图片/表情包名称 =====
+  // 用户原话：「为什么在字卡库的顶部搜索栏里搜索字卡还能看到里面的图片的令牌乱码 例如
+  //   @@m:5c58a523… 自定义聊天字卡 · 图片」「公用字卡和专属字卡里要新增图片和表情包，也可以
+  //   编辑名称，然后可以搜索，如果没有上传名称搜索的时候不应该搜索出来」。
+  // 锚点取「逻辑」：①搜索侧媒体形态剔除（改回直出 c＝令牌串又进结果列表）；②名称身份用
+  //   ccPoolKey（改回 card 原串＝#554/#632 令牌化后名称失联）；③公用名称键进 EXCLUDE
+  //   （漏登记＝migrateLegacy 把全局键迁进 default，其他桌面名称全丢）。
+  { name: '#680a 跨库搜索遇媒体形态（令牌/图链/非音频|||）整条剔除（删掉＝搜索结果又直出 @@m: 令牌乱码）', file: 'js/chatcard.js', needle: "if (window.ccTextCardOnly && !window.ccTextCardOnly(c)) {\nconst bar = c.indexOf('|||');" },
+  { name: '#680b 图片/表情包搜索只认「用户填写的名称」（改回按卡体匹配＝未命名也能被令牌串搜出来，用户要求落空）', file: 'js/chatcard.js', needle: "if (type === 'sticker' || type === 'image') {\nconst nm = ccCardNameAny(c);" },
+  { name: '#680c 名称以内容身份 ccPoolKey 为键存取（改为卡原串＝#554/#632 令牌化后名称与图失联，改名白改）', file: 'js/chatcard.js', needle: 'try { return namesFor(ccOffScope())[ccPoolKey(c)] || \'\'; } catch (e) { return \'\'; }' },
+  { name: "#680d 列表内联搜索走统一匹配口径（改回 x.c.indexOf('data:') 直比＝图片按令牌匹配、未命名也可能命中）", file: 'js/chatcard.js', needle: 'function ccCardMatchText(c, type) {' },
+  { name: '#680e 公用名称键进 contacts EXCLUDE（删掉＝被当旧顶层业务键迁进 default 并删根键，其他桌面图片名称全部读不到）', file: 'js/contacts.js', needle: "'cc-scope-migrated', 'cc-media-names-public'", },
+  // ===== #690（2026-09-17 用户直派：iPhone 11 默认浏览器，明说其他机型也出现——「桌面滑动，
+  //   桌面的三页会灰屏和卡顿，无法正常滑动；进去比较正常，之后滑动页面、点里面的 app 都会卡，
+  //   手机还会发烫」）=====
+  //   根因（两条并存，均零机型分支）：
+  //   ①**老内核准静默丢声明**：桌面壁纸层 #phone-bg-layer 与背景遮罩 .phone-bg-mask 只用
+  //     `inset:0` 定位——inset 简写是 2020 年（Safari 14.1 / Chromium 87）才有的，老内核整条
+  //     丢弃 → 空 div 收缩成 0×0（无头实测：老内核解析结果 0×0，现代内核 390×844）→ 桌面整片
+  //     灰白、「换壁纸 / 调背景遮罩」毫无反应。同批老内核还把图标 min() 丢掉（图标盒塌成 svg
+  //     的 28px）、grid 的 gap 简写丢掉（图标行距归零）＝用户读成「三页不正常」。多机型同现即
+  //     此因（iOS<14.1 / Chromium<87 / vivo 系内置内核都在内，chat-pages.css 早有同款注释）。
+  //   ②**触摸端 :hover 粘滞**：.app:hover 的抬手放大 + box-shadow 过渡在触摸内核粘在最后一次
+  //     点击上（点过的图标一直浮着不落），该元素还带过渡参与横滑时的逐帧合成/栅格化。
+  //   锚点守「逻辑」而非函数名：兜底四条长手/像素值/grid-gap 一旦被删，老内核立刻塌回原症状；
+  //   翻页帧耗时采样与诊断两行一旦被删，下次报「滑三页卡」时又没有真机读数可判。
+  { name: '#690a #phone-bg-layer 宽高兜底（删掉＝老内核整层 0×0、桌面壁纸不显示＝「三页灰白」复发）', file: 'js/personalize.js', needle: "'position:absolute;inset:0;top:0;right:0;bottom:0;left:0;width:100%;height:100%;z-index:1;pointer-events:none;opacity:0;'" },
+  { name: '#690b .phone-bg-mask 四长手+宽高兜底（删掉＝老内核遮罩层 0×0，「背景遮罩」滑块怎么调都没变化）', file: 'css/home.css', needle: 'top:0; right:0; bottom:0; left:0; width:100%; height:100%;' },
+  { name: '#690c 模糊外扩时让出宽高（写回 100%＝右/下两侧 24px 外扩被「宽高优先于 right/bottom」吃掉、模糊边缘发虚＝#240 症状复发）', file: 'css/home.css', needle: 'width:auto !important; height:auto !important;' },
+  { name: '#690d 桌面图标像素兜底（删掉＝老内核丢 min() 后图标盒塌成 svg 的 28px、三页图标网格错位）', file: 'css/home.css', needle: 'width:58px; height:58px;\nwidth:min(58px, 21vw); height:min(58px, 21vw);' },
+  { name: '#690e 图标网格间距 grid-gap 兜底（删掉＝老内核丢 gap 简写后行/列间距归零、图标挤成一坨）', file: 'css/home.css', needle: 'grid-gap:14px 8px; gap:14px 8px;' },
+  { name: '#690f 图标悬停放大只在 hover:hover 生效（去掉门控＝触摸端 :hover 粘滞、点过的图标一直浮着并逐帧参与合成）', file: 'css/home.css', needle: '@media (hover:hover) {\n.app:hover .app-ico {' },
+  { name: '#690g 桌面翻页帧耗时现场采样（删掉＝用户再报「滑三页卡顿」时诊断里没有真机读数可判）', file: 'js/desktop-slider.js', needle: 'localStorage.setItem(PERF_KEY, JSON.stringify({' },
+  { name: '#690h 诊断输出老内核降级项（删掉＝下次报障分不清「引擎太老丢声明」还是「代码坏了」）', file: 'js/device.js', needle: "'老内核降级项：inset='" },
+  { name: '#690i 诊断输出桌面翻页帧耗时（删掉＝报障时只有静态帧率，翻页卡顿依旧判不了）', file: 'js/device.js', needle: "'桌面翻页帧耗时（' + dp.n + ' 帧现场采样 · '" },
+  { name: '#690j 翻页帧耗时键进「清理错误诊断记录」清单（删掉＝诊断缓存清了但这条样本一直留着，越翻越多）', file: 'js/personalize.js', needle: "'xy-home-v2:__diag-deskperf'" },
+  { name: '#681 信箱剥图快照只剥 dataURL、保留媒体池令牌（重新加入 @@m:→[图片] 剥离＝权威主键读不到时信件图永久退化成「[图片]」文字）', file: 'js/mail.js', needle: "let t = s.replace(/data:image\\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '[图片]'); t = mailCleanDisplay(t);" },
+  // ===== #691（2026-09-17 用户直派）：颜文字/emoji 点卡片两模式（默认填入输入栏 / 设置可切点击直接发送）
+  { name: '#691a 模式键现读判据（删掉＝模式开关失效、点卡片恒走一条分支）', file: 'js/chat.js', needle: "return window.xyStore(MYE_G_PREFIX).get(TEXTCARD_DIRECT_KEY) === '1';" },
+  { name: '#691b 文字卡点击三分支（删掉 else-if＝设置里切了模式也不生效，退回「点一下必发」）', file: 'js/chat.js', needle: '} else if (textCardDirectMode()) {' },
+  { name: '#691c 填入输入栏＝尾部追加不清空（改成覆盖赋值＝用户已打的字被吃掉）', file: 'js/chat.js', needle: "el.textContent = (el.textContent || '') + t;" },
+  { name: '#691d 设置行文案＋小字说明（删掉＝模式切换入口与小字解释都没了）', file: 'js/chat-settings.js', needle: '颜文字/emoji 点击直接发送<span class="sub">' },
+  { name: '#691e 设置行落键 chat-textcard-direct（删掉＝拨开关不写存储、重开设置回默认）', file: 'js/chat-settings.js', needle: "window.xyStore(GNS2).set('chat-textcard-direct'" },
+  { name: '#691f 群聊同口径（删掉＝群聊里点颜文字/emoji 依旧直接发出，与聊天页模式不一致）', file: 'js/group-chat.js', needle: 'if (window.textCardDirectMode && window.textCardDirectMode()) { sendGcText(src); return; }' },
+  { name: '#691g 群聊填入群聊输入栏（改为覆盖赋值＝群聊里已打的字被吃掉）', file: 'js/group-chat.js', needle: "input.textContent = (input.textContent || '') + t;" },
+  { name: '#691h 模式键进全局根键 EXCLUDE（删掉＝被 migrateLegacy 迁进 default 桌面并删根键，开关刷新后失效）', file: 'js/contacts.js', needle: "'chat-textcard-direct'," },
+  { name: '#691i 面板内切换按钮显隐＝只跟文字分类、且插入模式按调用方开口径（删掉/改成常显＝表情包图片分类与写信插入模式也多出个没用的按钮）', file: 'js/chat.js', needle: "emojiTextModeBar.hidden = emojiCat === 'sticker' || !!(emojiInsertCb && !emojiTextModeApplies);" },
+  { name: '#691j 面板内切换按钮写同一个全局键（漏写＝面板里切了、聊天设置/群聊读到的还是旧模式）', file: 'js/chat.js', needle: "window.xyStore(MYE_G_PREFIX).set(TEXTCARD_DIRECT_KEY, en ? '1' : '0');" },
+  // ===== #695（2026-09-17 用户直派）：此间【去找TA】跨桌面直达聊天的卡顿
+  //   主页这一帧从未被绘制（setActiveContact 尾部显示 → enterChat 立刻盖掉），旧实现仍把
+  //   卡片背景/页面背景整批重新解码应用。下述四条是「延后 + 主页显示前补跑」的接线，
+  //   删掉任一条即退回「点一下卡住」（逻辑锚=调用/观察语句，personalize.js 内各自唯一）。
+  { name: '#695a buildDeskPages 的整页背景重应用走 whenDeskVisible 门（删掉＝切桌面直达聊天时又同步重解码整屏页面背景）', file: 'js/personalize.js', needle: 'whenDeskVisible(applyPageBgs);' },
+  { name: '#695b 切桌面综合监听器的桌面视觉重应用走门、壁纸 UI（设置页）仍当场同步（删掉＝同步卡顿复发／整条延后＝设置页读到旧桌面的壁纸预设）', file: 'js/personalize.js', needle: 'if (whenDeskVisible(refreshDeskVisuals)) { try { syncBgUI(); } catch (e) {} }' },
+  { name: '#695c 直读兜底（rescueDeskVisuals）结算后的重应用同口径走门（删掉＝聊天页出现后 400ms 左右又整屏重解码一次）', file: 'js/personalize.js', needle: 'const done = () => { if (!refreshed) { refreshed = true; try { whenDeskVisible(refreshDeskVisuals); } catch (e) {} } };' },
+  { name: '#695d 主页显示前的补跑触发器＝盯 #page-phone 的 hidden 变化（删掉/改坏＝待办永不补跑，跨桌面直达聊天后回主页看到上一桌面的背景与头像）', file: 'js/personalize.js', needle: "deskVisualWatch.observe(home, { attributes: true, attributeFilter: ['hidden'] });" },
+  // ==== 2026-09-17 #705 两连修（用户直派 vivo X200S Edge，「多机型」「后台通知功能全部失效」＋「接通电话后联系人还会再打电话」）====
+  //  通知全灭根因：#673 把 showNotification 调用改成传 thunk function(){ return reg.showNotification(...) }，
+  //    但 kaWithTimeout 仍只认 Promise——函数没有 .then → TypeError 进 catch → reject → STRIP_LADDER 四级
+  //    降级被同一个 TypeError 连环「失败」秒耗尽 → resolve(false)，reg.showNotification 从未执行。
+  //    无头实测（修复前产物）：gateStats.sent=1 而 showNotification 0 次调用、全程无报错＝所有机型后台通知静默全灭。
+  //  通话两修：①#698 的 recoverCall IDB 兜底回读遇「挂断后 IDB 墓碑未落地页面即被杀」（vivo/Edge 杀渲染进程
+  //    常态）→ 幽灵通话复活；②来电冷却戳只在「联系人来电触发」时写——去电从不写、来电从触发起算＝接完/打完
+  //    电话后 1~3 分钟即可能再来一通。
+  { name: '#705a kaWithTimeout 兼容 thunk（删回直接 p.then 则函数入参 TypeError→降级链秒耗尽＝后台通知全灭复发）', file: 'js/bg-keep.js', needle: "const pr = (typeof p === 'function') ? p() : p;" },
+  { name: '#705b clearCallActive SS/LS 同步写 {ts:0} 墓碑（改回 removeItem 则挂断后页面被杀时 SS/LS 全空→落 IDB 回读→幽灵通话复活）', file: 'js/call.js', needle: "sessionStorage.setItem(CALL_ACTIVE_KEY, '{\"ts\":0}')" },
+  { name: '#705c 通话结束重写来电冷却戳（删则去电后/后台来电接完后冷却仍按触发时刻算＝挂断 1~3 分钟后联系人又打来）', file: 'js/call.js', needle: "try { store.set('records-call-last', String(Date.now())); } catch (e) {}" },
+  // ===== #707（2026-09-17 用户直派：iPhone15ProMax Safari26.6/Via，「全局滑动卡顿 + 桌面翻页灰屏」，
+  //   诊断实锤：html 类带 tablet＝「请求桌面网站」伪装 UA 误判平板；翻页帧采样 p90≈991ms、长任务为零
+  //   ＝渲染合成层卡，非 JS。三修＋一仪器，全零机型分支：①device.js Macintosh 伪装分支补 screen 短边
+  //   ≥600（iPhone 全系回到手机布局，iPad mini 744 起照常平板）；②zoom 声明按类门控（Safari 18.2 起
+  //   WebKit 新 zoom 实现自述 tricky、26.4 仍在修性能缺陷，zoom:1 声明本身也让整个桌面子树进 zoom
+  //   继承/布局路径——改后手机/平板/默认值零 zoom 声明，宽窗非平板且值≠1 才有）；③删翻页容器
+  //   -webkit-overflow-scrolling:touch（legacy 动量旗标钉在出灰屏的那一层上）；④翻页采样剔除切后台
+  //   冻结帧（此前一条 144s 后台间隙把均值拉成假「严重卡顿 2543ms」，真值看 p90）。
+  { name: '#707a 平板误判补屏宽下限（删 _mScreen>=600＝iPhone 开「请求桌面网站」后 Macintosh 伪装 UA 再被误判成 .tablet 平板布局，非主流路径回流）', file: 'js/device.js', needle: "&& navigator.maxTouchPoints > 1 && 'ontouchstart' in window && _mScreen >= 600);" },
+  { name: '#707b zoom 声明按类门控-字号（改回无前缀 .page-slide{zoom:var()}＝手机桌面整个子树又常年带 zoom 声明参与 WebKit 新 zoom 实现）', file: 'css/home.css', needle: 'html.desk-zoom-font .page-slide { zoom:var(--desk-font-scale, 1); }' },
+  { name: '#707c zoom 声明按类门控-卡片（同上，11 类卡片组）', file: 'css/home.css', needle: 'html.desk-zoom-card .deco-widget, html.desk-zoom-card .mini-row, html.desk-zoom-card .checkin,' },
+  { name: '#707d 手机端 zoom 兜底随门控加前缀（删块＝桌面模拟器窗口拖窄 <900px 时缩放不再被钉回 1，老兜底语义丢失；needle 按压缩后形态＝续行无缩进）', file: 'css/home.css', needle: 'html.desk-zoom-font .page-slide,\nhtml.desk-zoom-card .deco-widget' },
+  { name: '#707e 类门控写值接线-主设置页（删 syncDeskZoomClass 调用＝滑块拖了值类不刷新，缩放在新门控下不生效；needle 按压缩后形态）', file: 'js/personalize.js', needle: "document.documentElement.style.setProperty('--desk-font-scale', String(pct / 100));\nif (deskFontVal) deskFontVal.textContent = pct === DESK_FONT_DEFAULT ? '默认' : pct + '%';\nsyncDeskZoomClass();" },
+  { name: '#707f 类门控函数本体（删函数＝所有接线调用抛 ReferenceError，桌面字号/卡片大小设置全废）', file: 'js/personalize.js', needle: 'function syncDeskZoomClass() {' },
+  { name: '#707g 翻页容器删 legacy 动量旗标（写回 -webkit-overflow-scrolling:touch＝出灰屏的那层又钉回老式滚动路径；needle 按压缩后形态）', file: 'css/home.css', needle: 'scroll-snap-type:x mandatory;\nscrollbar-width:none;' },
+  { name: '#707h 翻页采样剔除后台冻结帧（删 document.hidden 分支＝一条 144s 后台间隙再次把均值拉成假「严重卡顿」，报障判读被带偏；needle 按压缩后形态）', file: 'js/desktop-slider.js', needle: "if (typeof document !== 'undefined' && document.hidden) {\nhid++;\nlast = 0;" },
+  { name: '#707i 诊断标注剔除后台帧数（删＝样本剔没剔、剔了几条在诊断里看不见）', file: 'js/device.js', needle: "'（已剔除后台帧 ' + dp.hid + '）'" },
+  // ==== 2026-09-18 #708 后台通知「自检/测试按钮」优化（用户直派：通知链四轮回归后，自检也要能自证清白）====
+  //  ①通道按本次调用独立收集（showSysNotification/swNotifyLater 第三参 chanOut 回调）——不再读全局
+  //    lastNotifyChannel（共享变量，真实消息/来电谁后发谁写，自检会读到别条通知的通道＝结果串台）；
+  //  ②结果分层说真话：sw=「已真正提交系统显示」＋全机型没弹出三步引导；四级降级全败=「系统/内核拒绝」，
+  //    不再误报「SW 未就绪/权限被禁」（#705 期间自检正是这么指错层的）；
+  //  ③8 秒超时哨兵：发送链卡死不落定（#614「点测试没反应」形态）当场报「发送链未落定·应用内故障」。
+  { name: '#708a 通道按调用独立回报（删掉 chanOut 管道＝自检读全局共享通道、结果可被真实消息/来电串台）', file: 'js/bg-keep.js', needle: 'function showSysNotification(title, opts, chanOut) {' },
+  { name: '#708b 自检 SW 通道真话文案（退回笼统「已发送」＝#705 形态故障时指错层）', file: 'js/bg-keep.js', needle: '✓ 测试通知已发送并真正提交系统显示（Service Worker 通道：后台关屏也能弹）' },
+  // #724（用户直派，红米 K80 Chrome 实报「测试失效＋黑框字飞出＋与说明重复」＋「挂后台回来页面被刷新＝保活失效」多机型同族）：
+  //  ①测试只写测试：结果从十几个 env 行瘦身为保活锚一行+发送结论一至两行（环境/排查在本行 gs-sub 说明、
+  //    功能说明胶囊、信息诊断三处本就有，复读＝撑爆 toast）；②端到端自检：受理≠挂出，回读 SW 通知队列归因；
+  //  ③驻留真生效：#cc-toast.show CSS 动画固定 2.6s forwards 把 #708 的 9 秒驻留吞掉，内联 animationDuration 随 dur；
+  //  ④保活电平余量分级 KA_VOL_BASE=0.2（新内核 audible 收紧后豁免丢失＝后台整页冻结/丢弃＝「点回来被刷新」）；
+  //  ⑤取证：心跳断流/后台暴毙计数持久化，诊断【保活现场】展示——「保活有没有生效」不再口述猜。
+  { name: '#724a 测试端到端回读系统通知队列（删＝受理≠挂出的系统层拦截又归因不了，自检退回半真话）', file: 'js/bg-keep.js', needle: "list.some(function (n) { return n && n.title === '后台通知测试'; })" },
+  { name: '#724b toast 驻留真生效（删内联 animationDuration＝#708 自定义驻留继续被 CSS 2.6s 固定动画吞掉，结果一闪就没）', file: 'js/bg-keep.js', needle: "t.style.animationDuration = (dur || 2600) + 'ms';" },
+  { name: '#724c 保活电平余量分级常量（退回 0.05＝新内核 audible 判定收紧时豁免再丢，后台冻结/丢弃回归）', file: 'js/bg-keep.js', needle: 'const KA_VOL_BASE = 0.2, KA_VOL_MAX = 0.35;' },
+  { name: '#724d 后台暴毙取证判别式（删＝标签被系统丢弃「点回来被刷新」重新无从计数）', file: 'js/bg-keep.js', needle: 'if (old && old.n > 0 && !old.resumed && !old.bye)' },
+  { name: '#724e 诊断接入取证计数（删＝取证只在数据层，【保活现场】看不见断流/终止历史）', file: 'js/device.js', needle: "'历史取证：断流' + kp.ev.stall + '次/后台终止' + kp.ev.died + '次" },
+  { name: '#724f cc-toast 多行收纳（删 white-space:pre-line＝\\n 又折成空格挤成一坨，「字飞出黑框」回归）', file: 'css/chat-pages.css', needle: 'max-height:min(60vh, 420px);' },
+  { name: '#708c 自检 8 秒超时哨兵（删掉＝发送链卡死时「点测试没反应」#614 形态回归）', file: 'js/bg-keep.js', needle: '✗ 测试超时：通知发送链 8 秒未落定（应用内故障，非权限/系统问题）' },
+  // ==== 2026-09-18 #712 梦角档案顶部「不是 AI」常驻说明（用户直派：网站没有任何 AI 功能，这个只是记录的功能）——「梦角/认识TA」的说法易被误解成 AI 角色或自动生成；开屏使用前提卡虽已写明「纯代码运行、没有任何 AI」，但功能页内没有就地讲清。修复=memo-arc 总览页（view=home，含无梦角空态）渲染顶部常驻一条说明，分区子页不加（返回总览即可见）；功能介绍页第 19 节补同口径一行（lg-count 7→8）====
+  { name: '#712a 顶部说明正文（删掉/改没「本站没有任何 AI 功能…只是记录」表述＝误解回归）', file: 'js/memo-arc.js', needle: '本站没有任何 AI 功能，梦角档案只是记录' },
+  // ==== 2026-09-18 #723 iOS 卡顿收尾批：无限循环非合成属性动画改合成 + backdrop-filter 清理（用户派单「确定有用和真的会优化就帮我做」；编号说明：#715~#722 已被滚动旗标/K80 三联/换头像/兼容四小批/e2e 形态/渲染分帧/触摸被动化/未接电话+关于说明条各批占用，顺延 #723；注意 #722 本身已被两批重复占用）——全站 keyframes 审计后把 6 个「infinite × 非合成属性（box-shadow/filter/background/left）」常驻动画改为伪元素/位移的 opacity/transform 合成动画（录音呼吸圈、四子棋胜利金晕、钓鱼收杆提亮、花园稀有花晕、房间流星、房间放置呼吸格），同批收敛 market.css 8 处+chat-main.css 1 处 transition:all 为具体属性、room.css 3 处 backdrop-filter 去除（同 base.css v3.6.x 弹窗先例，iOS 每帧重采样）。有限次一次性动画（snkdiered/waterDone/gk-win-pulse 等）审计后确认代价有界不动；splashDots 开屏瞬态不动；pomo-spark 父级百分比无法等价 translate 不动 ====
+  { name: '#723a 录音呼吸圈改伪元素合成动画（改回 box-shadow 插值＝录音全程每帧重绘回归）', file: 'css/chat-main.css', needle: 'animation:voiceRecPulseRing 1.15s ease-in-out infinite' },
+  { name: '#723b 四子棋胜利金晕改棋子伪层（改回 filter:brightness+drop-shadow 插值＝胜利态常驻重绘回归）', file: 'css/chat-pages.css', needle: 'animation:c4winGlow .9s ease-in-out infinite alternate' },
+  { name: '#723c 钓鱼收杆提亮改白洗伪层（改回 brightness 插值＝钓鱼页常驻重绘回归）', file: 'css/chat-pages.css', needle: 'animation:fishReelPulse 1s ease-in-out infinite' },
+  { name: '#723d 稀有花呼吸光改晕盘伪层（改回 drop-shadow 插值＝花园页常驻重绘回归）', file: 'css/garden.css', needle: 'animation:gardenRareHalo 2s ease-in-out infinite' },
+  { name: '#723e 流星改 translateX 合成位移（改回 left 插值＝夜晚房间每帧 reflow 回归）', file: 'css/room.css', needle: '0% { transform: rotate(-22deg) translateX(0); opacity: 0; }' },
+  { name: '#723f 放置呼吸格底色改伪层 opacity（改回 background 插值＝放置模式常驻重绘回归）', file: 'css/room.css', needle: 'background: rgba(122,200,122,.28); opacity: .29; pointer-events: none;' },
+  // ==== 2026-09-18 #725 聊天美化「边看边调」气泡透明度/圆角滑块无效甄别（用户报「滑动了，但没有任何区别」）——实测两滑块链路（store→applyChatSurfaces 写 --cs-in/out-surface 与 --chat-bubble-radius→CSS 消费）全通，真根因=自定义气泡 CSS（cs-bubble-css）写了底色/圆角声明：注入样式带 !important 或 head 末尾同特异性后胜，钉死气泡 background/border-radius，滑块变量照常写入但视觉零变化。设计仍是「CSS 为准」不改写用户模板，修复=抽屉气泡分区就地红字警示冲突====
+  { name: '#725a 气泡 CSS 冲突警示检测锚（删掉底色/圆角冲突检测＝「滑块滑了没反应」再次无任何提示）', file: 'js/chat-settings.js', needle: '/(^|[^-\\w])background(-color|-image)?\\s*:/i.test(cssTxt)' },
+  // ==== 2026-09-18 #726 卡顿自检·渲染层实测（用户「帮我做一个卡顿自检功能」；与 #411 数据层「一键优化」互补）——新增 src/js/perf-check.js（jsFiles 已登记）：点开始后 10 秒 rAF 帧间隔现场实测（可去任意页面复现），后台/锁屏冻结帧剔除（间隔>250ms 视为冻结，#707 同款教训）、键盘弹出期标记（可视高<85% 视口）、掉帧按可见 .app[data-app] 归因，判级 流畅/轻度/中度/重度 + 对症建议（本地数据大→指向 #411 一键优化）；长任务用窗口内自建 PerformanceObserver（iOS WebKit 不支持自动降级，不碰 device.js 常驻观察器）。零常驻开销（rAF/观察器只在窗口内存在）。入口 template #row-perf-check（#row-perf-optimize 上方）+ personalize 接线（进度浮条=开始后去任意页面用，结束自动弹报告）+ 开屏公告八章（template/notice.json 双份）====
+  { name: '#726a 后台冻结帧剔除（删/调大＝切后台 144s 冻结被当成一帧超级卡顿，#707 同族误报回归）', file: 'js/perf-check.js', needle: 'var BG_GAP = 250;' },
+  { name: '#726b 键盘弹出期标记（删＝键盘变形期掉帧与普通掉帧混计，iOS 键盘期结论缺失）', file: 'js/perf-check.js', needle: 'window.innerHeight * KB_RATIO' },
+  { name: '#726c 设置行入口（删则设置页无「卡顿自检」行）', file: 'template.html', needle: 'id="row-perf-check"' },
+  { name: '#726d 设置行接线（删则点行无反应）', file: 'js/personalize.js', needle: 'window.mochiPerfCheck.start(10000' },
+  // ==== 2026-09-18 #727 主动发送「标识」可换/可自定义（用户直派「联系人主动发送的消息，现在是小爱心的标识，帮我新增，可以用别的标识和自定义标识」）——原固定爱心（chat.js 硬编码 SVG path + .msg-hi-heart）改为「标识池」：内置五枚（♥/★/☾/✦/🐾）多选 chips + 自定义标识（reply-as-badge-custom＝JSON [{s,on}]，不进 DEFAULTS、随 getCfg/replyCfgFor 外挂附带，同 #712 口径）；总开关 as-badge 语义保留为「显示/不显示任何标识」；池内全关由渲染侧兜底回爱心（设置页不拦，与 #712「至少保留一个」不同——不显示标识由总开关表达）；点亮≥2 枚时出「抽取方式」行 as-badge-rand（1 随机/0 按序轮换，轮换以消息时间戳做稳定种子）；爱心仍走原 SVG 零视觉回归，其余内置与自定义走文本节点 .msg-hi-mark。设置 UI 在 reply-settings.js #727 段（asb-chips），渲染消费在 chat.js（window.asBadgePool）+ chat-main.css 文本形态样式 + 开屏公告九章（template/notice.json 双份）====
+  { name: '#727a 标识池读取（删＝chat.js 拿不到标识池，主动消息退回兜底爱心，用户设置的星星/自定义全失效）', file: 'js/reply-settings.js', needle: 'window.asBadgePool = function (c) {' },
+  { name: '#727b 自定义标识外挂存储（删＝自定义标识刷新后消失，或写坏数组）', file: 'js/reply-settings.js', needle: "'reply-as-badge-custom'" },
+  { name: '#727c 渲染侧按池出标识（删＝退回硬编码爱心，池设置全失效）', file: 'js/chat.js', needle: 'window.asBadgePool ? window.asBadgePool(c) : []' },
+  { name: '#727d 文本标识节点（删＝非爱心标识不渲染，只剩爱心可用）', file: 'js/chat.js', needle: "mk.className = 'msg-hi-mark';" },
+  { name: '#727e 文本标识样式（删＝文本标识落到气泡流内、撑开布局压住文字）', file: 'css/chat-main.css', needle: '.msg-hi-mark {' },
+  { name: '#727f 设置行「标识」池锚点（删＝设置页无标识池 UI；模板被模板重写时最先消失）', file: 'template.html', needle: 'id="asb-chips"' },
+  // 注：#727g 是「.gs-row{display:flex} 压过 UA [hidden]」的老坑救援——抽取方式行靠 hidden 显隐，删＝该行永远显示
+  { name: '#727g 设置行 hidden 救援（.gs-row 是 flex，删则 #asb-rand-row 的 hidden 失效、永远显示）', file: 'css/setting.css', needle: '.gs-row[hidden] { display:none; }' },
+  // ==== 2026-09-18 #730 后台通知自检补「屏幕上方弹出」检查（用户直派「还缺少后台弹窗在手机屏幕上方弹出的检查，非常重要」）——原自检（#708/#724）只证明「进系统队列/SW 已提交」，证明不了「屏幕上方真弹横幅」：系统横幅渲染在系统层，页面 JS 读不到。改为发送时刻记录 document.hidden（前台/后台）如实归因：后台→「屏幕上方应有横幅，没见着＝系统层拦截」；前台→如实说明「前台不弹顶层横幅」并引导按 Home 切后台复核「从屏幕顶部弹出」。接 #724 队列回读之后、只对 found===true 生效，不覆盖既有结论 ====
+  { name: '#730a 屏幕上方弹出·前台/后台如实归因＋引导复核（删掉＝自检又只凭进队列就报成功，证明不了屏幕上方真弹横幅）', file: 'js/bg-keep.js', needle: '要验「屏幕上方弹出」：按 Home 切后台（或锁屏），即可看到通知从屏幕顶部弹出' },
+  // ==== 2026-09-18 #761 后台通知自检升级「更清晰、实用」（用户直派：弹窗消失两天、权限没动过，把浏览器通知权限关掉再打开后恢复——多机型同族）。两层新自检：①旧包检测——比对 splash-ver data-build-ts 与线上 version.json，直接回答「什么都没改弹窗突然全没」的头号嫌疑（设备缓存 #673 故障包；#705 修复只证代码在位，缓存包不重载就永远在跑）；②结果问人本人——SW 发送成功≠用户真看到横幅（浏览器端通道被拧死时 API 照常 granted/受理），追问「弹了吗」，没弹给按实效排序的四步指引（第一步就是用户实测救活的「权限关闭再允许＋强杀浏览器」）。零机型分支。编号让位：#757~#760 已被通话续命/docx/房间/美化抽屉批次占用 ====
+  { name: '#761a 旧包检测行（删＝「权限没动弹窗全没＝缓存故障包」这一层自检永远看不见，用户只能靠猜）', file: 'js/bg-keep.js', needle: '✗ 旧包正在运行：本页 ' },
+  { name: '#761b 版本行落定前不出结果（删掉 Promise.all＝版本比对没回来就弹结果，旧包告警迟到或被截断）', file: 'js/bg-keep.js', needle: 'Promise.all([queueCheck, verP]).then(showResult);' },
+  { name: '#761c 发送成功追问「弹了吗」确认框（删＝自检又只报 JS 全绿就收工，浏览器端通道死锁时指错层）', file: 'js/bg-keep.js', needle: "window.openModal('自检确认'" },
+  { name: '#761d 确认只在 SW 通道真成功时触发（改成无条件弹＝页面通道/失败也追问，自欺负人；删掉＝结果与追问脱钩）', file: 'js/bg-keep.js', needle: "if (testChan === 'sw' && testOk) askSeen();" },
+  { name: '#761e 实操指引首步=重开浏览器通知权限（用户实测恢复项；删＝指引退回泛泛而谈，「权限明明开着通知消失好几天」无解）', file: 'js/bg-keep.js', needle: "push('重置浏览器通知权限" },
+  // 注：#761 状态机依赖 testOk（.then(ok) 回调转存）——回退成引用回调形参 ok 会在 showResult 处 ReferenceError
+  // ==== 2026-09-18 #731 全屏模式聊天壁纸没铺满底部栏（用户直派「聊天里的背景图片没有铺满底部栏，这个在聊天美化里需要可以自己调整全部铺满还是什么」）——壁纸本来就画在 #page-chat 的边框盒上（含顶栏/输入栏的 padding 区），看不见是因为两个栏位自己画了半透明底色（--cs-*-opacity，默认 92%）。两件事：①铺满方式从写死的 cover 变成四档可选（cs-bg-fit：铺满裁剪/完整显示/平铺/拉伸填满，默认档与旧写死值逐字一致＝未写盘设备零视觉变化）；②新增「壁纸延伸到顶栏/输入栏」开关（cs-bg-fullbars，默认关、0 是用户裁决的默认值）——打开＝生效值变量 --cs-*-opacity-ink 写 0 让开底色，存量自定义不透明度原样保留（关掉即恢复、零数据改动）。设置页壁纸分组两行 + 边看边调「栏位」区两个控件 + CHAT_BEAUTY_KEYS 收录 ====
+  { name: '#731a 铺满方式档位表（删＝档位失效、退回写死 cover，用户又只剩一种铺法）', file: 'js/chat-settings.js', needle: "const CS_BG_FITS = [" },
+  { name: '#731b 铺满方式落样式（#762 起宿主换成常驻图层 #cs-bg-layer；改回写死 cover＝「完整显示/平铺/拉伸」三档点了没反应）', file: 'js/chat-settings.js', needle: "bgLayer.style.backgroundRepeat = fit === 'tile' ? 'repeat' : 'no-repeat';" },
+  { name: '#731c 栏位让开生效值（删＝开关点了壁纸透不上来，栏位照旧盖住）', file: 'js/chat-settings.js', needle: "function barOpacityInk(index) {" },
+  { name: '#731d 栏位底色读生效值变量（改回直读 --cs-*-opacity＝让开开关整条链路断开）', file: 'css/chat-main.css', needle: 'var(--cs-head-opacity-ink, var(--cs-head-opacity, .92))' },
+  { name: '#731e 设置页两行锚点（删＝聊天美化里没有壁纸铺满方式/延伸栏位入口，用户无处可调）', file: 'template.html', needle: 'id="cs-bg-fullbars"' },
+  // ==== 2026-09-18 #737 语音「点停止没立刻结束、卡住后时长虚涨」根治（用户：OPPO Reno6/雨见浏览器等慢壳「录 3 秒点结束→卡住→变 20 秒」，多机型复现；同 #228 家族）——最终时长按「点停止那一刻」钉死的 voiceStopTs 算，不再按结账瞬间 Date.now()（慢壳 onstop 迟到/看门狗收尾期间 Date.now() 已流逝→时长虚涨）；顺带 stop 时立即写「正在停止录音…」状态，onstop 迟到窗口不再定格「正在录音…」像卡死 ====
+  { name: '#737a 停止时刻钉死（删掉按停止时刻算时长＝慢壳 onstop 迟到时「录 3 秒变 20 秒」虚涨回归）', file: 'js/chat.js', needle: 'const stopTs = voiceStopTs || voiceStartTs;' },
+  { name: '#737b 停止即时反馈（删掉＝onstop 迟到时界面定格「正在录音…」像卡死回归）', file: 'js/chat.js', needle: "st0.textContent = '正在停止录音…';" },
+  // ==== 2026-09-18 #732 气泡 CSS 与透明度/圆角滑块的冲突改为「滑块强制生效」（用户二次报障，接 #725 只给红字警示不解决问题：「上传了气泡 CSS 之后气泡的透明度和圆角滑了没反应」）——三条注入路径（纯声明 wrap / 整包兜底 wrap 带 !important；映射分支同特异性但 head 末尾后胜）全都压过滑块变量，改为在用户 CSS 之外追加一层 ID 级特异性 + !important 的强制回写规则，**只在用户真动过滑块（值≠默认）时才写**⇒没碰过滑块的人视觉零变化；沿用 #536 的 #page-chat 作用域不泄漏群聊 ====
+  { name: '#732a 强制层函数（删＝滑块与气泡 CSS 冲突回归「滑了没反应」，只剩文字说明）', file: 'js/chat-settings.js', needle: 'function applyCssEnforce() {' },
+  { name: '#732b 强制层回写透明度（删＝自定义 CSS 写了 background 时透明度滑块失效）', file: 'js/chat-settings.js', needle: "background:var(--cs-in-surface)!important" },
+  { name: '#732c 强制层回写圆角（删＝自定义 CSS 写了 border-radius 时圆角滑块失效）', file: 'js/chat-settings.js', needle: "border-radius:var(--chat-bubble-radius,18px)!important" },
+  { name: '#732d 强制层挂进 applySettings（删＝改滑块不刷新强制层，仍是「滑了没反应」）', file: 'js/chat-settings.js', needle: 'window.applyCsCssEnforce = applyCssEnforce;' },
+  { name: '#732e 标识位置偏移变量（删＝标识位置卡在硬编码 2px/4px，气泡 CSS 一改就偏）', file: 'css/chat-main.css', needle: 'top:calc(2px + var(--msg-mark-y, 0px)); left:calc(4px + var(--msg-mark-x, 0px));' },
+  { name: '#732f 时间轴偏移变量（删＝时间轴各样式位置不可调，改气泡尺寸后必偏）', file: 'css/chat-main.css', needle: 'translateX(-50%) translateX(var(--msg-time-dx, 0px))' },
+  { name: '#732g 偏移量钳制（删/改窄＝滑块可写越界值，标识飞出去或被裁）', file: 'js/chat-settings.js', needle: 'const OFFSET_MIN = -40, OFFSET_MAX = 40;' },
+  { name: '#732h 设置页两行锚点（删＝聊天美化里没有标识位置/时间轴位置入口）', file: 'template.html', needle: 'id="cs-mark-pos"' },
+  { name: '#732i 抽屉「微调」分区（删＝边看边调里没有位置微调，只能手输数值）', file: 'js/chat-settings.js', needle: "{ key: 'tune', label: '微调'" },
+  // ==== 2026-09-18 #738 词典逐卡连发不再误挂「多字卡回复」来源 tag（用户实报「词典逐条连发的时候，错误的也显示了多字卡回复」）——逐卡连发（rep.spell 非单气泡、spellOne=false）每条气泡只装一张词典卡、来源即词典，再挂「多字卡回复」是与内容不符的来源标注；#677 原在逐卡连发首条挂 `tagExtra: pyMultiExtra`，FIX 后逐卡连发分支不再带 tagExtra，仅单气泡拼字（rep.spellOne）保留两枚并列（#693 口径）====
+  { name: '#738 词典逐卡连发不挂「多字卡回复」来源 chip（absent：出现 `tagExtra: si === 0 ? pyMultiExtra`＝逐卡连发首条重新挂多字卡回复 tag，「词典逐条连发还显示多字卡回复」复发）', file: 'js/chat.js', needle: 'tagExtra: si === 0 ? pyMultiExtra : null', absent: true },
+  // ==== 2026-09-18 #739 头像导入「点了没反应」第三波根治（#677/#717 同族；小米17 Pro MiuiBrowser 20.21 实报三入口全灭，用户明说其他机型也有）——#717 的「常驻挂文档 input + 程序化 click()」在小米系分叉内核上仍被静默忽略（线上 08:16 包已含 #717 仍复现，实锤 JS 合成 click 路径本身不灵）。升级为原生 label 激活：device.js 新增共享助手 mochiFilePickLabel（透明 <label for=inputId> 铺满触发按钮内部，手指物理点在 label 上由内核按 HTML 原生行为转发激活 file input——中文移动网 sr-only+label 通用上传写法，全分叉一致），JS click 保留兜底（事件来自 label 时经 mochiFilePickFromLabel 跳过防同一手势双开）；input 样式统一标准 sr-only clip 写法（clip 后命中区为零不挡交互，opacity:1 免「不可见元素拒绝激活」类启发式）。五入口：桌面头像 personalize.bindAvatar / 聊天设置 chat-settings headInput（csAp+csAu 两行共用） / 群聊 group-chat pickAvatarFile（仅头像模式挂 label） / 朋友圈 feed coverAvEl / 头像互动 avatar-lib bindPoolUpload×2。压缩/落库管线一字不动。同批：开屏红色警示卡「安卓用户·请勿使用手机自带浏览器」（用户直派「开屏显眼处标红」，置顶第二位 data-browser-warn，不占 data-anti-scam 命名空间）＋ notice.json 同章双份 ====
+  { name: '#739a 共享 label 激活助手（删＝五入口退回纯 JS 合成 click，小米系分叉内核「点了没反应」复发）', file: 'js/device.js', needle: 'window.mochiFilePickLabel = function (btn, input)' },
+  { name: '#739b 桌面头像 label 激活（删＝桌面换头像在小米系无反应）', file: 'js/personalize.js', needle: 'window.mochiFilePickLabel(box, avatarPickInput);' },
+  { name: '#739c 聊天设置头像 label 激活（删＝聊天设置换 TA 头像在小米系无反应）', file: 'js/chat-settings.js', needle: 'window.mochiFilePickLabel(csAp, headInput);' },
+  { name: '#739d 群聊头像 label 激活（删＝群聊上传头像在小米系无反应）', file: 'js/group-chat.js', needle: 'window.mochiFilePickLabel(addBtn, gcAvatarPickInput);' },
+  { name: '#739e 朋友圈头像 label 激活（删＝朋友圈换头像在小米系无反应）', file: 'js/feed.js', needle: 'window.mochiFilePickLabel(coverAvEl, feedAvPickInput);' },
+  { name: '#739f 头像互动池 label 激活（删＝添加/添加我的头像在小米系无反应）', file: 'js/avatar-lib.js', needle: 'window.mochiFilePickLabel(btn, input);' },
+  { name: '#739g 开屏红色警示卡（删＝「安卓别用自带浏览器」提示从开屏消失，用户直派要求常驻显眼标红）', file: 'template.html', needle: 'data-browser-warn="1"' },
+  { name: '#739h 警示卡红色样式（删＝开屏警示卡退化成普通灰卡不再标红）', file: 'css/base.css', needle: '.splash-alert.splash-browser .splash-alert-t { color:#c22b27;' },
+  // ===== #753（2026-09-18 用户直派：iPhone 13 Pro Max Safari「聊天界面发不了图片，点插入图片打开的是
+  //   文件管理页面而不是相册」，明说其他机型也有）——#677/#717/#738 同族的**第四波**，本次是「聊天图片
+  //   入口从没接过原生 label 兜底」这一处漏网：三个叠加原因（display:none 写法 + 无 label + accept 未
+  //   落在 click 之前）一起治，两个入口（单聊 chat.js / 群聊 group-chat.js）回同一模具。
+  //   改回任一条＝「点插入图片弹文件管理器/相册不在候选里/点了没反应」复发的入口。
+  { name: '#753a 单聊图片选择器 sr-only clip（改回 display:none＝全站唯一残留的不可见激活写法，#717/#738 点名要消灭，部分内核拒绝激活）', file: 'js/chat.js', needle: "fi.id = 'chat-img-pick';" },
+  { name: '#753b 单聊图片选择器 accept 落在 click 之前（把 accept 挪回 click 之后/丢掉＝iOS 首次激活退回通用文件选择器，相册不在候选里＝用户报「打开的是文件夹管理页面」复发）', file: 'js/chat.js', needle: "fi.accept = 'image/*'; fi.multiple = true;\nfi.onchange = () => {" },
+  { name: '#753c 单聊图片按钮原生 label 激活（删＝小米系分叉内核忽略 JS 合成 click 时该按钮彻底没反应）', file: 'js/chat.js', needle: 'if (window.mochiFilePickLabel && imgBtn) window.mochiFilePickLabel(imgBtn, fi);' },
+  { name: '#756e 聊天「插入图片」改走 guard（原 #753d 的 fromLabel 早退已被 #756 判定有害并移除——该写法在国产内核上会连同 JS 兜底一起掐死；本条守护新的正确写法）', file: 'js/chat.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(chatImgPickBridge(), _fb);" },
+  { name: '#753e 群聊图片选择器常驻挂文档 sr-only clip（改回点击时现场 new 且未挂文档＝iOS 不派发 change「加了图片会消失」＋小米系合成 click 被忽略「点了没反应」双双复发）', file: 'js/group-chat.js', needle: "document.body.appendChild(fi);\ngcImgInput = fi;" },
+  { name: '#753f 群聊图片选择器 sr-only 形态（改回 display:none＝全站唯一残留的不可见激活写法，部分内核拒绝激活）', file: 'js/group-chat.js', needle: "fi.id = 'gc-img-pick'; // 常驻身份（诊断/测试句柄）\nfi.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:1;" },
+  { name: '#753i 群聊图片选择器 sr-only 形态＋常驻挂文档＋label 激活三连（改回「现场新建未挂文档 + display:none + 无 label」＝相册打不开/点了没反应复发）', file: 'js/group-chat.js', needle: "white-space:nowrap;';\nfi.accept = 'image/*'; fi.multiple = true;\nfi.onchange = () => {\nconst files = Array.prototype.slice.call(fi.files || []);\nfi.value = ''; // 允许重选同一张\nif (!files.length) { toast('没有取到图片，请再选一次'); return; }" },
+  { name: '#753g 群聊图片按钮原生 label 激活（删＝群聊插图在小米系无反应）', file: 'js/group-chat.js', needle: 'if (window.mochiFilePickLabel && gcImgBtn) window.mochiFilePickLabel(gcImgBtn, fi);' },
+  { name: '#753h 群聊空 FileList 可见反馈（改回 if (!files.length) return;＝选完没带上文件时一点提示都没有，#677h 同口径）', file: 'js/group-chat.js', needle: "const files = Array.prototype.slice.call(fi.files || []);\nfi.value = ''; // 允许重选同一张\nif (!files.length) { toast('没有取到图片，请再选一次'); return; }" },
+  { name: '#742 进聊天复位钉住态（删掉并在重开时停在旧滚动位＋原生锚定开着＝「进聊天不自动到最新、跳到旧记录、加载完不落底」跨机型回归）', file: 'js/chat.js', needle: 'body.classList.remove(\'scroll-anchor-auto\');' },
+  { name: '#743 长输入框保首行防抖补位（删掉＝写信/回信 tall textarea 又被拖底、首行被遮＋上下乱抖跨机型回归；短输入框走原拖底分支不受影响）', file: 'js/mobile-adapt.js', needle: "var _topHidden = sr.top - r.top;" },
+  { name: '#744 同对象引用双写守卫（删掉＝同一 rec 被某条投递链原样入 addRec 两次时双气泡/双写盘跨机型复发；该守卫零误伤，不影响 #437 同内容发送语义）', file: 'js/chat.js', needle: 'msgs[len - 1] === rec' },
+  { name: '#745a 帮我决定出答案两拍化（删＝答案渲染与历史全量重写/聊天落盘调度同拍，大记录设备出答案冻几秒回流）', file: 'js/decision.js', needle: 'window.requestIdleCallback(runSettle, { timeout: 600 })' },
+  { name: '#745b 多人决定出答案两拍化（同 #745a 口径）', file: 'js/group-decision.js', needle: 'window.requestIdleCallback(gdRunSettle, { timeout: 600 })' },
+  // ==== 2026-09-18 #746 字卡使用状态自检「导出文件」从 JSON 改 docx（用户直派：导出的 .json 手机上没有关联应用打开＝「无法导出」；
+  //      与诊断报告 #227 同解：docx 由 Word/WPS 直接打开转发。主链复用 device.js diagExportDocx 三级降级（分享面板→保存框→确认后下载），
+  //      第 5 参 shareTitle 参数化分享标题；card-audit.js 主链调 mochiDiagExportDocx、head 段承接原 JSON payload 结构化字段、JSON 链降兜底 ====
+  { name: '#746a docx 导出入口分享标题参数化（改回硬编码「mochi 诊断报告」＝字卡自检导出标题口径错乱，第 5 参透传断）', file: 'js/device.js', needle: "shareTitle || 'mochi 诊断报告'" },
+  { name: '#746b 字卡自检导出走 docx 主链（删掉＝退回 JSON 导出，用户手机上导出的文件打不开＝「无法导出 docx」复发）', file: 'js/card-audit.js', needle: "window.mochiDiagExportDocx(head + lastText, 'mochi-card-audit-'" },
+  // ==== 2026-09-18 #747 默认字卡开关切联系人桌面不刷新（用户实报 iPhone17Pro Edge「关闭默认字卡使用时依旧能发、再看又是开的」，多机型同现）——根因：default-cards.js 的 contact-switched 监听只刷新 dcf-* 概率行，漏刷 dc-enabled/dc-use-*/dc-cat-*/dc-overall-*/dc-prob-* 开关 UI；这些键 per-cid 隔离，切桌面后已渲染的 checkbox 停留旧桌面勾选，用户在旧状态上操作 → setCat/setUse 写到当前桌面但 UI 显示旧桌面 → 关了写错桌面、切回 default 照发、再看又是开的。修：抽 syncDcSwitchUI() 统一刷新全部 dc-*/dcf-* 开关与概率行，contact-switched 与 mochi-restore-done 都调 ====
+  { name: '#747 切联系人桌面刷新默认字卡开关UI（删＝dc-* per-cid 开关在设置页显示旧桌面勾选，用户关了写错桌面→关了还能发、再看又是开的多机型复发）', file: 'js/default-cards.js', needle: 'document.addEventListener(ev, function () { try { syncDcSwitchUI(); } catch (e) {} });' },
+  // ==== 2026-09-18 #748 四类互动卡概率写入 `parseInt||5` 吃 0（用户实报「吐槽概率调0依旧触发发送」）——根因：ta-ask.js 询问/小问题/好奇/吐槽四类概率写入 `parseInt(value,10)||5`，0 是 falsy 被回退成默认 5，存盘值 5 而非 0，定时触发 maybeTriggerTR 仍有 5% 概率掷中。修：改 `Math.max(0,Math.min(100,parseInt(value,10)||0))` 钳 0~100 保留 0；读取侧 `typeof s.prob==='number'?s.prob:5` 本就正确无需改 ====
+  { name: '#748a 吐槽概率0不被||5吃掉（删＝tr-prob 写 0 存成 5，吐槽概率调0依旧触发复发）', file: 'js/ta-ask.js', needle: 'Math.max(0, Math.min(100, parseInt(trProb.value, 10) || 0))' },
+  { name: '#748b 询问概率0不被||5吃掉（同 #748a）', file: 'js/ta-ask.js', needle: 'Math.max(0, Math.min(100, parseInt(askProb.value, 10) || 0))' },
+  { name: '#748c 小问题概率0不被||5吃掉（同 #748a）', file: 'js/ta-ask.js', needle: 'Math.max(0, Math.min(100, parseInt(tcProb.value, 10) || 0))' },
+  { name: '#748d 好奇概率0不被||5吃掉（同 #748a）', file: 'js/ta-ask.js', needle: 'Math.max(0, Math.min(100, parseInt(tcuProb.value, 10) || 0))' },
+  // ==== 2026-09-18 #749 聊天消息重复成多条（iQOO Neo9 + Chrome 实报，多机型复现）====
+  // 用户：「聊天里会弹出重复消息，切换聊天人退出重新进就没有了，但如果退出聊天页面再进去就有了。
+  // 我的消息和联系人的消息都一直重复多条，其实就是只发了一条，但显示成了多条。」
+  // 根因：chatTailMerge 的「是否已落盘」判定只用 chatTailSig ＝ ts|side|text[:120]。而 normCell
+  // 会**原地改写** r.text（ICON_BELL→ICON_TEL、拍一拍 ✉️→ICON_ENV），编辑消息/词典重建同样改写正文。
+  // 正文一变，尾巴日志条目的签名就与 msgs 对不上 ⇒ 被判定「还没落盘」⇒ 回放成重复条目；日志又永不清空
+  // ⇒ 之后每次权威读库都再回放一份。修法：加与正文无关的稳定身份 chatTailId ＝ ts(毫秒)|side|special
+  //（与 idbTsSide / recKindCovers 的记录身份口径同源），回放前先按它查重。
+  { name: '#749a 尾巴日志稳定身份 chatTailId（删＝回放判重退回比正文，正文被归一化/编辑后就重复回放，用户报障复发）', file: 'js/chat.js', needle: 'function chatTailId(m) {' },
+  { name: '#749b 回放前建 haveId 身份集（删＝判定漂移复发）', file: 'js/chat.js', needle: 'haveId.add(chatTailId(msgs[i]));' },
+  { name: '#749c 回放条目按稳定身份跳过已落盘者（删＝重复消息回放复发）', file: 'js/chat.js', needle: '|| haveId.has(chatTailId(j))' },
+  // ==== 2026-09-18 #750/#751（已被 #762 取代）聊天壁纸打字时变小 / 莫名其妙放大 ====
+  // 这两批把 background-size 折算成「冻结盒尺寸」的显式像素（csBgPaintSize + csBgStableBox 锚盒
+  // + csBgMeasure 量原图 + 键盘闸门 + 双读 settle）。#762 实测证明这条路本身要的是一个「一直在变、
+  // 又必须提前知道」的盒：对 HEAD 产物复跑 tools/verify-chat-bg-fill.mjs ⇒ 进聊天即 painted=379x718
+  // 而盒 390x844（上下各露一条底色）、视口涨落后 painted 永久停在 445x844、平铺档算出 auto（2160×4096
+  // 原图只露中间一小块）＝用户报的「四档全废、连正常铺满都没有」。相关代码与这八条哨兵一并删除。
+  { name: '#750a 壁纸铺满档位映射成合法 CSS（删＝fill/未知值又写出非法声明→回退 auto，图又按原图原始像素渲染）', file: 'js/chat-settings.js', needle: 'function csBgFitCss(fit) {' },
+  // ==== 2026-09-18 #762 聊天壁纸「铺满方式」四档全废 · 常驻图层根治（用户实报，明说多机型同现）====
+  // 用户：「聊天设置里的【壁纸铺满方式】全部有问题，也没有之前那样正常的全部铺满的了。」
+  // 修法＝壁纸不再画在 #page-chat 自己身上，改画在它的首个子层 #cs-bg-layer 上（z-index:-1；
+  // .page 本身 z-index:2 ＝ 独立层叠上下文，故该层恰好压在页面底色之上、气泡与栏位之下，零内容改动），
+  // background-size 交回 CSS 关键字；手机端「铺满裁剪」档另加 `min-height:100lvh` 下限（老内核退回
+  // 100vh，两条分写整条丢弃式兜底）。lvh 是设备常量 ⇒ 键盘压矮 .phone（#750）与地址栏涨落 dvh
+  //（#751）都改不动壁纸的盒 ⇒ 缩放比恒定、永不露底，旋转仍能按新宽重算。零机型分支。
+  // 行为断言：tools/verify-chat-bg-fill.mjs（GREEN 32/32 ｜ HEAD 产物 RED 21 红 ｜ 删下限变异 6 红）。
+  { name: '#762a 壁纸常驻图层挂进 #page-chat 首位（删＝壁纸无处落脚或盖住内容，四档全部失效复发）', file: 'js/chat-settings.js', needle: 'chatPage.insertBefore(l, chatPage.firstChild);' },
+  { name: '#762b 图层内联兜底（四长手 + z-index:-1；老内核丢弃不认识的选择器时靠它，删＝塌 0x0 全露底）', file: 'js/chat-settings.js', needle: 'z-index:-1;pointer-events:none;display:none;' },
+  { name: '#762c lvh 下限按档位挂/摘（删＝下限恒开或恒关，contain/tile 被裁掉一截或 fill 档键盘期重算缩放比）', file: 'js/chat-settings.js', needle: "chatPage.classList.toggle('cs-bg-fill', fit === 'fill');" },
+  { name: '#762d 平铺档给出看得见重复的尺寸（退回 auto＝2160×4096 原图一屏只露中间一小块＝「平铺没反应」）', file: 'js/chat-settings.js', needle: "if (fit === 'tile') return '33.333% auto';" },
+  { name: '#762e lvh 下限规则在位（删＝回到「壁纸的盒＝会变的页面盒」，#750 打字时图变小与 #751 放大双双回流）', file: 'css/chat-main.css', needle: 'html.force-mobile #page-chat.cs-bg-fill #cs-bg-layer,' },
+  { name: '#762y 禁止显式像素冻结路线复活（absent：csBgPaintSize 回来＝又去折算「提前知道」的盒，四档全废的根因）', file: 'js/chat-settings.js', needle: 'csBgPaintSize', absent: true },
+  { name: '#762z 禁止原图尺寸缓存复活（absent：__csBgNat 回来说明又走量图折算，resize 抖动随之回来）', file: 'js/chat-settings.js', needle: '__csBgNat', absent: true },
+  // ==== 2026-09-18 #754 桌面翻页卡顿·合成层修复（iPhone 15 Pro Max 自带浏览器/独立应用实报「刚进网站会顺，一会就卡着不动、连续点好几次才能切换」，明说其他机型也有；诊断实锤：桌面翻页 平均186ms / p90 719ms / 最慢3611ms 而【性能】长任务>50ms 为零＝主线程没堵、卡在合成/栅格层，且 html 类无 tablet、无 zoom 声明＝#707 那批已修面之外）。根因＝整页背景图（page-bg-N，用户实测 273.7KB）画在「横向快照滚动 + 每页自带纵向滚动」的嵌套滚动页 `.page-slide` 上，翻页时图层纹理不被保活即逐帧重栅格化/重解码整屏大图（与 #147 壁纸「常驻图层纹理保持存活、不再反复解码」同源病灶）。修复＝personalize.js applyPageBgs 按 DOM 实态挂 `.has-page-bg` 类（无整页背景图不挂＝零额外显存），home.css 在触屏门控下把三页提升为独立合成层（翻页只平移纹理）。门控防跨机型回归：仅 hover:none + pointer:coarse；电脑端外壳零变化。node --check 过（personalize.js）；行为验证 tools/verify-desk-flip-layer.mjs ====
+  { name: '#754a 桌面翻页合成层提升（删＝整页背景图在滚动页上被逐帧重栅格化，翻页秒级掉帧回归）', file: 'css/home.css', needle: '.desktop-pages.has-page-bg .page-slide { will-change: transform; }' },
+  { name: '#754b 整页背景图实态挂类（删＝合成层规则永不命中，修复空转）', file: 'js/personalize.js', needle: "pagesBox.classList.toggle('has-page-bg', anyPageBg);" },
+
+  // ==== 2026-09-18 #755 全站图片/文件选择入口统一收口（用户直派：vivo X200s + 百度浏览器
+  // （SP-engine/T7 内核）实报「任何图片，上传无反应；上传头像点了相册点了图片，但是没有任何反应」，
+  // 明说其他机型也有、要求不要覆盖式修补）。同族第五波：#677（input 要挂文档）→#717（去
+  // display:none）→#738（加原生 label）→#753（聊天两入口 + accept 前置）四轮都只覆盖「部分入口」，
+  // 而全站仍有十余个入口在点击时现场 new input、从不挂文档、无 label 兜底、accept 迟到——每修一处
+  // 用户下次就在另一处报同一症状，这正是「反复出现」的结构性原因。本轮改为**单一实现 + 全站调用**：
+  // device.js 新增 window.mochiFilePick（常驻 sr-only clip input 挂 body + accept/multiple 强制落在
+  // click() 之前 + 可选原生 label 激活层 + 最后才 click），18 个入口改走它（personalize x7 / feed x4 /
+  // chat x3 / chat-settings x3 / group-chat x4 / mail x2 / music-player x3 / data-backup x2 / sfx /
+  // call / bg-keep / feature-data / chatcard），并把 chatcard.pickFiles 这支「手抄版」也收编。
+  // 下游哨兵盯「统一实现本身」+「各入口确实调它」两类，防止并行会话回退成手抄写法。====
+  { name: '#755a 统一文件选择入口存在（删＝全站入口退回各自手抄「现场 new input」写法，accept 迟到/无 label 兜底/未挂文档三类机型 bug 一并复发）', file: 'js/device.js', needle: 'window.mochiFilePick = function (opts) {' },
+  { name: '#755b 统一入口的 accept 强制落在 click 之前（把 input.accept 挪到 click 之后＝iOS/部分内核首次激活带空 accept 问系统，退回文件管理器而非相册，用户报「打开的是文件夹管理页面」）', file: 'js/device.js', needle: "input.accept = o.accept || '';" },
+  { name: '#755c 统一入口的 sr-only clip 形态（改回 display:none 或 opacity:0＝部分内核对不可见 file input 拒绝激活，点了没反应）', file: 'js/device.js', needle: "input.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:1;margin:0;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;';" },
+  { name: '#755d 统一入口的常驻挂 body（改成 detached＝iOS 对未挂载 file input 不保证派发 change「加了图片会消失」）', file: 'js/device.js', needle: 'document.body.appendChild(input);' },
+  { name: '#755e 统一入口的原生 label 激活兜底（删＝小米系/分叉内核忽略 JS 合成 click 时该入口彻底没反应）', file: 'js/device.js', needle: 'if (o.btn && window.mochiFilePickLabel) window.mochiFilePickLabel(o.btn, input);' },
+  { name: '#755f 头像入口（personalize 桌面头像）保持走统一入口（回退成 detached 手抄＝#677 复发）', file: 'js/personalize.js', needle: "id: 'mochi-desk-img-pick', accept: 'image/*'" },
+  { name: '#755g 桌面图标上传走统一入口（回退＝部分内核不可见 input 拒绝激活，换图标点了没反应）', file: 'js/personalize.js', needle: "id: 'mochi-appicon-pick', accept: 'image/*'" },
+  { name: '#755h 聊天表情包上传走统一入口（用户报「点了相册点了图片但没有任何反应」＝选完文件回调链没触发）', file: 'js/chat.js', needle: "id: 'mochi-myemoji-pick', accept: 'image/*', multiple: true" },
+  { name: '#755i 朋友圈评论配图不再用 display:none（#717/#738 点名要消灭的写法）', file: 'js/feed.js', needle: "id: 'mochi-com-img-pick', accept: 'image/*'" },
+  { name: '#755j 字卡库选择器收编统一入口（回退成手抄 offscreen+opacity:0 版本＝部分内核拒绝激活）', file: 'js/chatcard.js', needle: "id: 'cc-file-pick', accept: accept || '', multiple: !!multiple" },
+  { name: '#755k 备份导入选择器走统一入口（回退成 detached/display:none ＝真我 Edge「导入点了没反应」复发；accept 仍刻意留空以避开国产 ROM 过滤兼容 bug）', file: 'js/data-backup.js', needle: "id: 'mochi-backup-import-pick', accept: ''" },
+  { name: '#755l 纪念日档案配图不再用 display:none（改回＝部分内核不可见 input 拒绝激活）', file: 'js/memo-arc.js', needle: "inp.type = 'file'; inp.accept = 'image/*'; inp.id = 'narc-img-input';" },
+  { name: '#755m 音乐歌单/单曲封面上传走统一入口（回退成 display:none 单例＝点了没反应）', file: 'js/music-player.js', needle: "id: 'mochi-pl-cover-pick', accept: 'image/*', noClick: true, onFiles: covPickOpts.onFiles" },
+  { name: '#755n 红包封面选择器不再 detached（原实现从未 appendChild＝iOS 不派发 change）', file: 'js/chat.js', needle: "id: 'mochi-rp-cover-pick', accept: 'image/*', btn: rpCoverUploadBtn" },
+  { name: '#755o 礼物店图片选择器 sr-only 化（回退 offscreen+opacity:0＝部分内核拒绝激活）', file: 'js/gift-shop.js', needle: "gmImgInput.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:1;" },
+  { name: '#755p 占卜换牌面走统一入口（回退成 template 里 hidden input＝display:none，部分内核拒绝激活，点「换牌面」无反应）', file: 'js/divination.js', needle: "id: 'dev-divf-img-pick'," },
+  { name: '#755q 占卜批量上传走统一入口（回退同上；accept 必须在 click 前落定否则弹通用文件管理器）', file: 'js/divination.js', needle: "id: 'dev-divf-batch-pick'," },
+  { name: '#755r 占卜牌面 JSON 导入走统一入口（回退同上）', file: 'js/divination.js', needle: "id: 'dev-divf-json-pick'," },
+  { name: '#755s 朋友圈「添加图片」走统一入口（原 #feed-pick-file 写在 template.html 带 hidden 属性＝display:none）', file: 'js/feed.js', needle: "id: 'dev-feed-pick-img'," },
+  { name: '#755t 朋友圈封面背景走统一入口（原 #feed-cover-file 同样写在 template.html 带 hidden）', file: 'js/feed.js', needle: "id: 'dev-feed-cover-bg'," },
+  { name: '#755u 通用弹窗「从文件导入」走统一入口（原 #modal-file-input 带 style="display:none"）——回退＝所有 txtImport 弹窗（字卡导入等）在部分内核点了没反应', file: 'js/personalize.js', needle: "id: 'dev-modal-file-pick'," },
+  { name: '#755v 聊天壁纸「上传新图」走统一入口（原 csBgFileInput 用 left:-9999px+opacity:0，与 display:none 同族不可见写法）', file: 'js/chat-settings.js', needle: "id: 'dev-cs-bg-pick'," },
+  // ==== 2026-09-18 #757 刷新/重开后通话没续上、也没挂断记录（小米 civi4pro 夸克实报，多机型）====
+  //   恢复窗口原按「心跳 ts 10 分钟窗」判定，而心跳是 setInterval——页面被系统冻结/杀进程时不跑，
+  //   ts 停在被冻结那刻；用户回来（尤其杀后台后重开＝新运行期、SS 已空）走 LS 兜底即被判「早已结束」
+  //   → 静默清标记：不续、不记。修法四条各配一条锚，删任一条即对应症状回流。
+  { name: '#757a SS/LS 用通话语义墙钟窗、IDB 副本仍卡 10 分钟静默窗（退回单窗＝锁屏冻结过 10 分钟的通话仍会无声消失）', file: 'js/call.js', needle: "const windowMs = src === 'idb' ? CALL_IDB_WINDOW : CALL_RESUME_WINDOW;" },
+  { name: '#757b 墙钟窗常数在位（删/改小到分钟级＝用户手机上那通电话还是会在重开后不复原）', file: 'js/call.js', needle: "const CALL_RESUME_WINDOW = 6 * 3600 * 1000;" },
+  { name: '#757c 超窗的 SS/LS 快照补写「通话中断」记录（删掉＝回到静默清标记＝无挂断记录）', file: 'js/call.js', needle: "if (src !== 'idb') writeInterruptRecord(info);" },
+  { name: '#757d 隐藏/冻结/离页立刻冲刷通话标记（删掉＝ts 停在上一个心跳，冻结越久越易被判过期）', file: 'js/call.js', needle: "document.addEventListener('freeze', function () { try { flushCallActive(); } catch (e) {} });" },
+  { name: '#757e 中断记录统一出口（三条路径共用；删掉＝超窗/恢复失败时无记录）', file: 'js/call.js', needle: "function writeInterruptRecord(info) {" },
+  { name: '#757f 恢复中途出错先清干净半截通话再补记录（删掉 currentCall = null＝占用门恒真，联系人来电被永久拦死）', file: 'js/call.js', needle: "currentCall = null; shownAv = null; shownName = null;" },
+  { name: '#757g 通话标记不再内嵌头像 dataURL（回退＝每 20 秒三路各写 52KB，弱内核写入失败的放大器）', file: 'js/call.js', needle: "name: currentCall.name || '', av: '', ts: Date.now()" },
+  { name: '#757h idbRestore 不回填 call-active（删掉＝IDB 幽灵被抄进 LS 当「本机真实标记」，#705 幽灵通话在墙钟窗内复活）', file: 'js/idb.js', needle: "k !== 'xy-home-v2:call-active' &&" },
+  // ==== 2026-09-18 #758 「导出docx 无法下载」（小米 civi4pro 夸克实报，多机型同族：BUGS #172/#173/#333/#701）====
+  //   合成 a[download]（blob:）无成功回调，壳浏览器静默丢弃时用户彻底没辙；修法＝给用户自己能按的第二条活路。
+  { name: '#758a 下载触发后按内核给换路追问（删掉＝壳浏览器下载被丢弃后无任何补救路径）', file: 'js/data-backup.js', needle: "function afterDownloadAttempt(blob, fname, shareTitle, saveTypes, doneText, failText) {" },
+  { name: '#758b 只对 brokenFileShare 内核加这一步（删掉＝所有浏览器都多一步；改成恒真＝给正常内核添噪音）', file: 'js/data-backup.js', needle: "if (!brokenFileShareEnv()) return;" },
+  { name: '#758c data: URL 直下通道（删掉＝分享不可用的壳浏览器只剩 blob: 这一条被丢的路）', file: 'js/data-backup.js', needle: "function anchorDownloadDataUrl(blob, fname, cb) {" },
+  { name: '#758d 换路首选手势触发的系统分享面板（删掉＝壳浏览器唯一可靠保存通道没了）', file: 'js/data-backup.js', needle: "navigator.share({ files: [file], title: shareTitle || 'mochi 导出文件' })" },
+  { name: '#758e 换路追问弹窗在位（删掉＝用户看不到第二条活路）', file: 'js/data-backup.js', needle: "window.openModal('文件已保存了吗？', '', null, {" },
+  // ===== FIX 2026-09-18 #756：本族第六波——「label 早退」把 JS 兜底一并掐死 =====
+  // 用户二次实报「其他手机型号也这样，上传头像……不止这一个」。根因＝#738 的配套写法
+  // `if (fromLabel(e)) return;` 假设「label 存在 ⇒ 原生转发必成功」，而 vivo 百度 SP-engine/T7
+  // 等国产内核 label 存在却不转发（也不报错、不派发可用于判断的事件）⇒ 两条激活路径全不走。
+  // 修法＝mochiFilePickGuard 事后确认「真没弹出选择器」再补 JS click，全站禁止 fromLabel 早退。
+  { name: '#756a 统一「兜底守护」（device.js）：以 focus/click/change 信号判定选择器是否真弹出，未弹出才补 click（本条是整族修复的地基）', file: 'js/device.js', needle: "window.mochiFilePickGuard = function (input, onMiss) {" },
+  { name: '#756b 统一入口 mochiFilePick 不再依赖 o.btn 之外的条件即激活：改为无 fromLabel 早退、走 guard', file: 'js/device.js', needle: "if (o.btn && window.mochiFilePickGuard) window.mochiFilePickGuard(input, activate);" },
+  { name: '#756c 桌面头像入口（personalize bindAvatar）改走 guard——回退＝用户实报的「上传头像点了相册点了图片但没反应」', file: 'js/personalize.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(avatarPickInput, _fallback);" },
+  { name: '#756d 头像库上传（avatar-lib bindPoolUpload）改走 guard', file: 'js/avatar-lib.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(input, _fb);" },
+  { name: '#756f 朋友圈封面头像改走 guard', file: 'js/feed.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(feedAvPickInput, _fb);" },
+  { name: '#756g 群聊「上传头像」改走 guard', file: 'js/group-chat.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(gcAvatarPickInput, _fb);" },
+  { name: '#756h 群聊「插入图片」改走 guard', file: 'js/group-chat.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(fi, _fb);" },
+  { name: '#756i 设置页「TA 的头像」改走 guard', file: 'js/chat-settings.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(headInput, _fb);" },
+  { name: '#756j 设置页「我的头像」改走 guard', file: 'js/chat-settings.js', needle: "if (window.mochiFilePickGuard) window.mochiFilePickGuard(headInput, _fbU);" },
+  { name: '#756k 音乐歌单封面改走 guard', file: 'js/music-player.js', needle: "if (_input && window.mochiFilePickGuard) window.mochiFilePickGuard(_input, pickCover);" },
+  // 反哨兵（absent）：全站禁止再出现「点源自 label 就直接 return」的早退写法
+  { name: '#756z 全站禁止 fromLabel 早退（`fromLabel(e)) return`）——该写法会掐死国产内核上的唯一兜底路径', file: 'js/', needle: 'mochiFilePickFromLabel(e)) return', absent: true },
+  // ==== 2026-09-18 #759 房间（双人小屋）三处咬合的结构性修复（用户派单「检查房间还能怎么优化」，代码审计发现，非用户实报）：
+  //   ① CAT[*].grp 是英文兜底键，却被当成分组名传给 getLibPool('room',分组)，而库里分组是中文
+  //     （坐到旁边/家具互动/浇水/…）⇒ 点家具永远只出 FB 那 3~5 句内置短句、库内 60+ 句从未出现、
+  //     字卡库【房间】逐张开关对家具完全无效（verify-room B15 只测了中文的『进门』组，所以从没红过）。
+  //     lampFeedback 同族更糟：分组与兜底键都写死 '灯亮'（既非库分组也不在 FB）⇒ 池与兜底双空
+  //     ⇒ rnd([]) 把字面量 "undefined" 吐进气泡。
+  //   ② 三条「延时补话」都带 `if (!bubbleEl.hidden) return` 让路守卫，但首条气泡固定挂 3800ms 而
+  //     补话排在 900~1300ms ⇒ 守卫必命中，点灯/关灯/夜里点窗的第二句一次都没播过（①的 "undefined"
+  //     正是被这条挡死才没见光——两批必须同修）。
+  //   ③ d.lit 按「家具类型」记 ⇒ 同种两盏灯（MAX_PER_TYPE=2）只能同开同关、地板重复投影；
+  //     收回最后一盏灯不清键 ⇒ lum() 继续按「不存在的灯」给整屋增亮、买回来直接是亮的。
+  { name: '#759a 字卡分组经 GRP 表换算（删＝英文键又被当库分组名传进去，家具话术退回内置短句、逐张开关再度失效）', file: 'js/room.js', needle: 'GRP[group] || group' },
+  { name: '#759b 池与兜底双空时不出声（删＝rnd([]) 把字面量 "undefined" 吐进气泡）', file: 'js/room.js', needle: "if (!arr.length) return '';" },
+  { name: '#759c 双段话术首条短驻留（删/改回无参调用＝补话的让路守卫必命中，点灯与夜里点窗的第二句又变死代码）', file: 'js/room.js', needle: 'bubble(sayLine(c.grp, c.grp), BUB_SHORT);' },
+  { name: '#759d 补话时刻排在首条气泡之后（改回 900~1300ms＝又落进首条驻留期内被守卫吞掉）', file: 'js/room.js', needle: 'near ? BUB_AGAIN : BUB_AGAIN + 400' },
+  { name: '#759e bubble 支持自定义驻留时长（删掉 ms 形参＝双段话术无处安身，两拍节奏回归单拍常驻）', file: 'js/room.js', needle: 'bubT = setTimeout(() => { bubbleEl.hidden = true; }, ms || 3800);' },
+  { name: '#759f 灯光开关按实例记、关灯即删键（改回类型键＝同种两盏灯同开同关且残键继续增亮）', file: 'js/room.js', needle: 'if (on) d.lit[inst.i] = true; else delete d.lit[inst.i];' },
+  { name: '#759g 亮度只按在场实例的灯计（改回 Object.keys(d.lit)＝收回全部灯后房间仍按有灯增亮）', file: 'js/room.js', needle: 'd.fx.forEach(it => { if (d.lit[it.i]) v += 0.12; });' },
+  { name: '#759h 旧档 lit 类型键迁移到实例键（删＝升级后老存档的灯全灭、且类型残键永久赖在表里）', file: 'js/room.js', needle: 'if (o.fx.some(f => f.i === k)) return;' },
+  // 反哨兵（absent）：③的两处旧写法不得复活
+  { name: '#759z 禁止灯光状态回退为按类型记（出现 `d.lit[it.t]`/`d.lit[inst.t]`＝同种两盏灯又同开同关）', file: 'js/room.js', needle: 'd.lit[it.t]', absent: true },
+  { name: '#759y 禁止 sayLine 再收到库内不存在的分组名（回退为按 灯亮 作分组/兜底键＝池与兜底双空、气泡吐 undefined）', file: 'js/room.js', needle: "sayLine(g, '灯亮')", absent: true },
+  // ==== 2026-09-18 #760 聊天美化「边看边调」抽屉遮挡自救批（用户派单「检查边看边调还能怎么优化」，全部落地）：
+  //   ① 键盘抬升——抽屉是 fixed 层，安卓 resizes-visual 下键盘弹起时输入框缩到键盘后面（聊天版独有，
+  //     桌面抽屉无文本输入）；② grip/标题行可竖向拖动＋会话内记忆（#562 只留了声明、grip 一直是装饰）；
+  //   ③ 打开滚到最新消息＋空对话注入示例气泡（否则「改哪看哪」无从看起）；④ FLOAT_SELECTORS 登记锁背景；
+  //   ⑤ 补设置页有而抽屉缺的 cs-send-show / cs-time-ink；滑杆双击复位、调色盘收起、热区垫高。
+  { name: '#760a 键盘抬升按 visualViewport 实遮挡计算（删＝安卓打字时抽屉输入框缩键盘后面，「全局字体/气泡CSS」盲打复发）', file: 'js/chat-settings.js', needle: 'const lift = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;' },
+  { name: '#760b 拖动松手近底吸附回贴底（删＝抽屉停在拖到的任意位置成残留遮挡；改成恒 null＝拖动功能整个失效）', file: 'js/chat-settings.js', needle: 'if ((csBeautyDockBot || 0) < 24) csBeautyDockBot = null;' },
+  { name: '#760c 示例气泡带 data-cs-demo 身份标记（删标记＝#760e 清理逻辑扫不到，假气泡残留进正常聊天）', file: 'js/chat-settings.js', needle: "m.dataset.csDemo = '1';" },
+  { name: '#760d 空对话才注入示例气泡（删掉 .msg 判定＝有真消息也叠一对假气泡；整行删＝空聊天页无从预览复发）', file: 'js/chat-settings.js', needle: "if (!cb.querySelector('.msg')) csDemoBubbles(true);" },
+  { name: '#760e 示例气泡统一清理口（删＝关抽屉后预览假消息留在聊天流里）', file: 'js/chat-settings.js', needle: "Array.prototype.forEach.call(body.querySelectorAll('.msg[data-cs-demo]'), n => n.remove());" },
+  { name: '#760f 抽屉登记滚动锁（删＝抽屉开着底层聊天页整页仍可被滑，#527 同族缺口回流到聊天版）', file: 'js/mobile-adapt.js', needle: "'#chat-beauty-drawer'," },
+  { name: '#760g 抽屉补发送按钮显示/隐藏（删＝该设置项回到只能盲调、必须回设置页才能看效果）', file: 'js/chat-settings.js', needle: "() => store.get('cs-send-show') || 'show'" },
+  { name: '#760h 抽屉补时间轴文字色（删同上：时间轴配色回到设置页专属）', file: 'js/chat-settings.js', needle: "mkColorItem('时间轴文字色', 'cs-time-ink', DEF.timeInk, BUBBLE_INK_COLORS)" },
+  { name: '#760i 滑杆双击复位通道（删＝#760 批 def 参数全成死参，就地恢复默认失效）', file: 'js/chat-settings.js', needle: "inp.addEventListener('dblclick'" },
+  { name: '颜文字发进聊天气泡保真空格（气泡正文 span white-space:pre-wrap，删掉/改回＝连续空格被 HTML 折叠，颜文字「(◕ ‿ ◕)」类变被压扁、与输入框显示不一致复发；全机型通用行为，一条规则覆盖单聊+群聊）', file: 'css/chat-main.css', needle: '.msg-bubble > span { white-space:pre-wrap; }' },
+  { name: '引用块内颜文字保真空格（.msg-quote-text white-space:pre-wrap，删掉＝引用一条含颜文字的消息时预览里空格被折叠、与气泡不一致复发；needle 取单行——build 会剥掉 CSS 行首缩进，多行含缩进的 needle 在产物里永远匹不上）', file: 'css/chat-main.css', needle: 'color:inherit; opacity:.8; word-break:break-word; white-space:pre-wrap;' },
+  // ==== 2026-09-18 #763 钓鱼三小优化（读盘记忆化 / 静音偏好持久化 / 日封顶前置可见）====
+  // 心跳每 1.2s renderPage 重复 JSON.parse 同键（厨房页 loadToday+loadCook+loadBox 双读）→ 原始串不变复用解析结果；
+  // 缓存键带 activePrefix() 命名空间防跨联系人串档；soundOn 原重开 App 即丢；¥104 日封顶原只在撞限 toast 才首次告知。
+  { name: '#763a 钓鱼读盘记忆化命中条件（删＝心跳恢复每拍重复 JSON.parse，iOS 后台回收前多余解析开销回流）', file: 'js/fishing.js', needle: 'if (c && c.raw === raw) return c.val == null ? fb : c.val;' },
+  { name: '#763b 记忆化缓存键带联系人命名空间（删＝切联系人后读到上一桌面的解析结果＝数据串档）', file: 'js/fishing.js', needle: "(window.activePrefix ? window.activePrefix() : '') + '|' + key" },
+  { name: '#763c 钓鱼静音偏好落盘（删＝重开 App 静音设置丢失，用户被音效打扰复发）', file: 'js/fishing.js', needle: "writeJSON('fishing-sound', { on: soundOn });" },
+  { name: '#763d today 脏键并入日封顶用量（删＝厨房页卖菜后切回今日页封顶提示滞留旧值）', file: 'js/fishing.js', needle: "key = 'today:' + JSON.stringify(loadToday()) + ':' + fishCoinCap();" },
+  { name: '#763e 日封顶用量提示样式在位（删＝renderToday 的 .fish-capnote 裸奔无样式）', file: 'css/chat-pages.css', needle: '.fish-capnote { margin-top:6px; text-align:center; font-size:10.5px;' },
+  // ==== v3.26.x #769 底部导航栏美化（三按钮上传图标图片 + 栏透明度/底色/圆角/模糊/图标大小）====
+  // 用户直派新功能（「底部导航栏的三个图标按钮，也可以上传图标图片。然后也可以调整透明度。
+  // 调整这一行的透明度和这一行的样式」）。行为断言 tools/verify-tabbar-beauty.mjs。
+  // 整栏透明度双保险＝设计缺陷防线：①图标层 12% 下限（防「栏透明到消失找不回」）②触摸显形。
+  { name: '#769a 整栏透明度图标层 12% 下限（删下限/改回 wholeOp 直乘＝整栏拉透明时导航图标随背景一起消失，用户找不回入口＝已知设计缺陷回流）', file: 'js/personalize.js', needle: 'const icoA = Math.max(wholeOp, 12) / 100;' },
+  { name: '#769b 背景透明度＝两根滑杆叠乘（改回单因子＝「背景透明度」与「整栏透明度」互相覆盖，一个动另一个失效）', file: 'js/personalize.js', needle: 'const bgA = Math.round(bgOp * wholeOp) / 10000;' },
+  { name: '#769c 按钮图片恒等跳过（删＝切联系人/回填扇出时 MB 级 dataURL 反复重解码，#249 切桌面卡死同族回流）', file: 'js/personalize.js', needle: 'else if (img.src === data) { applyTabIconLook(tab); return; }' },
+  { name: '#769d 上传落库链（删＝选完图不持久化，重开底部栏图标丢失）', file: 'js/personalize.js', needle: "store.set('tab-icon-' + pageKey, data);" },
+  { name: '#769e 边看边调「底部栏」分区在位（删＝抽屉入口消失）', file: 'js/personalize.js', needle: "{ key: 'tabbar', label: '底部栏', build: () => {" },
+  { name: '#769f IDB 回填后重绘底部栏图标（删＝大键只存 IDB 的机型启动读到空，图标整会话不显示）', file: 'js/personalize.js', needle: 'try { restoreTabbarIcons(); } catch (e) {} // #769h1' },
+  { name: '#769g 切桌面按新命名空间重刷底部栏（删＝tab-icon-* per-cid 键跨桌面串档/滞留旧桌面图）', file: 'js/personalize.js', needle: 'try { restoreTabbarIcons(); } catch (e) {} // #769h2' },
+  { name: '#769i 导入/撤销写回支持 tab-icon-* 动态键（删回三条前缀＝方案导入/撤销后按钮图片静默丢失）', file: 'js/personalize.js', needle: "(k.indexOf('app-icon-') === 0 || k.indexOf('desk-image-src-') === 0 || k.indexOf('tab-icon-') === 0)" },
+  // CSS needle 按 minifyCss 产物形态逐字写（剥注释/行首缩进、保行内空格与分号）
+  { name: '#769j 底栏底色走 color-mix 透明度链（删回纯色 background＝「背景透明度」滑杆整条失效）', file: 'css/tabbar.css', needle: 'background:color-mix(in srgb, var(--tabbar-bg-color, var(--tabbar-base-bg, #ffffff)) calc(var(--tabbar-bg-a, 1) * 100%), transparent);' },
+  { name: '#769k 图标层透明度吃变量（改回无 opacity＝整栏透明度失效）', file: 'css/tabbar.css', needle: 'opacity:var(--tabbar-ico-a, 1);' },
+  { name: '#769l 上传按钮图片渲染规则（删＝img 裸尺寸/无裁切，图标大小与圆角滑杆失效）', file: 'css/tabbar.css', needle: '.tabbar .tab img { width:var(--tabbar-ico-size, 23px); height:var(--tabbar-ico-size, 23px); object-fit:cover; display:block; border-radius:calc(var(--tabbar-ico-size, 23px) * .3); }' },
+  { name: '#769m 触摸显形（删＝低透明度下按压无任何反馈，「看不见也知道那里有导航」防线失效）', file: 'css/tabbar.css', needle: '.tabbar.tabbar-faint:active .tab { opacity:1; }' },
+  { name: '#769n 深色模式喂底色变量而非盖死 background（改回直接覆盖＝深色下透明度滑杆失效，#769j 链在深色断掉）', file: 'css/dark.css', needle: '[data-theme="dark"] .tabbar { --tabbar-base-bg:var(--dark-card-92); border-color:var(--dark-border-12); }' },
+  { name: '#769o 设置页「底部栏美化」行锚（整行删＝设置页入口消失，抽屉分区成唯一入口）', file: 'template.html', needle: '<div class="set-row" id="row-tabbar-beauty">' },
+  // ==== 2026-09-18 #766 聊天「莫名其妙一条变多条」（用户实报：点发送那一刻就两条、刷新还在、全部类型、有的机型有有的没有）——两条独立根因：
+  // ①渲染层：renderMsg 的 data-idx 只在部分分支手写，poke/ask-msg/call/rps/pong/brick/memory/snake 等提前 return 的分支从不写，而补画缺口的幂等守卫用类名限定的 `.msg[data-idx]` 查这些节点＝查不到 ⇒ 裁尾窗口回底时原样重画一遍（是否触发取决于屏高/历史长度是否曾裁窗＝机型差异来路）。
+  // ②数据层：chat-tail（#180）条目落盘后永不退休，任何让内存 msgs 短于日志的事件（#722 热片装载、某块读失败留空洞、慢内核回退有损 LS 快照、异步链里切联系人致日志与 msgs 不同命名空间、导入整包替换）都被误判「这条没落盘」再回放一份，并被随后的 saveMsgs 固化进库 ⇒ 刷新还在、越用越多。====
+  { name: '#766a 补画缺口幂等守卫改纯属性选择器（改回 .msg[data-idx] ＝不带 .msg 类的拍一拍/系统提示/游戏结算节点查不到，裁尾窗口回底原样重画＝同一条显示两个）', file: 'js/chat.js', needle: `if (body.querySelector('[data-idx="' + i + '"]')) continue;` },
+  { name: '#766b 尾巴日志退休接口（删掉＝日志条目落盘后永不清零，任何一次 msgs 短于日志的读库都把它当未落盘再回放一份并固化进库＝刷新仍在的重复）', file: 'js/chat.js', needle: 'function chatTailRetire(keep) {' },
+  { name: '#766c 退休走 store 层写盘（改回只动 localStorage＝IDB 镜像仍在，idbRestore 回填原样复活，重复清不掉）', file: 'js/chat.js', needle: "try { store.set('chat-tail', JSON.stringify(k)); } catch (e) {}" },
+  { name: '#766d 早于本次装载窗口的日志条目一律不回放（删＝热片装载/块读空洞时把库里已有的更早消息再补一份进内存＝凭空重复）', file: 'js/chat.js', needle: 'if (winFrom !== Infinity && (j.ts || 0) < winFrom) { keep.push(j); continue; }' },
+  { name: '#766e 回放命名空间闸门（删＝异步链里切联系人后把对方联系人的尾巴日志回放进本会话历史＝串档重复）', file: 'js/chat.js', needle: "if (forPrefix && typeof window !== 'undefined' && typeof window.activePrefix === 'function' && window.activePrefix() !== forPrefix) return 0;" },
+  { name: '#766f 确认空库路径也按命名空间回放（删掉带参调用＝该路径回退成跨源盲回放）', file: 'js/chat.js', needle: 'try { chatTailMerge(myPrefix); } catch (e) {}' },
 ];
 try {
   const built = CHECK_SENTINELS ? '' : readFileSync(join(root, 'index.html'), 'utf8');
