@@ -28,9 +28,27 @@
      重新盖住壁纸层；.page z-index:2 同值后到者胜（DOM 序在 .phone 里更靠后），
      页面内容不受影响。 */
   position:absolute; inset:0; z-index:2; pointer-events:none;
+  /* FIX 2026-09-17 #690：inset 简写是 2020 年才有的（Safari 14.1 / Chromium 87），
+     老内核整条丢弃 → 本层塌成 0×0（无头实测 390×844 → 0×0）→ 桌面「背景遮罩」
+     滑块怎么调都没有任何变化，用户当成功能坏了。同款兜底：先用四条长手 + 宽高
+     撑满，再让支持 inset 的内核用简写覆盖（两条同时写＝任一侧生效，零机型分支；
+     房内同款写法见 chat-pages.css 的 .poke-card.game-fs 注释）。 */
+  top:0; right:0; bottom:0; left:0; width:100%; height:100%;
   background:rgba(255,255,255,var(--desk-bg-mask-op,0));
   border-radius:inherit;
 }
+/* #765d 桌面壁纸层提独立合成层（与聊天壁纸层 #cs-bg-layer 的 #765a 同构收口）：这层不参与任何
+   页面滚动，但不提层时它与 .statusbar/.phone-bg-mask/首页内容同属一个绘制层——桌面每次内容变化
+   （换壁纸透明度过渡之外，还有卡片重绘、时钟/倒计时 textContent 更新、图标重排）的失效区都会
+   波及它，引擎要把整张全屏 cover 位图重新缩放＋光栅一遍；开了「背景模糊」时更贵——下面 #240 那条
+   `filter:blur()` 落在非合成层上＝每次失效都在绘制阶段重跑一次全屏模糊。提层后 GPU 只在真正需要
+   时重采样，blur 结果缓存成纹理。
+   ⚠️ 更正 #240 注释里的假设：「壁纸层是 #147 常驻合成层」不成立——WebKit 只在 opacity 过渡**期间**
+   临时提层，过渡结束纹理即释放，静止态它就是普通非合成层；要常驻必须自带提升线索。
+   选 translateZ(0) 不选 will-change：老 WebKit 不认 will-change（与本文件 #690 老内核兜底同口径）；
+   也**不是** zoom / scale（AGENTS.md iOS 红线只禁缩放类 transform，平移零成本）。
+   代价＝一块全屏纹理内存（约 1.3MB），只在设了桌面壁纸时存在（未设时该层 opacity:0 且无背景图）。 */
+#phone-bg-layer { transform:translateZ(0); }
 /* FIX 2026-09-07 #240：模糊载体从 mask 的 backdrop-filter 改为壁纸层自滤 filter。
    #219 提层后诊断样式全对（mask z2 + blur-on + backdrop computed 正确），但
    小米15Pro/Chrome 151 真机仍「模糊/遮罩调整无感」＝backdrop-filter 对 z1 兄弟
@@ -42,6 +60,10 @@
   filter:blur(var(--desk-bg-blur,0px));
   -webkit-filter:blur(var(--desk-bg-blur,0px));
   top:-24px !important; left:-24px !important; right:-24px !important; bottom:-24px !important;
+  /* #690：图层自带的宽高兜底（无头里 100%，老内核不认识 inset 时靠它撑满）必须让位——
+     四条长手定了 -24 外扩，若 width/height 仍为 100%，右/下两侧的外扩会被
+     「宽高优先于 right/bottom」吃掉，模糊边缘重新发虚（#240 修过的症状）。 */
+  width:auto !important; height:auto !important;
 }
 /* v3.6.x：桌面字号/卡片大小可调。
    ⚠️ iOS 卡顿红线（AGENTS.md / WORKLOG）：zoom 是 WebKit 已知卡顿源，会把元素踢出
@@ -55,14 +77,25 @@
    （含 .desk-period 经期卡、.mini-row 容器、.app-grid 图标组）——缩放时三页同步变化。
    ⚠️ .mini-card/.memo-card/.mood-card 不单独 zoom：它们嵌套在 .mini-row 内，
    若与容器都 zoom 会双重缩放（77→88.55→101.8），与单层缩放的 .week-card（89.1）
-   不一致；由 .mini-row 容器统一缩放一次。 */
-.page-slide { zoom:var(--desk-font-scale, 1); }
-.deco-widget, .mini-row, .checkin, .weekend-box, .music-widget,
-.week-card, .desk-period, .app-grid { zoom:var(--desk-card-scale, 1); }
+   不一致；由 .mini-row 容器统一缩放一次。
+   FIX 2026-09-17 #707（跨域改动声明见 WORKLOG）：两条 zoom 规则加 html.desk-zoom-font /
+   html.desk-zoom-card 前缀（personalize.js 挂类：宽窗>900px 且非平板且缩放值≠1 才挂）
+   ——Safari 18.2 起 WebKit 重写 zoom（标准化实现），官方自述「genuinely tricky」且
+   26.4 仍在修其性能/继承缺陷；值是 zoom:1 的声明本身也会让子树进 zoom 继承/布局路径。
+   原实现把 zoom:var() 无条件写在 .page-slide 与 11 类卡片上（手机端靠下方媒体查询
+   zoom:1 兜底）＝所有手机桌面整个子树常年带 zoom 声明参与样式解析。改后：手机/平板
+   默认零 zoom 声明；类缺省时选择器整条不匹配，视觉与原 zoom:1 完全一致。 */
+html.desk-zoom-font .page-slide { zoom:var(--desk-font-scale, 1); }
+html.desk-zoom-card .deco-widget, html.desk-zoom-card .mini-row, html.desk-zoom-card .checkin,
+html.desk-zoom-card .weekend-box, html.desk-zoom-card .music-widget,
+html.desk-zoom-card .week-card, html.desk-zoom-card .desk-period, html.desk-zoom-card .app-grid { zoom:var(--desk-card-scale, 1); }
+/* 桌面模拟器窗口拖窄（<900px）时仍不缩放（原手机端兜底语义，随 #707 加前缀保同特异性）；
+   真手机/平板不挂类，本块与其余 zoom 规则均不命中＝零声明 */
 @media (max-width: 900px) {
-  .page-slide,
-  .deco-widget, .mini-row, .checkin, .weekend-box, .music-widget,
-  .week-card, .desk-period, .app-grid { zoom:1; }
+  html.desk-zoom-font .page-slide,
+  html.desk-zoom-card .deco-widget, html.desk-zoom-card .mini-row, html.desk-zoom-card .checkin,
+  html.desk-zoom-card .weekend-box, html.desk-zoom-card .music-widget,
+  html.desk-zoom-card .week-card, html.desk-zoom-card .desk-period, html.desk-zoom-card .app-grid { zoom:1; }
 }
 
 /* 纪念日卡片（纯装饰：头像 + 爱心 + 纪念日；已禁止上传背景图）
@@ -250,7 +283,14 @@
 .we-btn b { font-size:13px; }
 
 /* 应用图标 */
-.app-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px 8px; padding:2px 8px 6px; }
+/* FIX 2026-09-17 #690：gap 简写（grid 别名写进 `gap` 是 Safari 11.1/Chromium 66 起）
+   在老内核上被丢弃 → 图标行距/列距归零，图标挤成一坨（用户读成「桌面不正常」）。
+   grid-gap 与其完全同义、老内核也认，两条同写＝谁认用谁，现代内核取值一致。 */
+/* v3.26.x #707 屏幕微调·桌面轴：全屏（fs-active/ios-fs-active）隐藏状态栏后桌面内容整体
+   偏上（该偏移量各机型安全区不同），用户在 设置→信息诊断→屏幕微调·桌面 自由拉回；
+   mobile-adapt.js mochiScreenAdj 写 --mochi-desk-adj（±60px），默认 0 = 原布局零变化 */
+#desktop-pages { padding-top: var(--mochi-desk-adj, 0px); }
+.app-grid { display:grid; grid-template-columns:repeat(4,1fr); grid-gap:14px 8px; gap:14px 8px; padding:2px 8px 6px; }
 /* v3.16.x：三页功能图标完全一致（大小/行高/间距）——第三页默认 12 个图标 3 行，
    与 1/2 页 8 个图标 2 行同用默认行高 96px、图标 58px、行距 14px；
    第三页多一行的空间由经期卡让出（见 .desk-period min-height 190→160），
@@ -259,15 +299,28 @@
 .app { display:flex; flex-direction:column; align-items:center; gap:8px; cursor:pointer; }
 .app .app-ico {
   /* v3.5.133：min(58px, 21vw)——极窄屏（<305px）固定 58px 会撑爆 4 列网格被裁 */
+  /* FIX 2026-09-17 #690：老内核整条丢弃不认识的 min() 函数（iOS Safari < 11.1 等）
+     → width/height 回退 auto → 图标盒收缩成 svg 的 28px，三页图标网格整体塌掉、
+     底部错位（用户报「桌面的三页灰屏/不正常」，多机型同现）。先给纯像素兜底，
+     支持 min() 的内核对同属性后写者胜、行为与改前完全一致。 */
+  width:58px; height:58px;
   width:min(58px, 21vw); height:min(58px, 21vw); border-radius:var(--app-ico-radius);
   background: rgba(255,255,255,.92); border:1px solid rgba(0,0,0,.1);
   box-shadow:0 2px 8px rgba(0,0,0,.04);
   display:flex; align-items:center; justify-content:center;
   transition:transform .18s ease, box-shadow .18s ease;
 }
-.app:hover .app-ico {
-  transform:translateY(-2px) scale(1.05);
-  box-shadow:0 4px 12px rgba(0,0,0,.08);
+/* FIX 2026-09-17 #690：抬手放大/加深阴影只在「真正有悬停能力」的内核生效。
+   触摸内核（iOS/安卓）把 :hover 粘在最后一次点击上——点过的图标一直浮着不落
+   （用户可见的假状态），且该元素带着 box-shadow 过渡参与后续每一帧合成/栅格化
+   （桌面横滑时逐帧重绘的额外开销，卡顿/发热的加成项）。鼠标/桌面模拟器行为不变
+   （hover:hover 为真），触摸端回到无悬停的干净态。同款 hover 门控写法见
+   chat-pages.css 的五子棋/扫雷配色行。 */
+@media (hover:hover) {
+  .app:hover .app-ico {
+    transform:translateY(-2px) scale(1.05);
+    box-shadow:0 4px 12px rgba(0,0,0,.08);
+  }
 }
 .app .app-ico svg { width:28px; height:28px; stroke:var(--ink); }
 .app .app-ico img { width:100%; height:100%; object-fit:cover; border-radius:18px; display:block; }
@@ -310,8 +363,12 @@
   flex:1; min-height:0; display:flex;
   overflow-x:auto; overflow-y:hidden;
   scroll-snap-type:x mandatory;
-  -webkit-overflow-scrolling:touch;
   scrollbar-width:none; -ms-overflow-style:none;
+  /* FIX 2026-09-17 #707：删 -webkit-overflow-scrolling:touch——iOS 老式动量滚动旗标
+     （现代 WebKit 动量是默认，该属性只会把滚动容器钉在 legacy 路径/旧合成假设上），
+     而本元素正是用户报「翻页灰屏 + 秒级掉帧」的横向翻页层（iOS 26 多机型）。
+     删除对现代内核零行为变化（动量本来就有），老内核本就少见且动量非默认也只是
+     回退到普通滚动。桌面组件抽屉等小滚动容器上的同款属性不在本修复面。 */
   /* v3.5.129：明确手势归属——外层横滑翻页、内层纵滑列表，
      避免安卓轴锁定下斜滑"滑不动" */
   touch-action:pan-x pan-y;
@@ -329,6 +386,17 @@
   touch-action:pan-x pan-y;
 }
 .page-slide::-webkit-scrollbar { display:none; }
+/* #754 桌面翻页卡顿（iPhone 15 Pro Max 实报：翻页 平均186ms / p90 719ms / 最慢3611ms；
+   诊断【性能】长任务>50ms 为零＝主线程没堵，卡在合成/栅格层。本元素是「横向快照滚动容器
+   + 每页自带纵向滚动」的嵌套滚动层，整页背景图（page-bg-N）画在会移动的滚动页上——
+   与 #147 修壁纸的同源病灶：图层纹理不被保活时，翻页每帧重栅格化/重解码整屏大图。
+   修法=有整页背景图的桌面（.has-page-bg，personalize.js 按 DOM 实态挂/摘）在触屏设备上
+   把三页提升为独立合成层：翻页只平移纹理，不再逐帧重栅格化。
+   ⚠️ 门控说明（防跨机型回归）：①仅触屏设备（hover:none + pointer:coarse）——电脑端外壳
+   布局与图层行为零变化；②无整页背景图不挂类＝零额外显存（纯文字/图标页无收益故不付代价）。 */
+@media (hover: none) and (pointer: coarse) {
+  .desktop-pages.has-page-bg .page-slide { will-change: transform; }
+}
 
 /* 分页指示器（v3.6.x：不再占一整行——悬浮在桌面底部中央，不挤占/遮挡功能图标） */
 #page-phone { position:relative; }
@@ -400,6 +468,9 @@
   background:rgba(0,0,0,.4);
 }
 .desk-lib-box {
+  /* FIX 2026-09-17 #690：min() 兜底（同 .app-ico）——老内核丢弃整条声明时面板
+     宽度回退 auto，组件库弹窗撑成整屏。width+max-width 组合与 min() 取值等价 */
+  width:88vw; max-width:380px;
   width:min(88vw,380px); max-height:78vh; overflow:auto;
   background:#fff; border-radius:16px; padding:16px;
   box-shadow:0 8px 30px rgba(0,0,0,.2);

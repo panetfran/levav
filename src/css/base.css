@@ -380,6 +380,15 @@ html { margin:0; padding:0; }
 .splash-loading {
   margin-top:16px; font-size:12px; color:var(--hint-ink); letter-spacing:1px;
 }
+/* #716：加载中省略号步进动画——大数据桌面（IDB 41MB 级）恢复期给「缓冲感」，
+   纯 width 步进不触发重排层级、开销可忽略；数据就绪该行 hidden 后动画随之无成本 */
+.splash-loading::after {
+  content:'···';
+  display:inline-block; width:0; overflow:hidden; vertical-align:bottom;
+  text-align:left; letter-spacing:1px;
+  animation:splashDots 1.2s steps(3,end) infinite;
+}
+@keyframes splashDots { 0% { width:0; } 100% { width:3.2em; } }
 .splash-loading[hidden] { display:none; }
 /* #657：开屏等待较久时的一行原因说明——用户把开屏慢当 bug，就地解释比让他翻公告有效。
    小字 + 次级色限宽，不抢上面那句加载提示的视线 */
@@ -557,14 +566,11 @@ html.force-mobile #page-chat { background: var(--page-bg-grad); }
 html.force-mobile button, html.force-mobile .app, html.force-mobile .set-row,
 html.force-mobile .tab, html.force-mobile .msg, html.force-mobile .feed-post,
 html.force-mobile .mail-item { -webkit-tap-highlight-color:transparent; }
-/* v3.9.x：桌面卡片缩放在手机端禁用（同 home.css @media(max-width:900px) 块，
-   force-mobile 下该媒体查询不命中，此处兜底；选择器跨域引用 home.css 类名但不改其逻辑）
-   v3.16.x：选择器随 home.css 同步——三页统一 .page-slide 缩放，兜底也统一 */
-html.force-mobile .page-slide,
-html.force-mobile .deco-widget, html.force-mobile .mini-card, html.force-mobile .checkin,
-html.force-mobile .weekend-box, html.force-mobile .music-widget,
-html.force-mobile .memo-card, html.force-mobile .mood-card, html.force-mobile .week-card,
-html.force-mobile .desk-period, html.force-mobile .app-grid, html.force-mobile .mini-row { zoom:1; }
+/* v3.9.x：桌面卡片缩放在手机端禁用——#707 起改由 JS 类门控兜底（personalize.js
+   syncDeskZoomClass：宽窗>900px 且非平板且缩放值≠1 才挂 html.desk-zoom-font/card），
+   手机端根本不产生 zoom 声明，此处原 html.force-mobile 的 zoom:1 重置块已删——
+   zoom:1 的声明本身也会把子树带进 WebKit 新 zoom 实现的继承/布局路径
+   （iOS 卡顿红线，见 home.css #707 注释） */
 
 /* v3.5.139：真全屏（Fullscreen API / PWA display_override 直启）时 .phone 铺满整个窗口——
    桌面 F11 等全屏由 fullscreen.js 加 .fs-active 类触发；PWA 安装直启走 display-mode 媒体查询。
@@ -885,11 +891,9 @@ html.tablet .phone .page.full .chat-head { padding-top:calc(10px + var(--mochi-s
 html.tablet .phone .page.full { padding-bottom:0; }
 html.tablet #page-chat { background:var(--page-bg-grad); }
 html.tablet .tabbar { margin-bottom:var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)); }
-/* 平板不应用桌面缩放（zoom 是 iOS 卡顿红线；平板按手机端体验处理，与竖屏一致） */
-html.tablet .page-slide { zoom:1; }
-html.tablet .deco-widget, html.tablet .mini-card, html.tablet .checkin,
-html.tablet .weekend-box, html.tablet .music-widget, html.tablet .memo-card,
-html.tablet .mood-card, html.tablet .week-card, html.tablet .desk-period, html.tablet .app-grid, html.tablet .mini-row { zoom:1; }
+/* 平板不应用桌面缩放——#707 起由 JS 类门控保证（syncDeskZoomClass 对 isTablet 永不挂
+   html.desk-zoom-font/card，zoom 声明不存在），原 html.tablet 的 zoom:1 重置已删：
+   声明 zoom:1 本身也会让平板子树进 WebKit 新 zoom 实现的路径（iOS 卡顿红线） */
 /* 平板大屏：桌面图标放大、消息气泡限宽（避免整行过长） */
 html.tablet .app .app-ico { width:64px; height:64px; }
 html.tablet .app .app-name { font-size:12px; }
@@ -1116,7 +1120,6 @@ html.ios-cover-top .phone .statusbar {
 .modal-textarea.ce-box {
   max-height:38vh;
   overflow-y:auto;
-  -webkit-overflow-scrolling:touch;
   overscroll-behavior:auto;
 }
 /* v3.25.x：长文只读弹窗（诊断信息）——宽版 + 放大多行框，避免窄小而难核对；
@@ -1133,7 +1136,9 @@ html.ios-cover-top .phone .statusbar {
    输入框视觉上「往上滑」（iPhone16P/iOS26 Safari 批量导入弹窗报障）。顶对齐后
    弹窗位置锚定顶部（安全区上边距兜底），高度变化只影响底边，输入区不再移动 */
 .modal-mask.modal-kb-dock { align-items: flex-start; }
-.modal-mask.modal-kb-dock .modal { margin-top: max(10px, env(safe-area-inset-top)); }
+/* FIX 2026-09-18 #718：env 补 ,0px 内定值——不支持 env 的老内核整条 max() 失效＝键盘期顶对齐
+   弹窗丢上边距贴死状态栏；与全站 var(--mochi-safe-*, env(..., 0px)) 双兜底口径对齐 */
+.modal-mask.modal-kb-dock .modal { margin-top: max(10px, env(safe-area-inset-top, 0px)); }
 .modal-swatches { display:flex; flex-wrap:wrap; gap:12px; margin-top:4px; }
 .modal-swatches[hidden] { display:none; }
 .modal-pills { display:flex; flex-wrap:wrap; gap:8px; margin-top:4px; }
@@ -1147,7 +1152,7 @@ html.ios-cover-top .phone .statusbar {
    胶囊行溢出仍先在行内滚，到边界放行给 .modal */
 .modal-group-chips {
   display:flex; flex-wrap:wrap; gap:8px; margin-top:4px;
-  max-height:36vh; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  max-height:36vh; overflow-y:auto;
   overscroll-behavior:auto;
 }
 .modal-group-chips[hidden] { display:none; }
@@ -1273,6 +1278,22 @@ html.ios-cover-top .phone .statusbar {
 }
 .ver-update-bar[hidden] { display:none; }
 .ver-update-bar .vub-txt { font-weight:600; }
+/* v3.26.x #714：电脑端宽屏（>900px，桌面模拟器外壳形态）视口 fixed 浮层锚回手机壳——
+   手机上「视口=手机壳」，fixed 通栏条/贴边钮贴边即贴壳；电脑上视口 1440+，同样写法会
+   落到浏览器窗口边缘＝「按钮飞出屏幕」（用户实报）。壳几何（v3.5.139 布局推导）：
+   壳中线=视口中线、壳宽 390 ⇒ 壳左右沿=50%±195px；body padding24+双轴 flex 居中、
+   壳高 min(844px,100dvh-48px) ⇒ 壳上/下沿距视口沿=max(24px, 50vh-422px)。
+   :not 链排除满屏形态（html.force-mobile 伪装兜底 / .fs-active 等真全屏时
+   .phone=100vw，贴视口边=贴壳，此时锚回 390 反而错位）。老内核不识 max()/嵌套
+   calc/:not 链时整条声明丢弃、回退原视口贴边（同改动前宽屏表现）；
+   ≤900px 手机不进查询、零影响。 */
+@media (min-width: 901px) {
+  /* #717：:not(.tablet) 排除平板——html.tablet 时 .phone=100vw 全宽铺满（无 390 外壳），
+     视口贴边即贴壳；不排除会把浮层锚到「幽灵外壳」挤到平板屏幕中央（iPad 横屏 1180×820
+     实测 vub 落 395..785、群设置整页仅 390 宽；iPad Pro 竖屏 1024 同命中） */
+  html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .ver-update-bar { top: max(24px, 50vh - 422px); left: calc(50% - 195px); right: calc(50% - 195px); }
+  html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .pwa-install, html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .pwa-ios-hint { right: calc(50% - 179px); bottom: calc(max(24px, 50vh - 422px) + 16px); }
+}
 .ver-update-bar .vub-act {
   flex-shrink:0; padding:5px 14px; border-radius:99px;
   background:var(--card-bg); color:var(--ink); font-weight:700; cursor:pointer;
@@ -1333,3 +1354,19 @@ html.ios-cover-top .phone .statusbar {
 /* FIX 2026-09-13 #387 媒体池令牌缺数据占位（media-pool 观察器打标）——公用库跨设备共享
    不带池键时令牌解不出图，纯白不可辨；置灰+占位尺寸诚实可见，导入完整备份后自动恢复 */
 img.media-tok-missing { background: rgba(0,0,0,.06); min-width: 48px; min-height: 48px; object-fit: contain; opacity: .5; }
+
+/* v3.26.x #707 屏幕微调·整体位移轴（mobile-adapt.js mochiScreenAdj 写 var）：
+   整页相对偏移，治「某些屏幕整体位置偏上/偏下导致顶部或底部被遮挡」。正=下移、负=上移。
+   .phone 本就 position:relative（base.css 顶部主规则），top 位移不改文档流、无缩放（技术红线只禁 zoom/scale） */
+.phone { top: var(--mochi-shift-adj, 0px); }
+
+/* v3.26.x #738：安卓自带浏览器兼容警示卡——红色警示形态（同 #315b 免责卡先例，置顶第二位） */
+.splash-alert.splash-browser {
+  padding:13px 15px 14px 16px;
+  background:#fdecec; border-left:3px solid #d23430; border-radius:12px;
+}
+.splash-alert.splash-browser .splash-alert-t { color:#c22b27; font-size:13px; letter-spacing:1px; }
+.splash-alert.splash-browser .splash-alert-t::before { background:#c22b27; }
+.splash-alert.splash-browser p { color:#7a1d1a; font-size:12.5px; font-weight:700; line-height:1.8; }
+.splash-alert.splash-browser strong { color:#c22b27; font-weight:800; }
+[data-theme="dark"] .splash-alert.splash-browser { background:rgba(210,52,48,.16); border-color:#e05555; box-shadow:none; }

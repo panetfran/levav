@@ -224,6 +224,18 @@
   100% { opacity:0; transform:translate(-50%, 10px); }
 }
 
+/* #724 多行长文案收纳（跨域声明：AI-B 修后台通知测试「字飞出黑色框」，用户直派）——
+   #cc-toast 原本无换行/限高约束：消息里的 \n 被 white-space:normal 折成空格、
+   十几行诊断挤成一坨超高胶囊＝黑框文字溢出观感。pre-line 按行渲染、限高裁剪兜底、
+   长 URL/长串强制断行；单行短提示观感不变（仍居中、胶囊形）。 */
+#cc-toast {
+  white-space:pre-line;
+  line-height:1.45;
+  max-height:min(60vh, 420px);
+  overflow:hidden;
+  overflow-wrap:break-word;
+}
+
 /* ===== 聊天默认字卡页 ===== */
 /* v3.7.x：iOS 性能优化——main 分类 4621 张 .cc-item.glass，.glass 的 box-shadow × 4621
    触发大量 paint、.cc-item 的 transform transition 让每卡成合成层候选，iOS Safari
@@ -601,7 +613,6 @@
 .fav-tabs {
   display:flex; gap:7px; padding:4px 18px 8px; flex-shrink:0;
   overflow-x:auto; scrollbar-width:none; -ms-overflow-style:none;
-  -webkit-overflow-scrolling:touch;
 }
 .fav-tabs::-webkit-scrollbar { display:none; }
 .fav-tab {
@@ -1305,7 +1316,7 @@
 .div-card-row {
   display:flex; gap:7px; overflow-x:auto; padding:6px 2px;
   scrollbar-width:none; -ms-overflow-style:none;
-  -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain;
+  overscroll-behavior-x:contain;
 }
 .div-card-row::-webkit-scrollbar { display:none; }
 .div-pile-card {
@@ -1597,7 +1608,7 @@
 .loc-title b { font-weight:800; }
 /* 滚动容器（头部固定，内容整体滚动） */
 .loc-scroll {
-  flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  flex:1; min-height:0; overflow-y:auto;
 }
 .loc-body {
   padding:14px 16px calc(18px + var(--mochi-safe-bottom, env(safe-area-inset-bottom, 0px)));
@@ -2561,7 +2572,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 /* 音乐库分类筛选条 —— v3.9.x（全部音乐 / 未分类音乐 / 各歌单，横向滚动） */
 .music-lib-filter {
   display:flex; gap:8px; margin-bottom:12px; overflow-x:auto;
-  scrollbar-width:none; -ms-overflow-style:none; -webkit-overflow-scrolling:touch;
+  scrollbar-width:none; -ms-overflow-style:none;
 }
 .music-lib-filter::-webkit-scrollbar { display:none; }
 .mlf-chip {
@@ -2601,6 +2612,8 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
   padding:0 5px; border-radius:5px; flex-shrink:0;
 }
 .sm-src-local { color:var(--ink); border-color:var(--ink); }
+/* #700：导入时浏览器解不动的本地歌「放不了」徽标（真播出来过会自动消失） */
+.sm-src-bad { color:var(--accent,#e74c5e); border-color:var(--accent,#e74c5e); }
 .sm-song-dur { font-size:11px; color:var(--muted); flex-shrink:0; }
 .sm-song-more {
   width:26px; height:26px; border:none; background:transparent; color:#999;
@@ -2756,6 +2769,18 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
   display:flex; flex-direction:column; gap:7px; user-select:none; cursor:grab;
 }
 .sm-float[hidden] { display:none; }
+/* v3.26.x #714：电脑端宽屏视口 fixed 浮层锚回手机壳（壳几何推导与老内核回退见 base.css
+   同号注释）：批量操作条/位置面板/寻踪全屏/音乐批量条/悬浮小框原为「视口贴边」，在
+   电脑上按钮落到窗口边缘＝飞出屏幕。改为壳中线±壳内原偏移、壳上下沿叠加原偏移；
+   html:not 链排除满屏形态（force-mobile/真全屏时 .phone=100vw，贴边即贴壳）；
+   loc-full 四长手（同 #428 老内核兼容口径）。≤900px 手机不进查询、行为不变。 */
+@media (min-width: 901px) {
+  html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .cc-manage-bar { left: calc(50% - 177px); right: calc(50% - 177px); bottom: calc(max(24px, 50vh - 422px) + 18px); }
+  html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .loc-panel { left: calc(50% - 195px); right: calc(50% - 195px); bottom: max(24px, 50vh - 422px); }
+  html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .loc-panel.loc-full { top: max(24px, 50vh - 422px); right: calc(50% - 195px); bottom: max(24px, 50vh - 422px); left: calc(50% - 195px); }
+  html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .music-batch-bar { left: calc(50% - 195px); right: calc(50% - 195px); bottom: max(24px, 50vh - 422px); }
+  html:not(.force-mobile):not(.tablet):not(.fs-active):not(.fs-css-active) .sm-float { left: calc(50% - 183px); top: calc(max(24px, 50vh - 422px) + 80px); }
+}
 .sm-f-info { width:100%; min-width:0; padding-right:18px; }
 .sm-f-name {
   display:block;
@@ -3335,7 +3360,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .msg-snake-side { font-weight:700; min-width:24px; }
 
 /* ===== v3.x：同频 / 伸手 页（桌面第三页动态注入） ===== */
-.tp-body, .ss-body { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; box-sizing:border-box; padding:14px 14px 40px; }
+.tp-body, .ss-body { flex:1; overflow-y:auto; box-sizing:border-box; padding:14px 14px 40px; }
 .tp-card { padding:16px 14px; margin-bottom:14px; border-radius:14px; }
 .tp-label { font-size:13px; color:var(--ink-soft,#888); margin-bottom:8px; }
 .tp-status { font-size:20px; font-weight:600; min-height:28px; }
@@ -3370,7 +3395,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 @keyframes ssTrace { 0%{ left:-60%; opacity:0; } 30%{ opacity:1; } 100%{ left:120%; opacity:0; } }
 
 /* ===== 喝水 / 吃什么 页（桌面第三页动态注入） ===== */
-.water-body, .eat-body { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; box-sizing:border-box; padding:14px 14px 40px; }
+.water-body, .eat-body { flex:1; overflow-y:auto; box-sizing:border-box; padding:14px 14px 40px; }
 .water-card { padding:24px 18px; border-radius:14px; text-align:center; margin-bottom:16px; }
 .water-num { font-size:48px; font-weight:700; color:var(--ink,#222); line-height:1; }
 .water-unit { font-size:14px; color:var(--ink-soft,#999); margin:6px 0 14px; }
@@ -3471,7 +3496,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .eat-switch-go[disabled] { opacity:.45; pointer-events:none; }
 
 /* ===== 番茄钟 页（桌面第三页动态注入） ===== */
-.pomo-body { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; box-sizing:border-box; padding:14px 14px 40px; }
+.pomo-body { flex:1; overflow-y:auto; box-sizing:border-box; padding:14px 14px 40px; }
 .pomo-card { padding:18px 16px 20px; border-radius:14px; text-align:center; margin-bottom:16px; }
 .pomo-tabs { display:flex; gap:8px; justify-content:center; margin-bottom:14px; }
 .pomo-tab { font-size:13px; font-family:inherit; border:none; border-radius:16px; padding:7px 16px; background:rgba(0,0,0,.07); color:var(--ink-soft,#666); -webkit-tap-highlight-color:transparent; }
@@ -3520,7 +3545,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .pmp-menu button[data-pmpc="quit"] { color:#e8533d; border-color:rgba(232,83,61,.3); }
 
 /* ===== 番茄钟 · 陪伴模式专属聊天窗（独立页，不进普通聊天记录） ===== */
-.pmp-c-list { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; box-sizing:border-box; padding:14px 14px 20px; display:flex; flex-direction:column; gap:10px; scrollbar-width:none; -ms-overflow-style:none; overscroll-behavior:contain; }
+.pmp-c-list { flex:1; min-height:0; overflow-y:auto; box-sizing:border-box; padding:14px 14px 20px; display:flex; flex-direction:column; gap:10px; scrollbar-width:none; -ms-overflow-style:none; overscroll-behavior:contain; }
 .pmp-c-list::-webkit-scrollbar { display:none; }
 .pmp-c-row { display:flex; flex-shrink:0; }
 .pmp-c-row.me { justify-content:flex-end; }
@@ -3551,7 +3576,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .pmp-c-chat .pmp-c-empty { font-size:11px; line-height:1.8; }
 
 /* ===== 存钱罐（桌面第三页）：金色小金库 ===== */
-.piggy-body { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; box-sizing:border-box; padding:14px 14px 40px; }
+.piggy-body { flex:1; overflow-y:auto; box-sizing:border-box; padding:14px 14px 40px; }
 .piggy-hero { padding:22px 18px 20px; border-radius:14px; text-align:center; margin-bottom:16px; }
 .piggy-goal-name { font-size:13px; color:#b7791f; margin-bottom:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .piggy-bal { font-size:44px; font-weight:700; color:var(--ink,#222); line-height:1.1; font-variant-numeric:tabular-nums; }
@@ -3792,7 +3817,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .cj-groups {
   display: flex; gap: 8px; align-items: center;
   overflow-x: auto; margin: 0 -18px 2px; padding: 6px 18px 10px;
-  -webkit-overflow-scrolling: touch; scrollbar-width: none;
+ scrollbar-width: none;
   position: -webkit-sticky; position: sticky; top: 0; z-index: 5;
 }
 .cj-groups::-webkit-scrollbar { display: none; }
@@ -3856,10 +3881,18 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .c4-land { animation:c4land .18s ease-out; }
 @keyframes c4land { 0% { transform:scale(1,1); } 45% { transform:scale(1.06,.88); } 100% { transform:scale(1,1); } }
 .c4-wincol::before { background:rgba(127,127,127,.06); }
-.c4-win { animation:c4win .9s ease-in-out infinite alternate; }
-@keyframes c4win {
-  from { filter:brightness(1) drop-shadow(0 0 0 rgba(255,255,255,0)); }
-  to { filter:brightness(1.25) drop-shadow(0 0 7px rgba(255,224,138,.9)); }
+/* #722 iOS 去无限 filter 动画（brightness/drop-shadow 插值每帧重绘不进合成器＝胜利态常驻重绘面）：
+   金晕+提亮烘焙在棋子 ::after 上，只动 opacity/transform 合成属性，视觉同为金光呼吸 */
+.c4-win::after {
+  content:''; position:absolute; inset:0; border-radius:inherit;
+  background:rgba(255,236,180,.30); /* 模拟 brightness(1.25) 提亮 */
+  box-shadow:0 0 7px 1px rgba(255,224,138,.9); /* 模拟金色 drop-shadow，静态烘焙 */
+  opacity:0; pointer-events:none; z-index:2;
+  animation:c4winGlow .9s ease-in-out infinite alternate;
+}
+@keyframes c4winGlow {
+  from { opacity:0; transform:scale(1); }
+  to { opacity:1; transform:scale(1.06); }
 }
 .c4-shake { animation:c4shake .26s ease-in-out; }
 @keyframes c4shake { 0%,100% { transform:translateX(0); } 25% { transform:translateX(-3px); } 50% { transform:translateX(3px); } 75% { transform:translateX(-2px); } }
@@ -3873,7 +3906,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 /* 弱动效偏好：落子/庆祝动画关闭（布局不受影响） */
 @media (prefers-reduced-motion: reduce) {
   .c4-disc { transition-duration:0s !important; }
-  .c4-land, .c4-win, .c4-shake { animation:none; }
+  .c4-land, .c4-win, .c4-win::after, .c4-shake { animation:none; }
 }
 
 /* ===== 合作扫雷（聊天页底部半框，复用 .poke-card 容器与 .pong-overlay 组件） ===== */
@@ -4083,11 +4116,17 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .fish-btn:disabled { opacity:.55; box-shadow:none; }
 .fish-btn[hidden] { display:none; }
 .fish-reel {
+  position:relative; /* #722 提亮层走伪元素 */
   background:linear-gradient(135deg,#f2994a,#e8683a);
   box-shadow:0 3px 8px rgba(232,104,58,.35);
-  animation:fishreelpulse 1s ease-in-out infinite;
 }
-@keyframes fishreelpulse { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.14); } }
+/* #722 iOS 去无限 brightness 动画（filter 插值每帧重绘不进合成器）：改白洗层 opacity 脉冲，视觉同为呼吸提亮 */
+.fish-reel::after {
+  content:''; position:absolute; inset:0; border-radius:inherit;
+  background:#fff; opacity:0; pointer-events:none;
+  animation:fishReelPulse 1s ease-in-out infinite;
+}
+@keyframes fishReelPulse { 0%,100% { opacity:0; } 50% { opacity:.14; } }
 
 /* 页签：今日收获 / 鱼图鉴 / TA送我的 */
 .fish-tabs { display:flex; gap:8px; padding:0 4px; }
@@ -4128,6 +4167,8 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
   font-size:12px; color:#5a7c95;
 }
 .fish-sellbar b { color:#e8963a; font-size:13px; }
+/* #763 日封顶用量提示（今日收获页，仅已产生收入时出现；--muted 色暗色模式天然可读） */
+.fish-capnote { margin-top:6px; text-align:center; font-size:10.5px; color:var(--muted); font-variant-numeric:tabular-nums; }
 .fish-sell {
   flex-shrink:0; padding:8px 16px; border:none; border-radius:99px;
   font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer; color:#fff;
@@ -4180,7 +4221,7 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 @media (prefers-reduced-motion: reduce) {
   .fish-water::before { animation:none; }
   .fish-bobber { animation:none !important; }
-  .fish-reel { animation:none; }
+  .fish-reel, .fish-reel::after { animation:none; } /* #722 同步伪层 */
   .fish-scene[data-mine="biting"] .fish-me .fish-rod,
   .fish-scene[data-ta="biting"] .fish-ta .fish-rod { animation:none; }
   .fish-splash { animation-duration:.01s; opacity:0; }
@@ -4509,7 +4550,7 @@ select.mochi-custom-select-native { display:none; }
 .mochi-custom-select.open .mochi-custom-select-caret { transform:rotate(180deg); }
 .mochi-custom-select-list {
   display:none; position:absolute; top:calc(100% + 4px); left:0; min-width:100%; z-index:60;
-  max-height:34vh; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
+  max-height:34vh; overflow-y:auto; overscroll-behavior:contain;
   background:var(--card-bg); border:1px solid var(--card-border); border-radius:12px;
   box-shadow:0 8px 24px rgba(0,0,0,.12); padding:6px; box-sizing:border-box;
   scrollbar-width:none; -ms-overflow-style:none;
