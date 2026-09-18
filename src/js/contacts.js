@@ -56,7 +56,9 @@
     // 共用的自定义字卡（chatcard.js），cc-scope-migrated 为存量归属迁移幂等标记。
     // v3.30.x：cc-groups-public-off 为公用字卡「分组停用开关」全局根键，同列排除。
     // 都是根命名空间键，绝不能被 migrateLegacy 迁进 default 桌面（否则公用字卡"消失"）
-    'cc-groups-public', 'cc-groups-public-off', 'cc-scope-migrated',
+    // #680：cc-media-names-public 为公用字卡「图片/表情包名称」全局根键（chatcard.js），
+    // 同列排除——否则被迁进 default 后其他桌面的图片名称全部读不到。
+    'cc-groups-public', 'cc-groups-public-off', 'cc-scope-migrated', 'cc-media-names-public',
     // v3.11.x：字卡库公用/专属变动一次性提醒的已读标记（chatcard.js 弹窗），同为全局根键
     'cc-scope-notice-done',
     // v3.12.x：我的表情包改全局共享（chat.js）——键 xy-home-v2:my-emoji-groups 走根命名
@@ -139,6 +141,9 @@
     // v3.26.x #636：表情包面板「隐藏颜文字 / 隐藏emoji」开关（chat-settings.js 注入行，聊天/群聊/
     // 写信共用同一面板）同为全局根键——出生即进 EXCLUDE，不会产生需要回收的 default 副本。
     'hide-tab-kaomoji', 'hide-tab-emoji',
+    // v3.26.x #691：表情包面板「颜文字/emoji 点击直接发送」模式开关（chat-settings.js 注入行，
+    // 聊天/群聊共用同一面板）同为全局根键——出生即进 EXCLUDE，不被 migrateLegacy 迁进 default 桌面。
+    'chat-textcard-direct',
     // #231：完整外观方案（personalize.js full-beauty-schemes，v3.27.x 桌面+聊天合并方案的
     // 方案列表）、美化撤销栈（personalize.js beauty-undo-stack）、更新条一版一弹记忆
     // （pwa.js ver-update-ack-ts / ver-update-notify，#225v2）都是全局根键——此前漏排除，
@@ -795,7 +800,7 @@
     // v3.11.x：颜色改主题变量（内联硬编码浅色在深色模式下白底白字不可见）
     box.style.cssText = 'width:min(92vw,420px);max-height:80vh;display:flex;flex-direction:column;background:var(--card-bg,#fff);color:var(--ink,#111);border-radius:16px;padding:18px;box-shadow:0 8px 30px rgba(0,0,0,.2)';
     box.appendChild(el('div', '', '<div style="font-size:16px;font-weight:600;margin-bottom:4px">联系人 / 桌面</div><div style="font-size:12px;color:var(--muted,#888);margin-bottom:12px">每个联系人数据独立；除朋友圈外，还有部分功能数据在所有桌面共用。<b id="cm-fn-explain">【功能说明】</b><br>「称呼」可设置消息里 TA 的性别叫法（他 / 她 / 不设置）</div>'));
-    const list = el('div', 'cm-list'); list.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-bottom:12px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;flex:1;min-height:0';
+    const list = el('div', 'cm-list'); list.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-bottom:12px;overflow-y:auto;overflow-x:hidden;flex:1;min-height:0';
     getContacts().forEach(c => {
       const row = el('div');
       row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--card-border,#eee);border-radius:10px';
@@ -859,7 +864,7 @@
     const m = ensureModal();
     m.innerHTML = '';
     const box = el('div');
-    box.style.cssText = 'width:min(92vw,420px);max-height:80vh;display:flex;flex-direction:column;background:var(--card-bg,#fff);color:var(--ink,#111);border-radius:16px;padding:18px;box-shadow:0 8px 30px rgba(0,0,0,.2);overflow-y:auto;-webkit-overflow-scrolling:touch';
+    box.style.cssText = 'width:min(92vw,420px);max-height:80vh;display:flex;flex-direction:column;background:var(--card-bg,#fff);color:var(--ink,#111);border-radius:16px;padding:18px;box-shadow:0 8px 30px rgba(0,0,0,.2);overflow-y:auto';;
     const txt =
       '<div style="font-size:16px;font-weight:600;margin-bottom:8px">数据互通说明</div>' +
       '<div style="font-size:13px;font-weight:600;color:var(--danger-ink,#a32d2d);margin-bottom:6px">所有桌面共用的数据</div>' +
@@ -981,7 +986,7 @@
       ? (opts.sub || '看完此间了，选一个联系人桌面进入吧。')
       : '开启后，每次打开应用直接进入所选桌面；选「关闭」即不设置。';
     ov.appendChild(sub);
-    const wrap = el('div'); wrap.style.cssText = 'flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;padding:2px 16px 18px;display:flex;flex-direction:column;gap:10px';
+    const wrap = el('div'); wrap.style.cssText = 'flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:2px 16px 18px;display:flex;flex-direction:column;gap:10px';
     const mkCard = function (title, tagText, isCurrent, tagOn) {
       const card = el('div');
       card.style.cssText = 'display:flex;align-items:center;gap:10px;padding:14px;border:1px solid var(--card-border,#eee);border-radius:14px;background:var(--card-bg,#fff);cursor:pointer';
@@ -1133,32 +1138,66 @@
   if (efCjian) {
     try { efCjian.checked = entryCjianFirstOn(); } catch (e) {}
     efCjian.addEventListener('change', function () {
-      try { regStore().set('entry-cjian-first', efCjian.checked ? '1' : '0'); } catch (e) {}
+      const on = efCjian.checked;
+      try { regStore().set('entry-cjian-first', on ? '1' : '0'); }
+      catch (e) { efCjian.checked = !on; toastEntry('设置没能保存，请重试'); return; }
+      toastEntry(on ? '打开时先进入此间 已开启：下次打开应用先进此间'
+                    : '打开时先进入此间 已关闭：下次打开应用不再先进此间');
     });
   }
   const efList = document.getElementById('entry-show-list');
   if (efList) {
     try { efList.checked = entryShowListOn(); } catch (e) {}
     efList.addEventListener('change', function () {
-      try { regStore().set('entry-show-list', efList.checked ? '1' : '0'); } catch (e) {}
+      const on = efList.checked;
+      try { regStore().set('entry-show-list', on ? '1' : '0'); }
+      catch (e) { efList.checked = !on; toastEntry('设置没能保存，请重试'); return; }
+      toastEntry(on ? '打开时显示联系人列表 已开启：下次打开应用先列出全部联系人'
+                    : '打开时显示联系人列表 已关闭：下次打开应用不再列出联系人');
     });
   }
   const efDefRow = document.getElementById('row-entry-default-contact');
+  // 「默认进入的桌面」行的回显文案（刷新后 / 选择后都要按存储值重算）
+  function refreshEntryDefVal() {
+    const val = document.getElementById('entry-default-contact-val');
+    if (!val) return;
+    const id = entryDefaultCid();
+    const c = id ? getContacts().find(x => x.id === id) : null;
+    val.textContent = c ? (c.name || c.id) : '关闭';
+  }
   if (efDefRow) {
-    const refreshDefVal = function () {
-      const val = document.getElementById('entry-default-contact-val');
-      if (!val) return;
-      const id = entryDefaultCid();
-      const c = id ? getContacts().find(x => x.id === id) : null;
-      val.textContent = c ? (c.name || c.id) : '关闭';
-    };
-    refreshDefVal();
+    refreshEntryDefVal();
     efDefRow.addEventListener('click', function () {
-      openContactPicker({ mode: 'setDefault', onDone: function () { refreshDefVal(); syncEntryModes(); } });
+      openContactPicker({ mode: 'setDefault', onDone: function () { refreshEntryDefVal(); syncEntryModes(); } });
     });
   }
+  // 入口三行的通用轻提示（window.toast 由 device.js 提供；缺失时静默，不阻断开关）
+  function toastEntry(msg) { try { if (typeof window.toast === 'function') window.toast(msg); } catch (e) {} }
+  // v3.27.x 修复（用户：设置里「打开时先进入此间」我并没有开启，但每次打开 App 都会先进此间）：
+  //   三个开关 / 回显都只在脚本解析时读一次存储，而数据是【异步】从 IndexedDB 回填的
+  //   （idb.js 的 idbRestore → mochi-restore-done）。localStorage 副本丢失而 IDB 仍持有新值时
+  //   （LS 配额满导致 setItem 静默失败被标 ls-dirty、浏览器清存储、iOS 常见），解析时读到的是
+  //   旧值/空值 → 开关显示「关」，被标脏的键在回填后才把真实值写回来 → 入口流程按真实值
+  //   执行（每次打开都先进此间），开关却永远停在「关」，用户看到的就是「没开却每次都进」。
+  //   实测时间线（产物 + 剥掉 LS 值的重载）：226ms 开关读到空值＝未勾选 → 803ms
+  //   __mochiDataReady 且 LS 恢复为 '1' → 开关仍为未勾选，入口流程照常进此间。
+  //   修法与 incoming-requests.js 的 addSettingToggle 同款：数据回填完成 / 切桌面时按存储值
+  //   重同步三行 UI（存储值恒为权威，UI 不再说谎；勾选项也就真的能一键关掉）。
+  function syncEntryToggles() {
+    const cbC = document.getElementById('entry-cjian-first');
+    // 被「默认进入的桌面」取代而置灰的两项：勾选态由 syncEntryModes 强制关闭，这里不抢改
+    if (cbC && !cbC.disabled) cbC.checked = entryCjianFirstOn();
+    const cbL = document.getElementById('entry-show-list');
+    if (cbL && !cbL.disabled) cbL.checked = entryShowListOn();
+  }
+  function syncEntryUI() {
+    try { syncEntryModes(); } catch (e) {}
+    try { syncEntryToggles(); } catch (e) {}
+    try { refreshEntryDefVal(); } catch (e) {}
+  }
+  document.addEventListener('mochi-restore-done', syncEntryUI);
   syncEntryModes();
-  document.addEventListener('contact-switched', syncEntryModes);
+  document.addEventListener('contact-switched', syncEntryUI);
 
   // 设置页入口
   const row = document.getElementById('row-contacts');

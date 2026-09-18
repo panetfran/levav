@@ -19,7 +19,7 @@
   function gSet(k, v) {
     try { if (window.xyStore) window.xyStore(GNS).set(k, v); } catch (e) {}
   }
-  function toast(msg) {
+  function toast(msg, dur) {
     let t = document.getElementById('cc-toast');
     if (!t) {
       t = document.createElement('div');
@@ -29,7 +29,13 @@
     t.textContent = msg;
     t.className = 'cc-toast'; void t.offsetWidth; t.className = 'cc-toast show';
     clearTimeout(t._timer);
-    t._timer = setTimeout(() => { t.className = 'cc-toast'; }, 2000);
+    // #708 自检结果多行可读：支持自定义驻留（默认仍 2s）
+    // #724 驻留真生效：#cc-toast.show 的 CSS 动画固定 2.6s forwards 到点必淡出——#708 给的
+    // 9 秒驻留实际 2.6 秒就被动画吞掉（红米 K80 实报「测试结果一闪就没＝测试失效」实锤之一）。
+    // 内联 animationDuration 随 dur 覆盖 CSS 固定值，88% 处才开始淡出的时间轴随驻留等比拉长；
+    // JS 隐藏定时器照旧兜底。元素级内联样式只影响本模块调用，不碰全局 toast CSS。
+    t.style.animationDuration = (dur || 2600) + 'ms';
+    t._timer = setTimeout(() => { t.className = 'cc-toast'; }, dur || 2000);
   }
 
   // ===== v3.44.x：保活音频可换（默认静音音频 / 用户上传自定义音频）=====
@@ -78,7 +84,7 @@
     if (keepEnabled && keepAudio && keepAudio.el) {
       try {
         keepAudio.el.src = ensureKeepAudioDataUrl();
-        keepAudio.el.volume = 0.05;
+        keepAudio.el.volume = KA_VOL_BASE; // #724：与启动档同源（原硬编码 0.05）
         if (!musicNowPlaying()) { const p = keepAudio.el.play(); if (p && p.catch) p.catch(function () {}); }
       } catch (e) {}
     }
@@ -86,12 +92,12 @@
     toast('已恢复默认静音音频');
   }
   function kaPickCustomAudio() {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'audio/*';
-    input.onchange = function () {
-      const f = input.files && input.files[0];
-      if (!f) return;
+    // FIX 2026-09-18 #755：统一走 window.mochiFilePick（原实现 detached＋无 label＋accept 迟到）
+    window.mochiFilePick({
+      id: 'mochi-ka-audio-pick', accept: 'audio/*',
+      onFiles: function (files) {
+      const f = files && files[0];
+      if (!f) { toast('没有取到音频，请再选一次'); return; }
       if (f.size > 3 * 1024 * 1024) toast('音频较大（>3MB），可能占用较多存储空间');
       toast('正在读取音频…');
       const r = new FileReader();
@@ -112,8 +118,8 @@
       };
       r.onerror = function () { toast('音频读取失败'); };
       r.readAsDataURL(f);
-    };
-    input.click();
+      }
+    });
   }
   function openKaAudioPicker() {
     if (!window.openModal) return;
@@ -249,6 +255,14 @@
   // 「不是静音音频」。iOS 无安卓那套无声节流，保活只要求「有非零样本在播」：
   // iOS 把幅度降到 ±3 LSB 级（0.002 × 0.05 ≈ -80dBFS，任何扬声器物理不可闻，
   // 但样本非零不构成数字静音）；安卓同型问题多机型复发（#190：OPPO Find X9 自带浏览器 HeyTapBrowser 等「一进网页就有底噪/电流声」）——220Hz 低频纯音在人耳最敏感频段、循环常播，-60dBFS 在灵敏扬声器上实听即持续嗡声，说明 0.02 下限过高；降为 0.006（×0.05 音量 ≈ -88dBFS，物理不可闻）：防无声节流要的是「样本非零 + volume>0」（浏览器静音检测按零样本/静音状态判定，不按响度），非零即保活有效；若保活因此失效（后台被冻结）再回调上限并换其他豁免信号，不回 220Hz 大音量（原安卓幅度 0.02）。
+  // #724 保活音量余量分级（18kHz 频率继续扛「物理不可闻」，数字电平只加余量不加响度）：
+  // 红米 K80 Chrome 等新内核再次收紧 audible 判定（#260 在 Chromium 152 已收过一次：
+  // 0.02×0.05=0.001 的 4 倍余量仍可能被判「无声」→ 播放豁免丢失 → 后台整页被冻结/丢弃，
+  // 用户实报「挂一会后台、点回来页面被刷新」＝标签被丢弃重载的直接形态）。基础档
+  // 0.02×0.2=0.004（-48dBFS，18kHz 经手机扬声器高频天然滚降 20~40dB 后物理不可闻，
+  // #207 结论不变）；心跳断流取证命中一次即升 KA_VOL_MAX=0.35（-43dBFS）仍不可闻。
+  // iOS 分支 amp 0.002 且 WebKit 忽略 <audio>.volume（#340），完全不受影响；自定义音频仍 volume=1。
+  const KA_VOL_BASE = 0.2, KA_VOL_MAX = 0.35;
   let KEEP_AUDIO_DATAURL = '';
   // v3.26.x 收口第二批：iOS 判定改读唯一判定源 device.js（mochiDevice.isIOS，
   // 含 iPadOS Macintosh 伪装分支 #144）——此前这里自拼一份 UA 正则 + 伪装检测，
@@ -473,6 +487,19 @@
   function kaHbStop() {
     if (kaHbTimer) { clearInterval(kaHbTimer); kaHbTimer = null; }
   }
+  // #724 保活失效取证计数（持久化，诊断【保活现场】与测试按钮展示）：stall=心跳断流次数
+  // （隐藏期定时器停摆过＝冻结/丢弃实锤，页面即便活着回来也算）；died=后台会话暴毙次数
+  // （上个会话没能活着回来＝标签被系统丢弃/杀掉，回来自动重载＝「点回来页面被刷新」）。
+  // 历史累计、跨会话保留，零机型分支——「保活到底有没有生效」从口述猜变成有数可查。
+  let kaEv = { stall: 0, died: 0 };
+  try {
+    const _evSaved = gGet('__ka-ev');
+    if (_evSaved && String(_evSaved).charAt(0) === '{') {
+      const _ev = JSON.parse(_evSaved);
+      if (_ev && typeof _ev === 'object') kaEv = Object.assign(kaEv, _ev);
+    }
+  } catch (e) {}
+  function kaEvSave() { try { gSet('__ka-ev', JSON.stringify(kaEv)); } catch (e) {} }
   // 独立监听器（#153 的 hidden 监听器在音频播放中会提前 return，语义不同不共用）
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') {
@@ -481,10 +508,30 @@
     } else {
       if (kaHb) {
         kaHb.resumed = Date.now();
+        // #724 断流取证：隐藏期最后一拍距回前台 >90s＝中途定时器停摆过（冻结/丢弃），计一次
+        // 并把保活音量升到 KA_VOL_MAX（余量自愈一档、本会话不回改；iOS 忽略 volume 不受影响）
+        if (kaHb.ts && kaHb.resumed - kaHb.ts > 90000) {
+          kaEv.stall++; kaEvSave();
+          try { if (keepAudio && keepAudio.el && !kaCustomAudio) keepAudio.el.volume = KA_VOL_MAX; } catch (e) {}
+        }
         try { if (window.idbSet) window.idbSet(KA_HB_KEY, kaHb); } catch (e) {}
       }
       kaHbStop();
     }
+  });
+  // #724 上个会话「暴毙」取证：启动时读到的心跳记录若无 resumed（没回过前台）也无 bye
+  // （pagehide 告别标记）＝上个后台会话没能活着回来。pagehide 在关标签/导航时会触发、
+  // 进程被杀/标签被丢弃时不会触发，恰好构成「有序结束 vs 暴毙」的判别（bye 标记只在
+  // kaHb 存在的本会话写，避免把用户开着没用保活的会话误记成保活失效）。
+  try {
+    if (window.idbGet) window.idbGet(KA_HB_KEY).then(function (old) {
+      if (old && old.n > 0 && !old.resumed && !old.bye) { kaEv.died++; kaEvSave(); }
+    }).catch(function () {});
+  } catch (e) {}
+  window.addEventListener('pagehide', function () {
+    if (!kaHb) return;
+    kaHb.bye = 1;
+    try { if (window.idbSet) window.idbSet(KA_HB_KEY, kaHb); } catch (e) {}
   });
 
   // #260：诊断出口——device.js「保活现场」行消费（诊断在用户操作时生成，与加载顺序无关）
@@ -500,7 +547,8 @@
       ms: ms,
       pc: kaPc1 ? (kaPc1.connectionState || 'new') : 'off',
       pcNext: kaWebrtcTimer ? kaWebrtcRebuildDelay : 0,
-      hb: kaHb ? { n: kaHb.n, hid: kaHb.hid, ts: kaHb.ts, resumed: kaHb.resumed, trail: (kaHb.trail || []).slice() } : null
+      hb: kaHb ? { n: kaHb.n, hid: kaHb.hid, ts: kaHb.ts, resumed: kaHb.resumed, trail: (kaHb.trail || []).slice() } : null,
+      ev: { stall: kaEv.stall, died: kaEv.died }
     };
   };
 
@@ -514,7 +562,8 @@
       const keepEl = document.createElement('audio');
       keepEl.loop = true;
       // 自定义音频是用户主动选的（白噪音/助眠等），按原音量播放；默认静音音频压到近无声
-      keepEl.volume = kaCustomAudio ? 1 : 0.05;
+      // #724：基础档音量升级 KA_VOL_BASE（0.05→0.2，见上方分级说明），治新内核 audible 收紧后豁免丢失
+      keepEl.volume = kaCustomAudio ? 1 : KA_VOL_BASE;
       keepEl.src = src;
       keepEl.setAttribute('playsinline', '');
       // v3.13.x：play/pause 事件跟踪——play 成功刷新"最近播过"，外部打断（pause）
@@ -903,7 +952,15 @@
       let done = false;
       const t = setTimeout(function () { if (!done) { done = true; reject(new Error('ka-timeout')); } }, ms);
       try {
-        p.then(function (v) { if (!done) { done = true; clearTimeout(t); resolve(v); } },
+        // FIX 2026-09-17 #705 兼容 thunk——#673 把 showNotification 调用改成本函数不支持的
+        //   thunk 形态（传 function 而非 Promise），而这里仍直接 p.then：函数没有 .then →
+        //   TypeError 进 catch → reject → STRIP_LADDER 四级降级被同一个 TypeError 连环「失败」
+        //   秒耗尽 → resolve(false)，reg.showNotification 从未执行。后果＝#673 部署后所有
+        //   机型后台通知全灭（无头实测 gateStats.sent=1 而 showNotification 0 次调用、无任何
+        //   报错）。修法：传函数则先调用取 Promise（同步 throw 同样落进本 catch），传
+        //   Promise 维持原行为；Promise.resolve 兜住返回 undefined 的实现。
+        const pr = (typeof p === 'function') ? p() : p;
+        Promise.resolve(pr).then(function (v) { if (!done) { done = true; clearTimeout(t); resolve(v); } },
           function (e) { if (!done) { done = true; clearTimeout(t); reject(e); } });
       } catch (e) { if (!done) { done = true; clearTimeout(t); reject(e); } }
     });
@@ -925,11 +982,53 @@
     };
     return kaWithTimeout(start(), 5000).catch(function () { return null; });
   }
-  function showSysNotification(title, opts) {
+  // FIX 2026-09-17 #673 发送链三处「静默丢失」补齐（与 #614 同族——用户又报「后台弹窗收不到」，
+  //   红米K80 Chrome 等多机型同现）。#614 解决的是 ready/showNotification 的 Promise 永不落地，
+  //   本次是同一类「不报错、也不发」的剩余三个口子：
+  //   ① 同步抛错逃逸：kaWithTimeout(reg.showNotification(...)) 是先求值再包超时——showNotification
+  //      同步 throw 时异常穿透 prepMediaBlobs 回调（落进 dataUrlToBlob 的 fetch promise ＝未处理
+  //      拒绝），发送链既不 resolve 也不走降级重发 ⇒ 整条通知静默消失、测试按钮也无结果。改为传 thunk。
+  //   ② 页面通道在隐藏态不可显示却报成功：Chrome 安卓对隐藏页面的 new Notification() 静默抑制
+  //      （不弹也不报错），原实现 resolve(true) ⇒ 调用方 markNotified（该内容此后不再弹）＋ 测试按钮
+  //      写「✓ 测试通知已发送（Service Worker）」＝用户侧什么都没弹、诊断还说一切正常。现在隐藏态
+  //      走页面通道一律 resolve(false)（未真正提交显示，不记「已通知」指纹，补发成功还能弹）。
+  //   ③ SW 未就绪时整条丢：只等一次窗口就判死，弱网/刚被回收重建即永久丢失。现在隐藏态挂一次
+  //      「就绪即补发」（swNotifyLater，最多等 60s），仍就绪不了才回退页面通道。
+  //   ④ lastNotifyChannel 如实记录本次实际走的通道——测试按钮据此说真话，诊断不再指错层。
+  let lastNotifyChannel = '';   // 'sw' | 'page' | 'none'：最近一次实际通道
+  window.bgNotifyLastChannel = function () { return lastNotifyChannel; };
+  let swLaterTimer = null;      // 「就绪即补发」单发闸（同时只挂一条，防重复补发）
+  function swNotifyLater(title, opts, chanOut) {
+    // #708：补发通道同样按调用独立回报（与 showSysNotification 的 note 同口径）
+    const note = function (ch) { lastNotifyChannel = ch; if (typeof chanOut === 'function') { try { chanOut(ch); } catch (e) {} } };
+    if (swLaterTimer) return;
+    if (!('serviceWorker' in navigator) || !navigator.serviceWorker) return;
+    let done = false;
+    const finish = function () { done = true; if (swLaterTimer) { clearTimeout(swLaterTimer); swLaterTimer = null; } };
+    swLaterTimer = setTimeout(finish, 60000);
+    kaWithTimeout(navigator.serviceWorker.ready, 60000).then(function (reg) {
+      if (done || !reg) return;
+      finish();
+      const o = Object.assign({}, opts);
+      // 补发求稳：媒体字段全不带——纯文字通知最不容易被内核/系统挑掉（错过一次就不再错过）
+      delete o.image; delete o.icon; delete o.badge;
+      if (!o.urgency) o.urgency = 'high';
+      try { reg.showNotification(title, o); note('sw'); } catch (e) {}
+    }).catch(function () { finish(); });
+  }
+  function showSysNotification(title, opts, chanOut) {
     opts = opts || {};
+    // #708 自检优化：通道回报支持「每次调用独立收集」——lastNotifyChannel 是全局共享，
+    // 真实消息/来电/测试谁后发谁写，自检读全局可能读到别的通知的通道＝结果串台。
+    // 各决策点改走 note()：全局语义不变，调用方第三参传回调即可拿到自己那一条的通道。
+    const note = function (ch) {
+      lastNotifyChannel = ch;
+      if (typeof chanOut === 'function') { try { chanOut(ch); } catch (e) {} }
+    };
     return new Promise(function (resolve) {
       try {
-        if (!('Notification' in window) || Notification.permission !== 'granted') { resolve(false); return; }
+        if (!('Notification' in window) || Notification.permission !== 'granted') { note('none'); resolve(false); return; }
+        const hidden = document.visibilityState === 'hidden';
         const pageFallback = function () {
           // SW 不可用回退页面路径：去掉 image/icon/badge（页面 Notification 对
           // dataURL 图片/图标不稳定，带上会导致整条通知失败，v3.5.118 教训）
@@ -937,7 +1036,12 @@
           delete noMedia.image;
           delete noMedia.icon;
           delete noMedia.badge;
-          try { new Notification(title, noMedia); resolve(true); } catch (e) { resolve(false); }
+          note('page');
+          try {
+            new Notification(title, noMedia);
+            // #673：隐藏态下页面通知被内核静默抑制，不算「已提交显示」
+            resolve(!hidden);
+          } catch (e) { note('none'); resolve(false); }
         };
         if ('serviceWorker' in navigator && navigator.serviceWorker) {
           // v3.5.137：urgency:'high' 让通知以「高紧迫度」发送——Chrome 安卓上
@@ -953,19 +1057,23 @@
           // v3.14.x：badge 同样走 Blob 直传（prepMediaBlobs 统一转换）
           if (!swOpts.badge) swOpts.badge = BADGE_DATAURL || NOTIFY_ICON || undefined;
           kaSWReady().then(function (reg) {
-            if (!reg) { pageFallback(); return; }
+            // #673：SW 未就绪（被回收/弱网注册中）时先挂「就绪即补发」——隐藏态下
+            // 页面通道根本不会显示，不补发就是整条丢；前台则直接走页面通道（可见即能弹）
+            if (!reg) { if (hidden) swNotifyLater(title, opts, chanOut); pageFallback(); return; }
             // v3.14.x：逐级降级重发——带 image 失败 → 去 image；仍失败 → 去 badge；
             // 最后连 icon 也去掉只发纯文字。保证文字通知不因任一媒体字段异常整条丢失
             const STRIP_LADDER = [[], ['image'], ['image', 'badge'], ['image', 'badge', 'icon']];
             let ladderIdx = 0;
             const tryNext = function () {
-              if (ladderIdx >= STRIP_LADDER.length) { resolve(false); return; }
+              if (ladderIdx >= STRIP_LADDER.length) { note('none'); resolve(false); return; }
               const attempt = Object.assign({}, swOpts);
               STRIP_LADDER[ladderIdx++].forEach(function (k) { delete attempt[k]; });
               prepMediaBlobs(attempt, function () {
                 // #614：showNotification 本身也加超时——防止个别内核返回的 Promise 不落地
-                kaWithTimeout(reg.showNotification(title, attempt), 4000)
-                  .then(function () { resolve(true); }, tryNext);
+                // #673：thunk 形式——同步 throw 也必须落进超时器的 reject 通道（原写法先求值，
+                //   异常直接穿透回调＝发送链卡死、降级重发不跑）
+                kaWithTimeout(function () { return reg.showNotification(title, attempt); }, 4000)
+                  .then(function () { note('sw'); resolve(true); }, tryNext);
               });
             };
             tryNext();
@@ -973,7 +1081,7 @@
         } else {
           pageFallback();
         }
-      } catch (e) { resolve(false); }
+      } catch (e) { note('none'); resolve(false); }
     });
   }
   // v3.5.114：请求权限（支持成功/失败回调）——失败时开关要弹回关闭，
@@ -1151,90 +1259,130 @@
       runTest(env);
     });
     function runTest(env) {
-      // v3.5.118：诊断首行显示当前版本——先核对手机上是否最新部署，
-      //   旧版（如后台保活前）诊断结果会误导
+      // #724 测试只写测试（用户直派「测试只需要写测试的，别和功能下方说明重复；黑框字都飞出来了」）：
+      //   环境体检/分步排查在本行下方说明（gs-sub）、本行「功能说明」胶囊、信息诊断三处本就全有，
+      //   测试结果里整段复读＝十几个 env 行把 toast 撑爆（字飞出黑框）且根本读不完；叠加 #708 的
+      //   9 秒驻留被 CSS 动画固定 2.6s 淡出吞掉（见 toast() 内 #724 注释）＝「结果一闪就没、测试失效」。
+      //   现在结果只留测试本体：保活锚一行 + 版本一行 + 发送结论一至两行。
       try {
-        const verEl = document.querySelector('.ver');
-        if (verEl) env.push('当前版本：' + (verEl.textContent || '').trim());
+        const kp = (typeof window.__kaProbe === 'function') ? window.__kaProbe() : null;
+        if (!kp || !kp.keep) env.push('✗ 后台保活：未开启（后台不产生消息，通知无从弹起）');
+        else env.push(kp.audio && !kp.audio.paused ? '✓ 后台保活：音频播放中' : '! 后台保活：音频已暂停（回本页自动恢复；后台消息可能到不了）');
       } catch (e) {}
-      if (Notification.permission === 'granted') env.push('✓ 通知权限：已允许');
-      else env.push('✗ 通知权限：被拒绝（去浏览器站点设置开启）');
-      const keep = document.getElementById('bg-keepalive');
-      const keepOn = keepEnabled;
-      env.push(keepOn ? '✓ 后台保活：已开启' : '✗ 后台保活：未开启（TA 消息后台到不了，通知不会弹）');
-      // v3.13.x：拦截统计——本次会话后台期间有多少消息被去重闸门吞掉（定位"只有声不弹窗"）
-      try {
-        if (window.bgNotifyGateStats) {
-          const st = window.bgNotifyGateStats();
-          env.push('拦截统计（本次会话后台）：收到 ' + st.total + ' 条 · 过渡期拦 ' + st.tooFresh + ' · 重复拦 ' + st.dup + ' · 已发 ' + st.sent + '');
-        }
-      } catch (e) {}
-      // v3.15.x：头像链路探针——定位「通知里没有联系人头像」卡在哪一环：
-      // 头像值是否存在、长度、来源键、dataURL→Blob 转换是否成功
-      try {
-        const avCs = store.get('cs-avatar-partner') || '';
-        const avOld = store.get('avatar-partner') || '';
-        const avUsed = avCs || avOld;
-        if (!avUsed) {
-          env.push('✗ 联系人头像：无数据（cs-avatar-partner 与 avatar-partner 均为空）');
-          env.push('  解决：去【手机桌面美化】点 TA 头像上传一张图片');
-        } else {
-          env.push('✓ 联系人头像：' + (avUsed.length > 200 * 1024 ? '存在(' + Math.round(avUsed.length / 1024) + 'KB)' : '存在(' + Math.round(avUsed.length / 1024) + 'KB)') + ' · 来源:' + (avCs ? '聊天头像(cs)' : '桌面头像'));
-          env.push('  提示：若通知仍不显示头像 → 系统通知样式由 Chrome/ROM 决定，部分机型需展开通知才显示大图');
-        }
-      } catch (e) {}
-      const isHttps = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-      env.push(isHttps ? '✓ 访问协议：HTTPS 或本地' : '✗ 访问协议：' + location.protocol + '//（安卓 Chrome 需 HTTPS 才弹通知，GitHub Pages 部署后即是 HTTPS）');
-      // FIX 2026-09-16 #614：补 Service Worker 状态——它在「通知发不出」里占大头，
-      //   且之前诊断不显示；SW 未接管时通知走页面回退（仅前台可见）。
-      try {
-        if (!('serviceWorker' in navigator) || !navigator.serviceWorker) {
-          env.push('✗ 后台服务：当前浏览器不支持 Service Worker');
-        } else if (navigator.serviceWorker.controller) {
-          env.push('✓ 后台服务：Service Worker 已接管');
-        } else {
-          env.push('! 后台服务：Service Worker 尚未接管（后台通知可能发不出；已自动尝试重新注册，稍后重试一次）');
-        }
-      } catch (e) {}
-      // v3.5.144：聊天消息后台弹窗诊断——后台收不到聊天消息 ≠ 通知问题，
-      // 多数是「后台根本没产生聊天消息」：主动发送按间隔+概率随机触发，且需页面存活
-      try {
-        const rc = (window.replyCfg && window.replyCfg()) || {};
-        const asEn = rc['as-en'] === undefined ? 1 : rc['as-en'];
-        if (asEn === 1) {
-          const p = Number(rc['as-prob']) > 0 ? rc['as-prob'] : 30;
-          const mn = Math.min(30, Number(rc['as-min']) || 5);
-          const mx = Math.min(180, Number(rc['as-max']) || 10);
-          env.push('✓ 主动发送：开启（每 ' + mn + '~' + mx + ' 分钟掷一次 · 概率 ' + p + '%）');
-          if (rc['dnd-en'] === 1) env.push('  免打扰开启中（发送大幅减弱，最长 3 小时一次）');
-        } else {
-          env.push('✗ 主动发送：关闭（TA 不会主动发聊天消息 → 后台无聊天通知）');
-        }
-        env.push('  提示：TA 聊天消息按间隔随机产生，后台需保活让定时器存活才到点触发');
-      } catch (e) {}
-      if (!('Notification' in window) || Notification.permission !== 'granted') {
-        toast('环境检查：\n' + env.join('\n'));
-        return;
-      }
-      // 环境 OK：真发一条测试通知（走 SW showNotification，页面隐藏也能显示）
+      // FIX 2026-09-18 #761 自检补「旧包检测」层（用户实报：权限一直开着没动过，弹窗消失两天；
+      //   把浏览器通知权限关掉再打开后弹窗恢复）。API 侧 Notification.permission 恒报 granted，
+      //   JS 看不出浏览器把该站通知通道拧死；而「重开权限」必然伴随页面重载——手机上最隐蔽的
+      //   等价操作＝旧包在跑：这两天通知链正好经历 #673 全灭→#705 修复的发布窗口，设备若缓存
+      //   着故障包，表现就是「什么都没改、弹窗突然全没」。自检必须明说本页是不是线上最新版。
+      //   比对构建时注入的 splash-ver data-build-ts 与线上 version.json，零机型分支。
+      let verStale = false;
+      const verP = new Promise(function (resolve) {
+        const fin = function () { resolve(); };
+        try {
+          const sv = document.getElementById('splash-ver');
+          const localTs = Number(sv && sv.getAttribute('data-build-ts')) || 0;
+          kaWithTimeout(function () { return fetch('./version.json?v=' + Date.now()); }, 4000)
+            .then(function (r) { return r && r.json ? r.json() : null; })
+            .then(function (d) {
+              const ts = Number(d && d.ts) || 0;
+              if (!localTs || !ts) env.push('! 版本：没问到线上版本（网络受限，不影响本测试）');
+              else if (ts > localTs) {
+                verStale = true;
+                env.push('✗ 旧包正在运行：本页 ' + new Date(localTs).toLocaleString() + ' · 线上最新 ' + new Date(ts).toLocaleString() + '——「什么都没改弹窗突然全没」的常见原因，彻底关闭浏览器重开（升级新版本）后再测');
+              } else env.push('✓ 版本已最新：' + new Date(ts).toLocaleString());
+              fin();
+            }, function () { env.push('! 版本：没拉到 version.json（网络受限，不影响本测试）'); fin(); });
+        } catch (e) { fin(); }
+      });
       try {
         const name = store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
-        showSysNotification('后台通知测试', { body: '来自 ' + name + ' · 如果能看到这条，后台通知就通了' }).then(function (ok) {
-          if (ok) {
-            env.push('✓ 测试通知已发送（Service Worker）');
-            // 红米/小米：系统级通知可能拦截（API 不报错但通知不显示）
-            // v3.26.x 收口第二批：UA 特判改读 device.js env.notifyQuirk（唯一嗅探处）
-            const _mdN = (window.mochiDevice || {}).env || {};
-            if (_mdN.notifyQuirk) {
-              env.push('悬浮开关：系统设置→通知管理→Chrome→通知类别/横幅通知→打开「在屏幕上方显示」');
-            }
+        let testChan = '';
+        let testSettled = false;
+        let testOk = false;
+        let resultShown = false;
+        // FIX 2026-09-18 #761 结果问人本人：JS 全绿 ≠ 用户真看到横幅（浏览器端通知通道被拧死时
+        //   API 不报错、队列回读也可能正常）。发送成功后追问一句「弹了吗」，没弹就给按实效排序的
+        //   实操指引——「权限关掉再打开＋强杀浏览器」正是本次用户实测恢复有效的那一步。
+        const askSeen = function () {
+          if (typeof window.openModal !== 'function') return;
+          window.openModal('自检确认', '', function (choice) {
+            if (choice === 'seen') { toast('✓ 弹窗链路全通：以后后台消息没弹时，先回来点这个测试', 4000); return; }
+            if (choice !== 'miss') return;
+            const MARKS = ['①', '②', '③', '④'];
+            const steps = [];
+            const push = function (s) { steps.push(MARKS[steps.length] + ' ' + s); };
+            if (verStale) push('先升级：本页是旧版本包——彻底关闭浏览器再重开（或点顶部「刷新使用新版」），旧包＝「没改任何东西弹窗突然全没」的头号原因');
+            push('重置浏览器通知权限：浏览器设置 → 网站设置 → 通知 → 把本站「关闭」再「允许」，然后强杀浏览器重开（「权限明明开着、通知却消失好几天」多数被这一步救活——JS 读到的一直是 granted，坏的是浏览器内部那条通道）');
+            push('系统通知设置：系统设置 → 通知管理 → 本浏览器 → 总开关打开、「允许横幅通知/在屏幕上方显示」打开、通知重要性选「提醒」；国产 ROM（vivo/OPPO/小米/华为）每项可能各自独立');
+            push('省电限制：允许本浏览器后台运行/关闭对它的省电优化（否则挂后台时整页被冻结，消息与通知都无从产生）');
+            steps.push('每做完一步就按 Home 键把页面切到后台、让 TA 发一条消息验证；全部走完仍不弹 → 用「信息诊断」里的反馈入口一键上报');
+            window.openModal('没弹出 → 按顺序排查（实效从高到低）', '', function () {}, {
+              noInput: true, big: true,
+              staticText: steps.join('\n')
+            });
+          }, {
+            noInput: true, lock: true,
+            staticText: '刚才屏幕上方弹出「后台通知测试」横幅了吗？\n（通知栏里有小图标 ≠ 屏幕上方弹出；前台发送通常只进通知栏，要验横幅请按 Home 切后台后再测一次）',
+            pills: [{ label: '看到了，顶部弹出', value: 'seen' }, { label: '没看到', value: 'miss' }],
+            pillSubmit: true
+          });
+        };
+        const showResult = function () {
+          if (resultShown) return;
+          resultShown = true;
+          toast('测试结果：\n' + env.join('\n'), 6000);
+          if (testChan === 'sw' && testOk) askSeen();
+        };
+        // 「屏幕上方弹出」检查：system 横幅 JS 读不到，只能按发送时刻页面前台/后台如实归因＋引导复核
+        const testWasHidden = document.hidden;
+        showSysNotification('后台通知测试', { body: '来自 ' + name + ' · 如果能看到这条，后台通知就通了' }, function (ch) { testChan = ch; }).then(function (ok) {
+          testSettled = true;
+          testOk = !!ok;
+          if (testChan === 'sw' && ok) {
+            env.push('✓ 测试通知已发送并真正提交系统显示（Service Worker 通道：后台关屏也能弹）');
+            // #724 端到端自检：API 受理 ≠ 系统真挂出来（系统通知总开关被关时 showNotification 照常
+            // 受理）——回读 SW 通知队列确认这条测试通知在列，把「应用内成功」与「系统层拦截」
+            // 分开归因：「测试失效」到底卡在哪一层一点就知，自检不再说半真话。
+            const queueCheck = kaSWReady().then(function (reg) {
+              if (!reg || !reg.getNotifications) return null;
+              return new Promise(function (res) {
+                setTimeout(function () {
+                  try { reg.getNotifications().then(res, function () { res(null); }); } catch (e) { res(null); }
+                }, 500);
+              });
+            }).then(function (list) {
+              const found = !!(list && list.some && list.some(function (n) { return n && n.title === '后台通知测试'; }));
+              env.push(found
+                ? '✓ 已确认进入系统通知队列——手机上没看到＝系统层拦截（通知总开关/悬浮横幅/省电限制），见本行「功能说明」排查'
+                : '! 已提交但未进系统通知队列＝多半被系统拦截，见本行「功能说明」排查');
+              // 「屏幕上方弹出」检查（用户直派）：只证明进系统队列≠屏幕上方真弹横幅——系统横幅页面
+              // JS 读不到，按发送时前台/后台如实归因，前台则引导切后台人工复核「从屏幕顶部弹出」：
+              if (found && testWasHidden) {
+                env.push('✓ 发送时页面在后台——屏幕上方应有横幅；没看见＝系统层拦截（通知总开关/悬浮横幅/省电限制）见本行「功能说明」');
+              } else if (found) {
+                env.push('! 前台发送不弹顶层横幅——要验「屏幕上方弹出」：按 Home 切后台（或锁屏），即可看到通知从屏幕顶部弹出');
+              }
+            }).catch(function () {});
+            Promise.all([queueCheck, verP]).then(showResult);
+            setTimeout(showResult, 4500); // 队列回读/版本比对卡住也出结果
+          } else if (testChan === 'page') {
+            env.push(ok
+              ? '✓ 测试通知已发送（页面通道：仅本页前台可见）'
+              : '! 未真正送达：后台服务未就绪，页面通道在后台会被系统抑制（已挂自动补发，或刷新页面重试）');
+            verP.then(showResult);
           } else {
-            env.push('✗ 通知发送未受理（权限或系统通知被禁）');
+            env.push('✗ 测试通知提交失败：被浏览器/系统拒绝——见本行「功能说明」排查（权限已允许仍被拒＝查系统设置里本浏览器的通知总开关）');
+            verP.then(showResult);
           }
-          toast('测试结果：\n' + env.join('\n'));
         });
+        setTimeout(function () {
+          if (testSettled) return;
+          env.push('✗ 测试超时：通知发送链 8 秒未落定（应用内故障，非权限/系统问题）——请用「诊断信息」一键反馈');
+          showResult();
+        }, 8000);
       } catch (e) {
-        toast('发送失败：\n' + env.join('\n'));
+        env.push('✗ 测试执行异常：' + (e && e.message ? e.message : e));
+        toast('测试结果：\n' + env.join('\n'), 6000);
       }
     }
   }
@@ -1343,6 +1491,14 @@
   const NOTIFY_CHAT_DUP_MS = 5 * 60000;  // v3.20.x：历史聊天查重 15→5 分钟
   const NOTIFY_SENT_DUP_MS = 2 * 60000;  // v3.20.x：已发通知查重 6→2 分钟
   const NOTIFY_SEEN_DUP_MS = 3 * 60000;  // v3.20.x：前台看过记忆 15→3 分钟
+  // FIX 2026-09-17 #673：过渡期（切后台头 15s）的「看过内容」判定窗——比常规 5 分钟更宽。
+  //   过渡期原来是「一律不弹」，防的是切后台瞬间积压定时器重放用户刚看过的内容；代价是把
+  //   这 15 秒里真正新产生的消息也整条丢掉：TA 回复延迟默认 1~40 秒（设置→回复速度），
+  //   用户发完消息立刻切出应用时回复常落在窗内 ⇒ 聊天记录里有、通知栏始终没有
+  //   （红米K80 Chrome 等多机型同报「后台弹窗又收不到」）。
+  //   现过渡期只做内容判定，且窗口加宽到 30 分钟：重放内容（#498 防重弹面）拦得更死，
+  //   真新内容放行。窗口只在过渡期用，窗外的常规判定仍走 NOTIFY_CHAT_DUP_MS 5 分钟。
+  const NOTIFY_FRESH_CHAT_DUP_MS = 30 * 60000;
   // v3.23.x：lastNotifySentAt 已随 batchBurst 一并移除（重放放大器，见 bgNotifyCheck 内注释）
   // 通知文本归一化：剥 dataURL/语音 ||| 段/SVG 标签，去空白后取前 100 字符做指纹
   function normNotifyKey(raw) {
@@ -1384,12 +1540,13 @@
   // 最近窗口内聊天记录里 TA 是否已说过同样内容（扫尾部最多 150 条，命中即回）
   // v3.14.x：refTs=本次通知对应的到达时刻——用于把「这条新消息自己刚入库的条目」
   // 排除出扫描（卡片类是提示语+卡面两条几乎同时入库，见循环内说明）
-  function recentChatDup(key, refTs) {
+  function recentChatDup(key, refTs, windowMs) {
     if (!key) return false;
     try {
       const arr = window.getChatMsgs ? window.getChatMsgs() : null;
       if (!arr || !arr.length) return false;
-      const cutoff = Date.now() - NOTIFY_CHAT_DUP_MS;
+      // FIX 2026-09-17 #673：窗口可传入（默认常规 5 分钟）——过渡期用加宽窗判定「已看过/重放」
+      const cutoff = Date.now() - (windowMs || NOTIFY_CHAT_DUP_MS);
       // v3.13.x 修复：聊天消息到达是「先入库（addRec msgs.push）再走 bgNotifyCheck」，
       // 查重扫历史会把【刚到达的这条】自己判成"最近说过"而吞掉通知（用户表现：联系人
       // 发消息有提示音但从不弹窗）。v3.14.x 演进：不再按下标跳过末尾条目——卡片类是
@@ -1489,10 +1646,16 @@
   // 当前会被哪道闸门拦下
   window.bgNotifyGateInfo = function (text, img, refTs) {
     const nkey = msgFingerprint(text, img);
+    // FIX 2026-09-17 #673：过渡期由「一律不弹」改为「只拦看过的内容」——这里把运营判定那
+    //   一步（过渡期内 + 该内容是聊天近期已有内容）暴露给回归脚本：全新消息在这两步下组合
+    //   =false（放行），重放内容 =true（拦截）。守卫住「切后台头 15s 不再整条吞 TA 新回复」。
+    const transitionBlocks = lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS &&
+      recentChatDup(nkey, refTs, NOTIFY_FRESH_CHAT_DUP_MS);
     return {
       hiddenForMs: Date.now() - lastVisibleAt,
       // v3.16.x：过渡期用「切后台时刻 lastHiddenAt」——切后台头 15 秒内的积压消息不弹
       tooFreshHidden: lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS,
+      transitionBlocks: transitionBlocks,
       dupNotified: notifiedDup(nkey),
       dupSeen: seenDup(nkey),
       dupInChat: recentChatDup(nkey, refTs),
@@ -1521,7 +1684,13 @@
     // v3.16.x：过渡期闸门改用「切后台时刻」——lastVisibleAt 是最近一次回前台时间，
     // 前台久驻后（如看了 10 分钟）它很旧，切后台瞬间积压的定时器批量到点产生的
     // 一堆消息会全部通过闸门 → 弹出大量看过的内容。改为切后台头 15 秒内一律不弹
-    if (!force && lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS) { gateStats.tooFresh++; return; }
+    // FIX 2026-09-17 #673：过渡期由「一律不弹」改为「只拦看过的内容」——防重弹本意完整
+    //   保留（切后台瞬间积压定时器重放的都是聊天记录里已有的内容，加宽窗拦得更死，见
+    //   NOTIFY_FRESH_CHAT_DUP_MS），但不再连这 15 秒内真正新产生的消息一起吞掉
+    //   （用户报障形态：发完消息就切出去，TA 在 1~40 秒随机延迟内回复 → 落在窗内 →
+    //   聊天有、通知栏没有）。force（来电等一次性事件）照旧绕过。
+    if (!force && lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS &&
+        recentChatDup(nkey, ts, NOTIFY_FRESH_CHAT_DUP_MS)) { gateStats.tooFresh++; return; }
     // v3.23.x：回退 v3.22.x 的 batchBurst（30 秒内同文案放行）——实测是重放放大器：
     // 切后台后 15 秒过渡期一过，撞车内容在上一条通知 30 秒内可绕过全部去重再次弹出，
     // 正是「切后台马上弹几分钟前看过的消息」的组成来源。v3.22.x 想解决的「批量连发
@@ -1596,7 +1765,18 @@
       // v3.15.x：裁剪失败不再丢弃头像——回退原图交给 showSysNotification 的
       // prepMediaBlobs 转 Blob；此前裁剪失败 cb('') 会直接丢头像导致通知无头像
       // v3.20.x：data: 与 http(s) 头像都走 1:1 裁剪，杜绝通知 icon 位拉伸变形
-      cropAvatarToSquare(bigIcon, function (u) { sendFinal(u || bigIcon); });
+      // FIX 2026-09-17 #673：裁剪加截止时间——makeAvatarThumb 依赖 Image.onload/onerror，
+      //   页面被后台冻结/解码卡住时两个回调都不来 ⇒ showSysNotification 永不被调用、
+      //   通知静默消失（与 #614 同族的「永不落地」，只是卡在图片这一步）。到点未回
+      //   照发（不带头像，showSysNotification 会兜底 mochi 图标），不再等一张图。
+      const cropFired = { v: false };
+      const cropTimer = setTimeout(function () { if (!cropFired.v) { cropFired.v = true; sendFinal(''); } }, 1200);
+      cropAvatarToSquare(bigIcon, function (u) {
+        clearTimeout(cropTimer);
+        if (cropFired.v) return;
+        cropFired.v = true;
+        sendFinal(u || bigIcon);
+      });
     } else {
       sendFinal(bigIcon);
     }

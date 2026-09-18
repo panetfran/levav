@@ -525,34 +525,53 @@
     //   再打开时整格重新解码＝每次打开都闪一下。**这条节点身份测不出**（#508/#509/#617 的断言
     //   都只看节点有没有被替换，节点一直没换、照样闪），所以在显示前主动 decode 一次：位图还在
     //   时 decode 立即兑现（不可感知），被回收过时先解码完再显示＝不再出现空帧 / 逐格冒出。
-    //   上限 120ms（绝不因为解码慢把半框卡住）；首次打开还没有已加载图＝同步显示，行为同旧版。
-    avShowWhenDecoded(function () { avPage.hidden = false; });
+    //   #692：不再 120ms 强行显示——与表情包面板同一处缺口（解码没完就显示＝空帧/逐格冒出，
+    //   且等待期间关闭会被回调重新弹出）。改为解码结算后再显示，世代令牌防串场，兜底 1s。
+    const myToken = ++avShowToken;
+    avShowWhenDecoded(function () { avPage.hidden = false; }, myToken);
   }
+  let avShowToken = 0; // #692：头像互动半框「解码后再显示」世代令牌（关闭/重开作废，防空回调弹出）
   // #662：把头像库网格里已赋 src 的图 decode 完再执行 show（openAvlib 用）
-  function avShowWhenDecoded(show) {
+  function avShowWhenDecoded(show, token) {
     let shown = false;
-    const fin = function () { if (shown) return; shown = true; try { show(); } catch (e) {} };
+    const fin = function () {
+      if (shown) return; shown = true;
+      if (token !== undefined && token !== avShowToken) return; // #692 已关闭/已重开：本次显示作废
+      try { show(); } catch (e) {}
+    };
     if (!window.Promise) { fin(); return; }
+    // #716：只等「首屏范围」的解码，不再等全部——旧实现对两个网格全部 img[src] await decode，
+    // 大头像库在低内存机型隐藏期位图被回收，总解码超兜底＝半途放行、首屏逐格冒出＝用户看到的
+    // 「换头像打开页面图片闪烁重载」（#704 表情面板同族收口，红米 K80 实报）。前 24 张
+    // （≈半框首屏两三行）await 后即显示；其余 fire-and-forget 预热不挡显示。
+    const AV_DECODE_AWAIT_MAX = 24;
     const grids = [avGrid, avMeGrid];
     const jobs = [];
+    let awaited = 0;
     for (let g = 0; g < grids.length; g++) {
       const grid = grids[g];
       if (!grid) continue;
       const imgs = grid.querySelectorAll('img[src]');
       for (let i = 0; i < imgs.length; i++) {
         const im = imgs[i];
-        try { if (im.decode) jobs.push(im.decode().catch(function () {})); } catch (e) {}
+        if (awaited < AV_DECODE_AWAIT_MAX) {
+          awaited++;
+          try { if (im.decode) jobs.push(im.decode().catch(function () {})); } catch (e) {}
+        } else {
+          try { if (im.decode) im.decode().catch(function () {}); } catch (e) {} // #716：首屏外只预热不等待
+        }
       }
     }
     if (!jobs.length) { fin(); return; }
     Promise.all(jobs).then(fin, fin);
-    setTimeout(fin, 120);
+    setTimeout(fin, 2500); // #716：1s→2.5s——首屏解码慢的机型半途放行＝可见「闪烁重载」；上限仍在防挂死
   }
   // v3.9.x：切桌面后同样补读新桌面头像池（restoreLib 内部校验桌面归属 + 内容更多才覆盖）
   document.addEventListener('contact-switched', function () {
     try { restoreLib('avatar-lib'); restoreLib('avatar-me-lib'); restoreLib('nick-lib'); restoreLib('nick-me-lib'); } catch (e) {}
   });
   function closeAvlib() {
+    avShowToken++; // #692：作废未兑现的「解码后显示」
     if (avPage) avPage.hidden = true;
   }
   window.openAvlib = openAvlib;
@@ -609,7 +628,12 @@
     if (!btn) return;
     const input = document.createElement('input');
     input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
-    input.style.display = 'none';
+    input.id = (btn.id || 'avlib') + '-file-pick'; // FIX 2026-09-18 #717：常驻池选择器身份（诊断/测试句柄，按按钮唯一）
+    // FIX 2026-09-18 #717：display:none 换成「移出屏幕仍可见」——部分机型/老 WebView 对
+    // display:none 的 file input 程序化 click() 可能静默不弹选择器（点了没反应），与
+    // chat-settings.js headInput 同款 offscreen 样式。input 仍常驻挂 body、onchange 里清
+    // value，行为面不变。
+    input.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:1;margin:0;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;'; // FIX 2026-09-18 #738：sr-only clip 写法（原 offscreen+opacity:0），原生 label 兜底见下
     document.body.appendChild(input);
     input.onchange = () => {
       const files = Array.prototype.slice.call(input.files || []);
@@ -655,7 +679,17 @@
         }
       }
     };
-    btn.addEventListener('click', () => input.click());
+    // FIX 2026-09-18 #717：click 失败不再静默——部分机型上 click() 被策略拦截/抛错时给可见提示
+    // FIX 2026-09-18 #738：原生 label 激活兜底——小米 MiuiBrowser 等对 JS 合成 click() 仍静默
+    // 不弹选择器（#717 修复后小米17 Pro 实报）；透明 label 铺满按钮、内核原生转发激活 input
+    if (window.mochiFilePickLabel) window.mochiFilePickLabel(btn, input);
+    btn.addEventListener('click', (e) => {
+      // FIX 2026-09-18 #756：原 `if (fromLabel(e)) return;` 在「label 存在但国产内核不转发」
+      // 时连 JS 兜底一并跳过＝用户报的「点了一点反应都没有」；改由 guard 事后确认真没弹出再补
+      var _fb = () => { try { input.click(); } catch (err) { toast('无法打开相册，请重试'); } };
+      if (window.mochiFilePickGuard) window.mochiFilePickGuard(input, _fb);
+      else _fb();
+    });
   }
   bindPoolUpload(avUpload, getLib, saveLib, () => { renderGrid(); syncVal(); });
   bindPoolUpload(avMeUpload, getMeLib, saveMeLib, () => { renderMeGrid(); syncVal(); });

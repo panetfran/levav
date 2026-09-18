@@ -57,12 +57,12 @@
   // #641：支持指定存储键（默认通话背景 call-bg；传 call-half-bg 即「通话半框背景」）
   function pickCallBg(key, msg) {
     const bgKey = key || CALL_BG_KEY;
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.onchange = () => {
-      const f = input.files && input.files[0];
-      if (!f) return;
+    // FIX 2026-09-18 #755：统一走 window.mochiFilePick（原实现 detached＋无 label＋accept 迟到）
+    return window.mochiFilePick({
+      id: 'mochi-call-bg-pick', accept: 'image/*',
+      onFiles: (files) => {
+      const f = files && files[0];
+      if (!f) { toast('没有取到图片，请再选一次'); return; }
       const reader = new FileReader();
       reader.onload = () => {
         const img = new Image();
@@ -86,9 +86,8 @@
       };
       reader.onerror = () => toast('图片读取失败');
       reader.readAsDataURL(f);
-    };
-    input.click();
-    return input;
+      }
+    });
   }
   const callBgRow = document.getElementById('call-bg-row');
   if (callBgRow) callBgRow.addEventListener('click', () => pickCallBg(CALL_BG_KEY));
@@ -437,24 +436,68 @@
   //   iPadOS 杀后台后重开时会整体清空（主屏幕 PWA 重开同此），恢复逻辑就读不到任何标记，
   //   「刷新后恢复通话」失效（iPad Air 7 + Safari 实测反馈）。localStorage 持久保留，
   //   作兜底副本；新鲜度窗口见 recoverCall（防止几天后重开翻出旧通话）。
+  // FIX 2026-09-18 #757：标记里不再带头像 dataURL（实测该键在真机诊断里 52.0 KB——就是
+  //   avatar-partner 的 base64 被整份塞进 payload）。它每 20 秒被三路各写一遍，是弱内核
+  //   （夸克/UC 系分叉内核）上「写入偶发失败 / 标记过期」的放大器；恢复时 syncCallAv 本就按
+  //   归属桌面重读头像（cs-avatar-partner → avatar-partner），payload 里的 av 只是 store 读取
+  //   抛异常时的兜底。字段保留为空串（老值仍能被 recoverProcess 兼容读回），键体重回 <1KB。
   function callActivePayload() {
     return JSON.stringify({
       cid: currentCall.cid, direction: currentCall.direction, status: currentCall.status,
       startTime: currentCall.startTime, connectedTime: currentCall.connectedTime || 0,
-      name: currentCall.name || '', av: currentCall.av || '', ts: Date.now()
+      name: currentCall.name || '', av: '', ts: Date.now()
     });
   }
+  // FIX 2026-09-17 #698：三路写入拆开各吃各的 try + 追加 IndexedDB 兜底——
+  //   原实现 sessionStorage 与 localStorage 同处一个 try，部分机型（LS 配额满 QuotaExceededError
+  //   #406 已实锤 / 隐私模式 / WebView 禁用 sessionStorage）第一句一抛整块中止，
+  //   call-active 一份都没落盘＝刷新后通话不续上、也不补「通话中断」记录（多机型反馈）。
+  //   与 #406 的 call-hold 同口径：IDB 副本保证任何存储亚健康机型都读得回（recoverCall 回读链
+  //   sessionStorage → localStorage → IDB，新鲜度窗口见 recoverProcess）。
   function saveCallActive() {
-    try {
-      if (!currentCall) return;
-      const payload = callActivePayload();
-      sessionStorage.setItem(CALL_ACTIVE_KEY, payload);
-      try { localStorage.setItem(CALL_ACTIVE_KEY, payload); } catch (e) {}
-    } catch (e) {}
+    if (!currentCall) return;
+    const payload = callActivePayload();
+    try { sessionStorage.setItem(CALL_ACTIVE_KEY, payload); } catch (e) {}
+    try { localStorage.setItem(CALL_ACTIVE_KEY, payload); } catch (e) {}
+    try { if (window.idbSet) window.idbSet(CALL_ACTIVE_KEY, JSON.parse(payload)); } catch (e) {}
+  }
+  // FIX 2026-09-18 #757（用户直派：小米 civi4pro 夸克「刷新后概率出现电话挂断，但无挂断记录；
+  //   刷新重新打开，通话和通话时间也没有续上」，用户明说其他机型也有）：恢复窗口原实现是
+  //   「心跳 ts 10 分钟窗」，而心跳是 setInterval——页面被系统冻结/杀进程时（锁屏、切后台、
+  //   浏览器回收标签页；安卓 5 分钟后 Freeze）它根本不跑，ts 就停在被冻结那一刻。用户回来
+  //   （尤其浏览器杀后台后重开＝新运行期、sessionStorage 已空）走 localStorage 兜底时，这通
+  //   电话被判「早已结束」→ clearCallActive 静默清标记：不续上、不补记录，整通电话无声消失。
+  //   实测复现（tools/verify-call-refresh-resume.mjs C 轴）：SS 丢失 + LS 的 ts 停在 11 分钟
+  //   前 ⇒ 通话消失且 records-call 零条。修法四条：
+  //   ①恢复窗口改用「通话语义的墙钟上限」CALL_RESUME_WINDOW——锁屏/挂后台整场都算通话；
+  //   ②超窗不再静默：SS/LS 是本机同步写下的真实标记（正常结束必留 {ts:0} 墓碑），超窗即
+  //     补写「通话中断」记录；IDB 兜底副本维持原 10 分钟静默窗（#705 的幽灵复活防线靠它）；
+  //   ③隐藏/冻结/离页时立刻冲刷一次标记（见下方监听），让 ts 精确停在「页面最后一次存活」，
+  //     而不是上一个 20 秒心跳；
+  //   ④恢复中途出错也补记录（原来只 clearCallActive＝同样无声消失）。
+  const CALL_RESUME_WINDOW = 6 * 3600 * 1000; // #757：SS/LS 墙钟窗（锁屏/后台整场通话都算）
+  const CALL_IDB_WINDOW = 600000;             // #120/#705：IDB 兜底副本的新鲜度窗，原样不变
+  // #757：把「页面要走了」这一刻的现场立刻落盘（connected 通话才算；响铃/去电中会被
+  //   endCall 清成墓地，status 判据天然把它们排除，与本函数注册顺序无关）。
+  function flushCallActive() {
+    if (!currentCall || currentCall.status !== 'connected') return;
+    saveCallActive();
   }
   function clearCallActive() {
-    try { sessionStorage.removeItem(CALL_ACTIVE_KEY); } catch (e) {}
-    try { localStorage.removeItem(CALL_ACTIVE_KEY); } catch (e) {}
+    // FIX 2026-09-17 #705 SS/LS 同步写 {ts:0} 墓碑而非 removeItem——#698 给 recoverCall 加了
+    //   IDB 兜底回读，而这里的 IDB 墓碑是异步的：挂断后页面在墓碑落地前被杀/刷新（vivo/Edge
+    //   杀渲染进程常态），下次启动 SS/LS 全空 → 落进 IDB 回读 → 拿到仍是「通话中」的新鲜快照
+    //   ＝幽灵通话复活（小框凭空弹「正在通话」、恢复关闭时补写幽灵「通话中断」记录，用户观感
+    //   即「接完/挂了之后 TA 又打来」）。SS/LS 墓碑是同步落地的，recoverCall 的 SS/LS 路径
+    //   读到无 connectedTime 即清除并 return，不再落到 IDB 兜底；真中断恢复语义不受影响
+    //   （真中断＝kill 时 endCall 没跑＝SS/LS 里还是真实快照）。写 {ts:0} 而非删除＝同
+    //   clearCallHold 口径，防 idbRestore 用 IDB 旧值回填出幽灵标记；无 connectedTime 的值
+    //   recoverCall/callInProgress 读到即视为无通话，幂等无副作用。
+    try { sessionStorage.setItem(CALL_ACTIVE_KEY, '{"ts":0}'); } catch (e) {}
+    try { localStorage.setItem(CALL_ACTIVE_KEY, '{"ts":0}'); } catch (e) {}
+    // 写 {ts:0} 墓碑而非删除（同 clearCallHold 口径）：防 idbRestore 用 IDB 旧值回填出幽灵标记；
+    // 无 connectedTime 的值 recoverCall 读到即清，幂等无副作用
+    try { if (window.idbSet) window.idbSet(CALL_ACTIVE_KEY, { ts: 0 }); } catch (e) {}
   }
   function fillAv(el, data) {
     if (!el) return;
@@ -605,6 +648,13 @@
   //   接通后结束 → 系统消息明确「通话已挂断 / 对方已挂断 · 时长 xx」
   function endCall(text, holdSilent) {
     clearCallActive(); // v3.26.x：正常结束清除进行中标记（中断恢复靠残留检测）
+    // FIX 2026-09-17 #705 任何一通电话结束都重写来电冷却戳——原实现只在「联系人来电触发」
+    //   那一刻写 records-call-last：①去电（placeCall）从不写＝打完电话后联系人可能马上
+    //   又打来；②来电从「触发」起算 5 分钟，而后台来电（#161 响铃挂起）常要等用户回来看
+    //   才被接听，接完时冷却已所剩无几＝「接通电话后联系人还会再打电话」（用户直派，
+    //   多机型）。改为结束时刻起算：每通电话（含未接/拒绝/挂起收尾）结束后 5 分钟内
+    //   maybeIncoming 一律不再掷来电，与「冷却至少 5 分钟」的产品语义一致。
+    try { store.set('records-call-last', String(Date.now())); } catch (e) {}
     // v3.5.127：所有结束路径（超时/拒绝/挂断/对方挂断）统一停铃声
     if (window.stopSfx) window.stopSfx('ring');
     // v3.5.129：通话结束恢复音乐播放/悬浮小框
@@ -655,14 +705,27 @@
   // 超时未回 → resumeHeldCall 补写「未接来电」记录+系统消息。
   const CALL_HOLD_MS = 3 * 60 * 1000;
   const CALL_HOLD_KEY = 'xy-home-v2:call-hold';
+  // FIX 2026-09-18 #722（用户直派「接了电话却被记未接」，vivo/Edge/iOS 多机型）：
+  //   挂起带「写入运行期」标识（每次页面运行随机）。消费侧据此区分两种值：
+  //   ①同运行期切后台写下的真挂起（响铃切后台→回前台）＝保有「超时补写未接」语义；
+  //   ②跨运行期从持久层幸存下来的值＝两种来源都是假象——clearCallHold 的 {ts:0} 墓碑
+  //   对 IDB 是异步写，消费后进程被杀/刷新（vivo/Edge 常态，#705 call-active 同款实锤）
+  //   会让旧挂起残留 IDB；iOS 系统级清 LS 后 idbRestore 又拿 IDB 旧值回填进 LS。
+  //   这类孤儿被 resumeHeldCall 当真挂起消费时，旧实现无条件补写「来电 · 未接听」
+  //   ＝用户明明接通了电话（甚至通话刚被 recoverCall 恢复成接通态），切后台回前台
+  //   聊天里却多一条未接。跨运行期孤儿一律静默清（见 resumeHeldCall/resumeProcessHold）
+  const HOLD_SID = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   function heldMissedHtml(nm) {
     return '<svg class="st-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>' + nm + ' 来电 · 未接听';
   }
   function holdIncomingCall(name, cid, avOverride, msgWritten) {
     let prev = null;
     try { prev = readCallHold(); } catch (e) {}
-    // 覆盖前先处理上一条已超时未处理的挂起（页面冻结期间第二次来电的场景）
-    if (prev && prev.cid && Date.now() - prev.ts > CALL_HOLD_MS) {
+    // 覆盖前先处理上一条已超时未处理的挂起（页面冻结期间第二次来电的场景）。
+    // FIX 2026-09-18 #722：只补写「本运行期写下」的过期挂起；跨运行期读到的旧挂起是
+    //   墓碑 flush 竞态/LS 回填孤儿（见 HOLD_SID 注释），其未接语义不可信，静默让位
+    //   （新挂起连 sid 一起覆盖写入，孤儿就此自愈清除）
+    if (prev && prev.cid && prev.sid === HOLD_SID && Date.now() - prev.ts > CALL_HOLD_MS) {
       notifyCallEnd(prev.cid, heldMissedHtml(prev.name || partnerName()), 'in', '未接听');
     }
     // FIX 2026-09-13 #406 挂起双写拆开：原 LS setItem 与 idbSet 同处一个 try——LS 配额满
@@ -670,7 +733,7 @@
     // 无弹窗也无未接消息（OPPO Reno14 Edge 实报 + 多机型同族；诊断「LS 写入失败」实锤）。
     // msgWritten＝来电系统消息「打来了语音通话」是否已写过（前台响铃已写传 true，
     // 后台触发未写传 false，重响补首发见 resumeProcessHold/incomingCall）
-    const h = { ts: Date.now(), name: name, cid: cid || (window.__activeCid || 'default'), msg: !!msgWritten };
+    const h = { ts: Date.now(), name: name, cid: cid || (window.__activeCid || 'default'), msg: !!msgWritten, sid: HOLD_SID };
     try { localStorage.setItem(CALL_HOLD_KEY, JSON.stringify(h)); } catch (e) {}
     if (window.idbSet) { try { window.idbSet(CALL_HOLD_KEY, h); } catch (e) {} }
     bgCallNotify(name, '快回来接听，对方会等你几分钟', avOverride);
@@ -707,18 +770,28 @@
   function resumeHeldCall() {
     if (holdBusy) return;
     const h = readCallHold();
-    if (h) { clearCallHold(); resumeProcessHold(h); return; }
+    // FIX 2026-09-18 #722：第二参 crossRun＝挂起并非本运行期写下（sid 对不上＝持久层
+    //   幸存值/冷启动恢复）。同运行期的真挂起才保有「超时补写未接」语义，见 resumeProcessHold
+    if (h) { clearCallHold(); resumeProcessHold(h, h.sid !== HOLD_SID); return; }
     if (window.idbGet) {
       holdBusy = true;
       window.idbGet(CALL_HOLD_KEY).then(function (ih) {
         holdBusy = false;
         if (!ih || !ih.ts) return;
+        // FIX 2026-09-18 #722：能走到 IDB 兜底，说明 LS 墓碑/LS 本身已不在——此刻 IDB
+        //   里还有带 ts 的挂起，只可能是 clearCallHold 那笔异步 IDB 墓碑被杀进程/刷新
+        //   打断（vivo/Edge 杀渲染进程常态）或 iOS 清 LS 后被 idbRestore 回填的孤儿，
+        //   不是正在等待重响的真挂起。旧实现拿来就当真挂起消费，超时兜底分支无条件
+        //   补写「来电 · 未接听」＝接通的电话切后台回前台被记未接（多机型实报）。
+        //   修复：IDB 兜底先卡 3 分钟新鲜度——超窗孤儿只重写墓碑自愈、绝不再补未接；
+        //   窗内（iOS 清 LS 但确实 3 分钟内回来）仍重响，crossRun=true 保有 #161 冷启动重响
+        if (Date.now() - ih.ts > CALL_HOLD_MS) { clearCallHold(); return; }
         clearCallHold();
-        resumeProcessHold(ih);
+        resumeProcessHold(ih, true);
       }).catch(function () { holdBusy = false; });
     }
   }
-  function resumeProcessHold(h) {
+  function resumeProcessHold(h, crossRun) {
     const cur = window.__activeCid || 'default';
     if (Date.now() - h.ts <= CALL_HOLD_MS && !currentCall) {
       if (h.cid === cur) { incomingCall(true, !!h.msg); return; }
@@ -733,7 +806,11 @@
         }
       }
     }
-    notifyCallEnd(h.cid || cur, heldMissedHtml(h.name || partnerName()), 'in', '未接听');
+    // FIX 2026-09-18 #722：补写未接须同时满足——①挂起是本运行期写下的（crossRun=false；
+    //   跨运行期孤儿见 resumeHeldCall 注释）②此刻没有活通话（刷新恢复/接通中的通话在场
+    //   时补未接＝用户接了电话却被记未接的第二个保险闸）。不满足即静默丢弃，挂起已被
+    //   调用方清为 {ts:0} 墓碑，幂等自愈
+    if (!crossRun && !currentCall) notifyCallEnd(h.cid || cur, heldMissedHtml(h.name || partnerName()), 'in', '未接听');
   }
   // 监听联系人重命名事件，实时同步通话昵称
   document.addEventListener('contact-renamed', (e) => {
@@ -757,6 +834,16 @@
       resumeHeldCall();
     }
   });
+  // FIX 2026-09-18 #757：隐藏/冻结/离页三处立刻冲刷通话标记（见 CALL_RESUME_WINDOW 注释）——
+  //   页面被系统冻结或杀进程前最后能跑的时机就是这里，把 ts 停在此刻（同运行期此前的
+  //   sessionStorage 快路径不受影响，这三行只让跨运行期的兜底副本更准、更晚过期）。
+  //   注册在上方 visibilitychange 之后：响铃切后台那条路径先 endCall 清成 {ts:0} 墓碑，
+  //   本回调再进来时 currentCall 已空、自然不写（不会把刚清掉的标记复活）。
+  document.addEventListener('visibilitychange', function () {
+    try { if (document.visibilityState === 'hidden') flushCallActive(); } catch (e) {}
+  });
+  window.addEventListener('pagehide', function () { try { flushCallActive(); } catch (e) {} });
+  document.addEventListener('freeze', function () { try { flushCallActive(); } catch (e) {} });
   // v3.6.x：通话弹层开始时先关闭大图查看器——img-view-mask z-index 高于 call-mask，
   // 不关的话来电/去电面板被大图完全盖住，接听/拒绝按钮点不到
   function closeImageOverlay() {
@@ -1049,29 +1136,66 @@
     };
   };
   window.hangupCall = function () { userHangup(); };
+  // v3.26.x #678：通话占用门——供 incoming-requests.js / 其它模块查询「此刻是否正占着电话」。
+  //   用户报「明明一直通话中联系人还是会打电话过来」（OPPO Reno6 5G + 雨见，明说多机型）：
+  //   跨桌面来电调度只看了 layerBusy() 的 #call-mask——通话最小化到悬浮小框时 call-mask 是
+  //   hidden，且浮层让路上限（BUSY_ESCAPE 3 轮）到期后强制顶屏，于是通话中照样弹出「XX 来电了」；
+  //   且切到别的桌面后，正在通话的那个联系人不再是激活桌面 → 连「正在跟你通话的人」都会再打一次。
+  //   currentCall 为空时回退读 call-active 标记（刷新/后台重建期间通话尚未恢复，心跳 ts ≤20s
+  //   刷新；10 分钟新鲜度窗口与 recoverCall 同口径）——只放行「确实没在通话」的场景。
+  window.callInProgress = function () {
+    if (currentCall) return true;
+    try {
+      const raw = sessionStorage.getItem(CALL_ACTIVE_KEY) || localStorage.getItem(CALL_ACTIVE_KEY);
+      const info = raw ? JSON.parse(raw) : null;
+      if (info && info.connectedTime && Date.now() - (info.ts || 0) <= 600000) return true;
+    } catch (e) {}
+    return false;
+  };
   // v3.26.x：启动恢复——上次通话因刷新/崩溃中断（call-active 未被 endCall 清除）→ 补写「通话中断」记录
   //   必须在 mochi-restore-done 后执行：此时 records-call 已从 IDB 回填到 LS，unshift 写回不会覆盖。
   //   mochi-restore-done 一定在回填完成后派发（idb.js finish()），即使保险丝超时最终完成也会派发。
+  // FIX 2026-09-17 #698：回读链扩成 sessionStorage → localStorage → IndexedDB（#406 call-hold 同口径）——
+  //   saveCallActive 三路写入后，任何一路幸存就能续上；恢复处理拆到 recoverProcess（异步回读 IDB 后仍能走同一处理）
   function recoverCall() {
     let info = null;
     try { info = JSON.parse(sessionStorage.getItem(CALL_ACTIVE_KEY) || 'null'); } catch (e) { info = null; }
+    if (info) { recoverProcess(info, 'ss'); return; }
     // v3.26.x：#120 sessionStorage 空 → 读 localStorage 兜底（关浏览器/PWA 重开场景）。
     //   同标签普通刷新 sessionStorage 仍在，优先读它以保持原行为。
-    let fromLs = false;
-    if (!info) {
-      try { info = JSON.parse(localStorage.getItem(CALL_ACTIVE_KEY) || 'null'); } catch (e) { info = null; }
-      fromLs = !!info;
+    try { info = JSON.parse(localStorage.getItem(CALL_ACTIVE_KEY) || 'null'); } catch (e) { info = null; }
+    if (info) { recoverProcess(info, 'ls'); return; }
+    // #698：两路都空（写入端被配额/隐私模式整块吞掉）→ 回读 IDB 副本
+    if (window.idbGet) {
+      window.idbGet(CALL_ACTIVE_KEY).then(function (ih) {
+        if (ih && ih.ts) recoverProcess(ih, 'idb');
+      }).catch(function () {});
     }
-    if (!info) return;
+  }
+  function recoverProcess(info, src) {
     if (!info.connectedTime) { clearCallActive(); return; } // 未接通就中断（响铃/呼叫中刷新），不恢复不记
+    const age = Date.now() - (info.ts || 0);
+    // #698：IDB 副本永久留存，必须卡新鲜度（心跳每 20 秒刷 ts，10 分钟窗同 callInProgress/#120 口径），
+    // 否则数天后重开会翻出早已结束的旧通话；LS 副本维持原 #120 行为不变
+    // FIX 2026-09-18 #757：窗分档（见 CALL_RESUME_WINDOW 注释）——IDB 兜底副本仍卡 10 分钟
+    // 静默窗（#705 幽灵复活防线：能走到 IDB 说明 SS/LS 都被系统清过，那里的「通话中」不可信）；
+    // SS/LS 是本机同步写下的真实标记，用 6 小时墙钟窗（心跳在页面冻结时不跑，10 分钟心跳窗
+    // 会把「锁屏/后台整场通话」误判成早已结束 ⇒ 用户报的「刷新后电话没了」）。
+    const windowMs = src === 'idb' ? CALL_IDB_WINDOW : CALL_RESUME_WINDOW;
+    if (age > windowMs) {
+      clearCallActive();
+      // #757：超窗的 SS/LS 快照＝这通电话从没写过结束记录（正常结束必留 {ts:0} 墓碑，早被
+      //   上面 !connectedTime 分支拦掉），旧实现静默清掉正是「无挂断记录」的来源——改为按
+      //   「关闭恢复」同一条链补写「通话中断」，让用户至少能看到这通电话结束在哪。
+      //   IDB 孤儿维持静默（#705：异步墓碑丢失/iOS 清 LS 回填，补记录＝幽灵未接）。
+      if (src !== 'idb') writeInterruptRecord(info);
+      return;
+    }
     const cid = info.cid || 'default';
     const dir = info.direction || 'out';
     const name = info.name || 'TA';
     // v3.26.x：开启「刷新后恢复通话」→ 重建通话 UI + 从接通时刻继续计时（TA 本地模拟，无需重连）
     if (callCfg().resume !== 0) {
-      // #120 localStorage 兜底只恢复「新鲜」标记（心跳每 20 秒刷 ts；10 分钟窗覆盖 iPadOS
-      //   杀后台后不久重开），超窗视为早已结束：静默清标记，不恢复也不翻旧账
-      if (fromLs && Date.now() - (info.ts || 0) > 600000) { clearCallActive(); return; }
       try {
         currentCall = { cid: cid, direction: dir, status: 'connected', startTime: info.startTime || info.connectedTime, connectedTime: info.connectedTime, durationSec: 0, name: name, av: info.av || '' };
         shownAv = null; shownName = null;
@@ -1089,11 +1213,30 @@
         }
         startCallDuration();
         saveCallActive(); // #120 回写 sessionStorage（后续刷新优先走 sessionStorage 快路径）+ 刷新 ts
-      } catch (e) { clearCallActive(); }
+      } catch (e) {
+        // #757：恢复中途出错（机型内核差异导致某个渲染/计时调用抛错）——旧实现只 clearCallActive
+        //   ＝通话无声消失且无记录；改为先把半截通话清干净（currentCall 已赋值的场景，否则
+        //   callInProgress 恒真、后续联系人来电全被占用门拦死），再补一条中断记录。
+        currentCall = null; shownAv = null; shownName = null;
+        if (mini) mini.hidden = true;
+        if (mask) mask.hidden = true;
+        if (cdEl) cdEl.hidden = true;
+        clearCallActive();
+        writeInterruptRecord(info);
+      }
       return;
     }
     // 关闭恢复 → 记中断记录
     clearCallActive();
+    writeInterruptRecord(info);
+  }
+  // FIX 2026-09-18 #757：中断记录统一出口（原为「关闭恢复」分支内联代码）——三条路径共用：
+  //   「关闭恢复」设置、超窗的 SS/LS 快照、恢复中途出错。语义不变：归属桌面写 records-call
+  //   （ended='interrupt'）+ 聊天系统消息 + 主页通话卡重渲染。
+  function writeInterruptRecord(info) {
+    const cid = info.cid || 'default';
+    const dir = info.direction || 'out';
+    const name = info.name || 'TA';
     const dur = Math.max(0, Math.floor((info.ts - info.connectedTime) / 1000));
     const durTxt = dur > 0 ? ' · 时长 ' + fmtDur(dur) : '';
     const recText = '通话中断（页面刷新或异常退出）' + durTxt;

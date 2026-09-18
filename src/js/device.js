@@ -12,6 +12,42 @@
   // undefined）。device.js 是 jsFiles 第一个文件，初始化放最前面，后面所有文件的
   // 启动异常才有地方落，诊断信息的「启动文件异常」一节才有数据。
   try { window.__jsErrors = window.__jsErrors || []; } catch (e0) {}
+  // ===== 全局轻提示 window.toast（v3.27.x）=====
+  // 用户反馈：「设置里好多开启/关闭开关，点了没有任何提示，不知道到底切没切」。
+  // 根因：全项目 20+ 个文件（incoming-requests / ta-ask / ta-mood / reply-settings /
+  //   quote-cards / feed / mail / period …）的开关反馈都写成
+  //   `if (typeof window.toast === 'function') window.toast('…已开启')`，
+  //   但从来没有一处给 window.toast 赋过值——全站唯一的提示通道是死的，只有少数
+  //   模块自己另画一份（device.js 诊断、page-coach、chat-settings 群聊开关才有兜底），
+  //   其余开关点了屏幕上零变化（device.js 下方与 page-coach.js 各自记录过这条死通道）。
+  // 这里补上唯一实现：复用全站既有的 #cc-toast 元素 + .cc-toast.show 类（样式与
+  //   2.6s 自动淡出动画在 chat-pages.css），与既有自绘兜底同一元素、同一观感，
+  //   不会出现两个提示叠在一起。__lastToastAt 供设置页统一开关反馈去重
+  //   （settings-help.js：模块已给专属文案时不再补通用文案）。
+  try {
+    window.toast = function (msg) {
+      try {
+        const text = (msg === undefined || msg === null) ? '' : String(msg);
+        if (!text) return;
+        window.__lastToastAt = Date.now();
+        const show = function () {
+          let t = document.getElementById('cc-toast');
+          if (!t) {
+            t = document.createElement('div');
+            t.id = 'cc-toast';
+            if (!document.body) { setTimeout(show, 0); return; }
+            document.body.appendChild(t);
+          }
+          t.textContent = text;
+          // 先摘 .show 再挂回：重放 CSS 自动淡出动画（重开时旧动画不互相干扰）
+          t.className = 'cc-toast'; void t.offsetWidth; t.className = 'cc-toast show';
+          clearTimeout(t._timer);
+          t._timer = setTimeout(function () { t.className = 'cc-toast'; }, 2600);
+        };
+        show();
+      } catch (e) {}
+    };
+  } catch (e) {}
   // 只在真实手机窄屏启用（桌面模拟器外壳不受影响）
   // v3.5.137：900px——Moto G100 等 2400px 物理屏 / DPR 2.75-3 的 CSS 视口约 800-873px，
   // 原 768px 上限会误判为桌面（显示 390px 小手机框 + 两侧灰底）
@@ -49,13 +85,22 @@
   // 无模拟器外壳，竖屏/横屏观感一致）。
   // iPadOS 13+ 的 UA 伪装成 Macintosh（桌面 macOS UA + 触摸屏 maxTouchPoints>1），
   // 老系统 UA 带 iPad 关键字，两种都覆盖。
+  // FIX 2026-09-17 #707：Macintosh 伪装分支补「screen 短边 ≥600 CSS px」——iPhone 的
+  // Safari/Via 开「请求桌面网站」后 UA 同样变成 Macintosh（iPhone15ProMax 实测
+  // platform=MacIntel + maxTouchPoints=5 + screen=430×932，诊断「html 类:tablet、
+  // 判定依据:tablet」），原分支把这类手机整体判成平板走 .tablet 布局（全局
+  // touch-action 改写等一整套非主流路径）。真 iPad 伪装时 screen 短边最小 744
+  // （iPad mini）≥600 照常平板；触摸屏 Mac 短边 ≥982 不受影响；iPhone 全系
+  // （短边 ≤440）回到手机布局。注意 isIOS 的同款伪装分支不动——iPhone 本就是 iOS，
+  // 键盘/安全区/standalone 适配必须照走。
   let isTablet = false;
   try {
     const plat = String(navigator.platform || '');
     // v3.7.x：/iPad/ 分支加 Android 排除——UA 伪装成 iPad 的安卓窄屏机（OPPO/Via 等）
     //   会被误判为平板走手机全屏布局，内容整屏拉宽。真 iPad 不含 Android 关键字，安全
+    const _mScreen = Math.min((screen && screen.width) || 0, (screen && screen.height) || 0);
     isTablet = (/iPad/i.test(ua) || plat === 'iPad') && !/android/i.test(ua) ||
-      ((plat === 'MacIntel' || /Macintosh/i.test(ua)) && navigator.maxTouchPoints > 1 && 'ontouchstart' in window);
+      ((plat === 'MacIntel' || /Macintosh/i.test(ua)) && navigator.maxTouchPoints > 1 && 'ontouchstart' in window && _mScreen >= 600);
     // #555：安卓平板判定——此前只认 iPad/Macintosh 触摸屏，安卓平板（荣耀平板/EC-PAD01
     // 等用户真实设备）竖屏被当手机全屏拉宽、横屏掉进桌面 390px 外壳。UA 特征：安卓平板
     // 无 Mobile 关键字（安卓手机 UA 恒带 Mobile），再加短边 ≥600 CSS px 双保险，防个别
@@ -112,17 +157,30 @@
     ['desktop-ua+vv<=900+mobile-input', sig.uaDesk && sig.vvW > 0 && sig.vvW <= 900 && (sig.oriApi || mobileInput)]
   ];
   let viewportFixed = false;
+  // FIX 2026-09-18 #718：meta 内容统一出口——两处改写（device-width／显式像素）只差宽度段，
+  // interactive-widget 按平台选：iOS=resizes-content（mobile-adapt.js 同款；resizes-visual 下
+  // iOS 键盘收缩 .phone 异常）、安卓=resizes-visual。原两处写死 resizes-visual，iOS 桌面伪装
+  // ＋内核不认 viewport 改写时，本函数 rAF 晚跑会把 mobile-adapt 已改的 resizes-content
+  // 盖回去＝键盘适配退回异常形态。
+  function viewportMetaContent(widthPart) {
+    return widthPart + ', initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=' + (isIOSUa() ? 'resizes-content' : 'resizes-visual');
+  }
   // 把 layout viewport 拉回设备宽度：改 viewport meta → 不奏效再改显式像素宽度 →
   // 仍不奏效才加 html.force-mobile 类作 CSS 保底（base.css 复刻手机端关键规则）。
   function applyViewportFix() {
     if (viewportFixed) return;
+    // v3.26.x #714：用户手动选了桌面外壳（?pc=1 / 设置「桌面布局（强制）」）时整条不执行——
+    // 本函数在 RULES 命中时同步调用、而手动偏好是其后才覆盖 isMobile；异步 rAF 链
+    // （meta 改写→两帧后加 force-mobile 类）不看最终判定，会把手选 pc 的用户强改成
+    // 满屏手机布局（触屏/小屏 PC + 强制 pc 可复现的混合态：JS 认为桌面、CSS 却满屏）。
+    if (layoutPref === 'pc') return;
     viewportFixed = true;
     // 改 viewport meta 把 layout viewport 拉回设备宽度——让 CSS
     // @media(max-width:900px) 自然命中，所有手机端规则生效。桌面站点
     // 模式浏览器可能忽略 meta，下方加 force-mobile 类作 CSS 保底。
     try {
       document.querySelectorAll('meta[name="viewport"]').forEach(function (m) {
-        m.setAttribute('content', 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-visual');
+        m.setAttribute('content', viewportMetaContent('width=device-width'));
       });
     } catch (e) {}
     // 等一帧看媒体查询是否命中；未命中说明该内核「桌面站点」模式下连
@@ -150,7 +208,7 @@
             } catch (e2) {}
             if (vw) {
               document.querySelectorAll('meta[name="viewport"]').forEach(function (m) {
-                m.setAttribute('content', 'width=' + vw + ', initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-visual');
+                m.setAttribute('content', viewportMetaContent('width=' + vw));
               });
             }
             requestAnimationFrame(function () {
@@ -202,8 +260,14 @@
   // 且 ios-pwa-standalone 类不加、#114/#129 安全区补偿在 iPad 全部失效。补 Macintosh
   // 伪装分支——与上方 isTablet 第二分支同信号（真桌面 Mac maxTouchPoints=0 不会误判，
   // iPadOS 触摸屏 maxTouchPoints≥5）。
-  const isIOS = (/iphone|ipad|ipod/i.test(ua) && !/android/i.test(ua) && !window.MSStream) ||
-    ((navigator.platform === 'MacIntel' || /Macintosh/i.test(ua)) && navigator.maxTouchPoints > 1 && 'ontouchstart' in window);
+  // FIX 2026-09-18 #718：iOS 判定收成具名函数——applyViewportFix 的同步 meta 改写段在其
+  // 调用点（本 const 初始化之前执行）就要按平台选 interactive-widget 关键字，直接引用
+  // const 会 TDZ；函数声明提升后两处共享同一判定，防口径漂移。
+  function isIOSUa() {
+    return (/iphone|ipad|ipod/i.test(ua) && !/android/i.test(ua) && !window.MSStream) ||
+      ((navigator.platform === 'MacIntel' || /Macintosh/i.test(ua)) && navigator.maxTouchPoints > 1 && 'ontouchstart' in window);
+  }
+  const isIOS = isIOSUa();
   const isAndroid = /android/i.test(ua);
   // v3.6.x：Via 浏览器（UA 特征）——实测其 WebView 禁用了方向锁（lock 无效），
   // 网页全屏必转横屏，fullscreen.js 需据此走 CSS 兜底
@@ -1097,6 +1161,16 @@
     } catch (e) { L.push('serviceWorker=读取失败'); }
     L.push('storage.persist=' + !!(navigator.storage && navigator.storage.persist));
     L.push('CSS dvh=' + cssSupports('height: 1dvh') + '  svh=' + cssSupports('height: 1svh') + '  env(safe-area)=' + cssSupports('padding-top: env(safe-area-inset-top)'));
+    // #690：老内核「静默丢声明」体检——inset / min() / gap(简写) 都是近年内核才有，
+    // 不支持时 CSS 不报错、只是整条声明不生效（桌面壁纸层与背景遮罩层塌成 0×0、
+    // 图标盒缩水、图标间距归零），用户看到的是「桌面一片灰白／排版乱」却以为功能坏了。
+    // 每个降级点都有兜底，#690 之后此处应全为 ok；出现 false 说明又漏了一处兜底。
+    try {
+      L.push('老内核降级项：inset=' + (cssSupports('inset: 0') ? 'ok' : '不支持(已兜底)')
+        + '  min()=' + (cssSupports('width: min(1px, 2vw)') ? 'ok' : '不支持(已兜底)')
+        + '  gap简写=' + (cssSupports('gap: 1px') ? 'ok' : '不支持(已兜底)')
+        + '  :has()=' + (cssSupports('selector(:has(a))') ? 'ok' : '不支持(未用)'));
+    } catch (e) {}
     L.push('安卓输入框已转 ce-box=' + !!document.querySelector('.ce-box'));
     // #260：保活现场——「后台保活失败/收不到通知」类报障直接出证据，不再靠口述猜。
     // 心跳 = bg-keep.js 在页面隐藏期每 30s 写 IDB 的计数/时间戳轨迹：相邻拍间隔
@@ -1110,6 +1184,11 @@
         else kpParts.push('音频=无（保活未起）');
         if (kp.ms) kpParts.push('媒体条=' + (kp.ms.metadata ? '有' : '无') + ' ' + kp.ms.state);
         kpParts.push('WebRTC=' + kp.pc);
+        // #724：取证计数（bg-keep 持久化）——断流=隐藏期定时器停摆过（冻结/丢弃实锤）、
+        // 后台终止=上个会话没能活着回来（标签被系统丢弃/杀掉，回来自动重载）
+        if (kp.ev && (kp.ev.stall > 0 || kp.ev.died > 0)) {
+          kpParts.push('历史取证：断流' + kp.ev.stall + '次/后台终止' + kp.ev.died + '次（>0＝保活曾被冻结或页面曾被系统回收）');
+        }
         if (kp.hb) {
           const tr = kp.hb.trail || [];
           let gap = 0;
@@ -1135,6 +1214,23 @@
       if (fpsIdx < 0) return;
       L[fpsIdx] = fps > 0 ? '实测帧率≈' + fps + ' fps（500ms 现场采样，高刷屏>60 正常）' : '实测帧率：rAF 未触发（页面在后台被节流）';
     }));
+    // #690：桌面翻页帧耗时（用户上一次翻页时由 desktop-slider.js 现场采样）。
+    // 上面那行「实测帧率」是打开诊断这一刻**静态页**的读数，翻页卡顿在它上面看不出来
+    // ——用户报「滑三页灰屏/卡顿/手机发烫」时，这行才是能判定的证据：
+    // 平均帧间隔 >33ms＝掉帧、>100ms＝明显卡（且与页数成正比＝图层栅格化吃满）。
+    try {
+      const dp = JSON.parse(localStorage.getItem('xy-home-v2:__diag-deskperf') || 'null');
+      if (dp && dp.n) {
+        const when = dp.t ? new Date(dp.t).toLocaleString() : '?';
+        L.push('桌面翻页帧耗时（' + dp.n + ' 帧现场采样 · ' + when + ' · ' + (dp.pages || '?') + ' 页）：'
+          + '平均 ' + dp.mean + 'ms / p90 ' + dp.p90 + 'ms / 最慢 ' + dp.worst + 'ms'
+          // #707：采样已剔除切后台/锁屏冻结帧（否则一条 144s 的后台间隙会把均值拉成假「严重卡顿」）
+          + (dp.hid ? '（已剔除后台帧 ' + dp.hid + '）' : '')
+          + (dp.mean > 100 ? '（严重卡顿）' : dp.mean > 33 ? '（掉帧）' : '（流畅）'));
+      } else {
+        L.push('桌面翻页帧耗时：尚无记录（去桌面左右滑一次再回来即可采到）');
+      }
+    } catch (e) {}
     let memTxt = '不支持（仅 Chrome 系）';
     try {
       const pm = performance.memory;
@@ -1933,7 +2029,7 @@
   // failToast 同时被当「函数调用」和「文案判断」用，屏幕适配诊断调用方传 4 参
   // （第3参=文案串、第4参=sdToast 被丢弃），一旦走 legacy 分支必抛
   // 「failToast is not a function」且被按钮 try/catch 吞掉＝导出静默失败。
-  function diagExportDocx(text, basePrefix, failMsg, toastFn) {
+  function diagExportDocx(text, basePrefix, failMsg, toastFn, shareTitle) {
     const fname = (basePrefix || 'mochi-diag-') + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.docx';
     const tf = (typeof toastFn === 'function') ? toastFn : diagToast;
     const legacy = function () {
@@ -1946,7 +2042,10 @@
     let blob = null;
     try { blob = buildDocxBlob(text); } catch (e) { blob = null; }
     if (!blob) { legacy(); return; }
-    window.mochiExportBlob(blob, fname, 'mochi 诊断报告', [
+    // #746（2026-09-18）：第 5 参 shareTitle 把分享面板/保存框标题参数化——
+    // 「字卡使用状态自检」导出复用本入口，标题显示「字卡使用状态自检报告」；
+    // 不传保持旧值「mochi 诊断报告」，既有诊断调用方零感知。
+    window.mochiExportBlob(blob, fname, shareTitle || 'mochi 诊断报告', [
       { description: 'Word 文档', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }
     ]).then(function (res) { if (res === 'fail') legacy(); });
   }
@@ -2308,6 +2407,12 @@ window.mochiViewportForm = function (sig) {
   const safMajor = sig.safMajor || (function () { try { var m = /Version\/(\d+)\./.exec(String(navigator.userAgent || '')); return m ? +m[1] : 0; } catch (e) { return 0; } })();
   const standalone = !!sig.standalone;
   const diff = (screenH > 0 && innerH > 0) ? (screenH - innerH) : 0;
+  // v3.26.x #719：e2e 浏览器几何信号——布局视口超出整屏的量（e2eOverH）与页面被
+  // 缩放渲染的证据（e2eZ=screenW/innerW<1，devicePixelRatio≈z×系统密度）。物理上
+  // 页面不可能比整屏还高，超出的那段必被系统栏覆盖；宽度超出＋DPR 缩小＝缩放渲染
+  // 实锤而非 screen 坏值（#278 家族两轴同时坏值极罕见，带内上限再挡一层）。
+  const e2eOverH = (screenH > 0 && innerH > 0) ? (innerH - screenH) : 0;
+  const e2eZ = (sig.screenW > 0 && sig.innerW > 0 && sig.innerW > sig.screenW) ? (sig.screenW / sig.innerW) : 0;
   // env 探针门槛：standalone 或疑似沉浸式壳（screen≈inner）才值得建探针 DOM
   const needEnvProbe = ((screenH > 0 && innerH > 0 && diff <= 2) || standalone);
   // #236：安卓浏览器覆盖形态扩展——HeyTapBrowser（OPPO K13 Turbo Pro 实报）等安卓壳
@@ -2315,6 +2420,22 @@ window.mochiViewportForm = function (sig) {
   // 下方，与 #199 沉浸壳同需「状态栏自身抬升 + .phone 贴 inner」。sig.andr 只由安卓
   // 执行器/采集器传入，iOS（不传/false）维持 #199 原判式零回归
   const coverBrowser = !standalone && envTop >= 20 && (diff <= 2 || !!sig.andr);
+  // v3.26.x #719：Edge/Android 15+「edge-to-edge 浏览器」形态（OPPO Find X9 Pro +
+  // Edge 实报，用户明说多机型同现）：viewport-fit=cover 生效的系统上页面画进系统
+  // 状态栏/手势条区，但 env(safe-area-inset-*) 恒报 0——#236 HeyTapBrowser 的姊妹
+  // 形态（那款报 env≥40 走 coverBrowser，本形态 env=0 只能靠几何签名识别）：布局
+  // 视口比整屏还高＋布局宽比 screen 宽（Find X9 Pro 现场 inner=400×810 / screen=
+  // 360×785 / DPR 2.699≈0.9×3.0，810×0.9=729=785−Edge 底部工具条 56 全数对账＝
+  // 页面顶到物理屏顶、系统状态栏悬浮其上）。修正＝顶部按状态栏高、底部按手势条高
+  // 自动避让（估式 28/z、16/z；仍偏可经 屏幕位置设置 五轴本机精调）。带内 [3,64]：
+  // 下限滤 DPR 取整噪声；上限既排除 #278 screen 坏值家族（畅享70Pro screen<inner
+  // 达 535，该家族铺满 inner 即正确、不避让），也排除更高缩放档的非 e2e 浏览器
+  // （chrome≥100 时 80% 缩放 overH≈71 会闯入 64~96 段，故上限收 64 不放宽）。
+  // Edge 工具条隐匿瞬间 overH≈87 逸出带＝调用方用 sig.e2eLatch 闩住不掉避让
+  //（见 mobile-adapt _aSyncCoverTop / syncSafeBottomA；旋转重探时自清）。
+  const e2eBase = !standalone && !!sig.andr && envTop < 20
+    && e2eOverH >= 3 && e2eZ > 0.5 && e2eZ <= 1;
+  const e2eBrowser = e2eBase && (e2eOverH <= 64 || !!sig.e2eLatch);
   // #185/#186：用户在设置页声明本机属「覆盖形态」（与保留/已避让信号相同无法程序
   // 区分，用户自服）：顶部避让 env 探针优先、env=0 用 diff（=保留的状态栏高）兜底。
   // 声明优先级最高（执行器原语义：force 先判并置 _resStand=false——漏掉这步 forced
@@ -2328,7 +2449,10 @@ window.mochiViewportForm = function (sig) {
   let safeTop;
   if (forceCover) safeTop = (envTop >= 20) ? envTop : ((diff >= 20 && diff <= 160) ? diff : 0);
   else if (resStand) safeTop = 0;
-  else safeTop = ((standalone || coverBrowser) && envTop >= 20 && envTop <= 160) ? envTop : 0;
+  // #719：e2e 浏览器顶部避让估式——系统状态栏高按缩放折算成页面 px（28/z），
+  // 钳 [20,40]；估不准的部分留给 屏幕位置设置·顶部轴 本机精调（#707 双层包装照常叠加）。
+  else safeTop = ((standalone || coverBrowser) && envTop >= 20 && envTop <= 160) ? envTop
+    : (e2eBrowser ? Math.min(40, Math.max(20, Math.round(e2eZ > 0 ? 28 / e2eZ : 28))) : 0);
   // 期望 .phone 底边 / 全屏期望屏高：保留/iPad/浏览器壳贴 inner（超 inner=文档
   // 滚动量=与自愈 pin 对打）；#186 force 声明=屏高（safeTop+inner 补满屏底，修
   // 18.3 底部白边的正确期望，原实现误写 innerH）；覆盖形态=envTop+inner、min 屏高
@@ -2340,13 +2464,15 @@ window.mochiViewportForm = function (sig) {
   // .phone（贴 inner 铺满、布局本身正常）被误判「底部超出 535px」+「底部导航栏被裁」
   // 自动采集刷错误环。坏值弃用回退 envTop+innerH（执行器 vh 同源，行为=维持现状
   // 铺满可视区零变化）；screenH 正常（≥inner）的机型 min 钳制语义不变零回归。
-  const expBase = (coverBrowser || resStand || ipadForm) ? innerH
+  // #719：e2e 浏览器同保留/浏览器壳——贴 inner（页面本就铺到布局视口底，底部遮挡
+  // 由 --mochi-safe-bottom 消费方自身避让，不靠撑高 .phone）。
+  const expBase = (coverBrowser || resStand || ipadForm || e2eBrowser) ? innerH
     : (forceCover ? ((screenH >= innerH ? screenH : 0) || (safeTop + innerH))
       : Math.min((screenH >= innerH ? screenH : 0) || (envTop + innerH), envTop + innerH));
   // 期望状态栏顶位（诊断 ③）：保留形态系统已避让=12 兜底；其余=max(env,12)。
   // force 时 resStand=false → forced 设备（如 14 Pro/26.6 sbTop≈73）不再被
-  // expect=12+60 误判「顶部双倍避让」
-  const expTop = resStand ? 12 : Math.max(envTop, 12);
+  // expect=12+60 误判「顶部双倍避让」；#719 e2e=自动避让估式自身。
+  const expTop = resStand ? 12 : (e2eBrowser ? safeTop : Math.max(envTop, 12));
   // #537：iOS 独立应用·覆盖形态（非保留/非 iPad/非 force 的 standalone + env∈[20,160]；
   // 16Pro/26.1、17/26.6 等实测均落此支）= 执行器要让模拟状态栏自身抬升到系统状态栏下方
   // （base.css html.ios-cover-top 规则消费）+ 非全屏高度须含顶部安全区（expBase=整屏）。
@@ -2356,9 +2482,14 @@ window.mochiViewportForm = function (sig) {
   // 各形态恒 false（各自避让链已在），非 standalone 恒 false（浏览器壳走 coverBrowser）。
   const iosCover = standalone && !forceCover && !resStand && !ipadForm && envTop >= 20 && envTop <= 160;
   const form = forceCover ? 'force-cover' : resStand ? 'reserved' : ipadForm ? 'ipad'
-    : coverBrowser ? 'cover-browser' : (envTop >= 20 ? 'covered' : (diff >= 20 ? 'avoided' : 'plain'));
+    : coverBrowser ? 'cover-browser' : e2eBrowser ? 'e2e-browser'
+    : (envTop >= 20 ? 'covered' : (diff >= 20 ? 'avoided' : 'plain'));
   return { form: form, resStand: resStand, ipadForm: ipadForm, coverBrowser: coverBrowser,
     forceCover: forceCover, iosCover: iosCover, needEnvProbe: needEnvProbe, safeTop: safeTop,
+    // #719：e2e 底部避让估式（手势条高 16/z，钳 [12,28]）——安卓执行器
+    // syncSafeBottomA 键盘收起回落时消费；非 e2e 恒 0（零回归）。
+    safeBottom: e2eBrowser ? Math.min(28, Math.max(12, Math.round(e2eZ > 0 ? 16 / e2eZ : 16))) : 0,
+    e2eBrowser: e2eBrowser,
     expBase: expBase, expTop: expTop, envTop: envTop, diff: diff,
     standalone: standalone, iosMajor: iosMajor };
 };
@@ -2429,11 +2560,12 @@ window.mochiViewportForm = function (sig) {
     const envTop = inp.envTop || 0;
     const varTop = inp.varTop || 0;
     const diff = inp.diff || 0;
-    const Fm = window.mochiViewportForm({ standalone: !!inp.standalone, envTop: envTop, innerH: inp.innerH || 0, screenH: inp.screenH || 0, iosMajor: inp.iosMajor || 0, safMajor: inp.safMajor || 0, andr: !!inp.andr, safeTopForce: !!inp.force });
+    const Fm = window.mochiViewportForm({ standalone: !!inp.standalone, envTop: envTop, innerH: inp.innerH || 0, screenH: inp.screenH || 0, innerW: inp.innerW || 0, screenW: inp.screenW || 0, iosMajor: inp.iosMajor || 0, safMajor: inp.safMajor || 0, andr: !!inp.andr, safeTopForce: !!inp.force });
     let mode;
     if (Fm.forceCover) mode = '覆盖形态（用户已在设置声明：顶部避让修正开启，#186）';
     else if (Fm.resStand) mode = '系统保留形态（iOS 18.x standalone：系统已把网页起点放在状态栏下方，env 仍报真实高度；页面不再避让、高度贴 inner，#200）';
     else if (Fm.ipadForm) mode = 'iPad 形态（inner=屏高已含整屏，diff=0：状态栏悬浮、页面 padding 避让，高度贴 inner/屏高，#184）';
+    else if (Fm.e2eBrowser) mode = 'edge-to-edge 浏览器形态（Android 15+：页面顶进系统状态栏/底入手势条而 env() 未报值，#719——已自动顶部避让 ' + Fm.safeTop + 'px/底部 ' + (Fm.safeBottom || 0) + 'px；仍偏请用 屏幕位置设置 五轴精调）';
     else if (envTop >= 20) mode = '覆盖形态（页面顶到屏幕最顶，系统栏悬浮其上）' + (Fm.coverBrowser ? '，浏览器覆盖壳（#199/#236：状态栏自身抬升、.phone 贴 inner）' : (Fm.iosCover ? '，独立应用覆盖（#537：.phone 铺满物理屏、状态栏自身抬升到系统栏下方、html/body 同高顶对齐）' : ''));
     else if (diff >= 20) mode = '已避让形态（系统已把网页起点放在状态栏下方，页面不应再加顶部 padding）';
     else mode = '无安全区/常规视口';
@@ -2451,8 +2583,9 @@ window.mochiViewportForm = function (sig) {
       // 其余形态沿用元素顶口径（含 .phone padding）零变化
       // #537：iOS 独立应用覆盖形态同款——.phone 铺满整块物理屏（顶=屏幕 0），避让
       // 改由 html.ios-cover-top 规则抬 .statusbar 自身 padding；仍按「元素顶」判会
-      // 恒报 ✗顶部重叠（修好也红），故与浏览器壳一并取有效顶位。
-      const sbEffTop = (Fm.coverBrowser || Fm.iosCover) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;
+      // 恒报 ✗顶部重叠（修好也红），故与浏览器壳一并取有效顶位；#719 e2e 同理
+      // （mochi-cover-top 类已挂、避让在状态栏自身 padding）。
+      const sbEffTop = (Fm.coverBrowser || Fm.iosCover || Fm.e2eBrowser) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;
       if (sbEffTop > expect + 60) add(false, '顶部双倍避让', '✗ 状态栏实测顶位 ' + sbEffTop + 'px，明显超过安全区顶部 ' + expect + 'px（#148 修复的双倍白带形态复发，连本条反馈）');
       // v3.26.x #208：加 diff ≥ envTop−8 守卫——顶部重叠只在「覆盖形态」信号
       // （inner=screen−envTop）下才有意义；iPhone17 等保留形态设备在切后台回来
@@ -2708,7 +2841,8 @@ window.mochiViewportForm = function (sig) {
     L.push('html类：' + inp.htmlClass);
     L.push('系统=' + (inp.osLine || '未知') + '（形态判定依赖系统版本，#184/#200）');
     L.push('env(safe-area-inset-bottom)=' + inp.envBottom + 'px  视口平移=offTop:' + (inp.vvOffTop || 0) + '/offLeft:' + (inp.vvOffLeft || 0));
-    L.push('键盘残留=' + (inp.kb ? ('kbActive=' + !!inp.kb.kbActive + ' 锁=' + !!inp.kb.docLocked + ' 基线 inner/vv=' + inp.kb.fullInner + '/' + inp.kb.fullVv) : 'n/a'));
+    L.push('键盘残留=' + (inp.kb ? ('kbActive=' + !!inp.kb.kbActive + ' 锁=' + !!inp.kb.docLocked + ' 基线 inner/vv=' + inp.kb.fullInner + '/' + inp.kb.fullVv) : 'n/a')
+      + '  --mochi-safe-bottom=' + (function () { try { var _v = getComputedStyle(document.documentElement).getPropertyValue('--mochi-safe-bottom').trim(); return _v ? _v + 'px' : '(未设/回落 ' + inp.envBottom + 'px)'; } catch (e) { return '?'; } })());
     L.push('');
     L.push('== 顶部安全区 ==');
     L.push('env(safe-area-inset-top)=' + inp.envTop + 'px  --mochi-safe-top=' + inp.varTop + 'px  diff(screen−inner)=' + inp.diff + 'px');
@@ -2731,6 +2865,17 @@ window.mochiViewportForm = function (sig) {
         else if (gapB < -4) L.push('⚠ 聊天输入栏超出可视区 ' + (-gapB) + 'px');
         else L.push('输入栏贴底 ✓');
       }
+      // v3.30 定位增强：安卓端 __mochiIosKb 恒空 → kbActive 恒假，上面「键盘期/gapB」两条
+      // 对安卓全 n/a，键盘弹起的「输入栏悬空」拿不到现场（用户 vivo iQOO15+Edge 实报）。
+      // 此处不看内部键盘标志，直接以可视底(vv)对照实际输入栏：vv 显著小于 inner（键盘在
+      // 场的可视证据）且输入栏底离 vv 底过大 → 精确报悬空量 + safe-bottom 现值。纯诊断
+      // 输出，不涉检测/布局，零机型分支（跨安卓/iOS 统一语义）。
+      if (c.inputBottom != null && inp.vvH > 0 && inp.innerH - inp.vvH >= 24) {
+        const _gapV = inp.vvH - c.inputBottom;
+        L.push('键盘可视态：vv 较布局内缩 ' + (inp.innerH - inp.vvH) + 'px  输入栏底距可视底=' + _gapV + 'px（阈值 ≤24px）');
+        if (_gapV > 24) L.push('  ✗ 输入栏悬空 ' + _gapV + 'px：未贴键盘（#282/#236 族：键盘检测未置位或 --mochi-safe-bottom/.phone 收缩未归零——请整段反馈即可对号修）');
+        else L.push('  贴可视底 ✓（≤24px）');
+      }
     } catch (eR1) {}
     try {
       const h = inp.home || {};
@@ -2745,7 +2890,7 @@ window.mochiViewportForm = function (sig) {
     // v3.27.x：机读签名行——用户整段复制，开发者可脚本解析对号/录 verify 台账；
     // 键序固定勿动（下游脚本按名取值）
     let sigForm = '';
-    try { sigForm = (window.mochiViewportForm({ standalone: !!inp.standalone, envTop: inp.envTop, innerH: inp.innerH, screenH: inp.screenH, iosMajor: inp.iosMajor, safMajor: inp.safMajor || 0, andr: !!inp.andr, safeTopForce: !!inp.force }) || {}).form || ''; } catch (eS) {}
+    try { sigForm = (window.mochiViewportForm({ standalone: !!inp.standalone, envTop: inp.envTop, innerH: inp.innerH, screenH: inp.screenH, innerW: inp.innerW || 0, screenW: inp.screenW || 0, iosMajor: inp.iosMajor, safMajor: inp.safMajor || 0, andr: !!inp.andr, safeTopForce: !!inp.force }) || {}).form || ''; } catch (eS) {}
     const sig = { v: sdVerCache, form: sigForm, scale: inp.scale, env: inp.envTop, varTop: inp.varTop, diff: inp.diff, innerW: inp.innerW, innerH: inp.innerH, vvH: inp.vvH, screenH: inp.screenH, phoneW: inp.phoneW, phoneH: inp.phoneH, phoneBottom: inp.phoneBottom, sb: inp.sbTop, tab: inp.tabBottom, iosH: inp.iosH, dpr: inp.dpr, standalone: !!inp.standalone, fs: !!inp.fsActive, andr: !!inp.andr, tablet: !!inp.tablet, ori: inp.orientation, bad: F.filter(function (f) { return !f.ok; }).map(function (f) { return f.name; }) };
     L.push('SIG ' + JSON.stringify(sig));
     L.push('');
@@ -3215,3 +3360,141 @@ window.mochiViewportForm = function (sig) {
     and: function (hayLower, terms) { return terms.every(function (w) { return hayLower.indexOf(w) >= 0; }); }
   };
 })();
+
+// ===== 文件选择器原生 label 激活（FIX 2026-09-18 #738）——小米 MiuiBrowser 等分叉内核对
+// 「常驻挂文档 input + 程序化 input.click()」仍可能静默不弹系统选择器（#717 修复后小米17 Pro
+// 实报三个头像入口全灭；#677/#717 同族第三波）。业界对这类顽固兼容问题的最稳解＝不再依赖
+// JS 合成 click：把透明 <label for=inputId> 铺满触发按钮内部，用户手指物理点在 label 上，
+// 由内核按 HTML 原生行为转发激活 file input（label→input 转发是核心规范行为，所有浏览器
+// 分叉实现一致——中文移动网「sr-only input + label 当按钮」通吃全平台的通用上传写法）。
+//
+// ⚠️ FIX 2026-09-18 #756（本族第六波，用户二次报障「其他手机型号也这样」）：
+// 上面那条「label 转发是所有分叉实现一致的核心行为」的假设**在国产内核上是错的**。
+// 实测（vivo X200s + 百度 SP-engine/T7，症状与用户实报逐条吻合）：label 被正确铺满、
+// htmlFor 也指对了 input，但内核**既不转发激活、也不报错、也不派发任何可用于判断的事件**
+// ——点击就这样被无声吞掉。而 #738 的配套写法 `if (fromLabel(e)) return;`（见各入口）
+// 本意是「label 已原生开过选择器，别再 JS click 一次免得双开」，实际效果却是：
+//   label 存在 ⇒ 一律认作「原生激活已成功」⇒ 永远跳过 JS 兜底 ⇒ 全站入口全灭、零反馈。
+// 于是 #738 把「小米系上 JS click 不灵」修成了「国产内核上两条路都不走」——这正是用户说的
+// 「反复出现」：每轮都在赌「哪条激活路径在这台机器上通」，赌错就整族复发。
+//
+// 根治口径（不再赌）：**两条路都留着，但让它们互为兜底、且以「是否真的弹了选择器」为准**。
+// 具体＝label 只当作「加速路径」而非「唯一路径」：点击后起一个极短计时器，若在窗口期内
+// 没有观察到「选择器已开」的信号（input 取得焦点／change 事件／click 落到 input 上），
+// 就补一次 JS click()。信号一旦出现即撤销兜底，双开不可能发生。
+// 判断依据全部是**可观测事实**，不含任何机型/UA 分支——这是本族不再复发的关键。
+window.__mochiPickArmed = window.__mochiPickArmed || { seq: 0, opened: 0 };
+// 入口侧调用：告知「本次手势已由 label 走过原生激活」，只做记录，不阻断 JS 兜底
+window.mochiFilePickFromLabel = function (e) {
+  try {
+    var hit = !!(e && e.target && e.target.closest && e.target.closest('label[data-file-pick-for]'));
+    if (hit) window.__mochiPickArmed.opened++;
+    return hit;
+  } catch (err) { return false; }
+};
+// 入口侧统一调用（替代原 `if (fromLabel(e)) return;` 的早退写法）：
+// onMiss 在「窗口期内确实没弹出选择器」时执行，用于补 JS click() 兜底。
+// 返回 true＝判定已开（调用方无需再做任何事）。
+window.mochiFilePickGuard = function (input, onMiss) {
+  var token = ++window.__mochiPickArmed.seq;
+  var openedAt = window.__mochiPickArmed.opened;
+  var settled = false;
+  var finish = function (ok) {
+    if (settled) return;
+    settled = true;
+    if (!ok && typeof onMiss === 'function') { try { onMiss(); } catch (e) {} }
+  };
+  // 信号一：input 获得焦点（安卓/桌面 Chromium 弹选择器时的共同表现）
+  var onFocus = function () { cleanup(); finish(true); };
+  // 信号二：input 的 click 事件（原生转发会派发）
+  var onClick = function () { cleanup(); finish(true); };
+  // 信号三：用户真的选了文件（change 必然晚于选择器打开）
+  var onChange = function () { cleanup(); finish(true); };
+  function cleanup() {
+    try { input.removeEventListener('focus', onFocus); } catch (e) {}
+    try { input.removeEventListener('click', onClick); } catch (e) {}
+    try { input.removeEventListener('change', onChange); } catch (e) {}
+  }
+  try { input.addEventListener('focus', onFocus); } catch (e) {}
+  try { input.addEventListener('click', onClick); } catch (e) {}
+  try { input.addEventListener('change', onChange); } catch (e) {}
+  // 窗口期：国产内核「转发激活」即使发生也在同一帧内落地，60ms 足够区分；
+  // 但焦点/change 可能晚到，故超时后只做「补一次 click」，不做任何状态重置。
+  setTimeout(function () {
+    if (settled) return;
+    if (window.__mochiPickArmed.opened !== openedAt) { cleanup(); settled = true; return; } // label 路径已生效
+    cleanup();
+    finish(false); // 没等到任何信号 → 判定「这次没弹出」，走兜底
+  }, 60);
+  return { done: function () { cleanup(); settled = true; }, token: token };
+};
+window.mochiFilePickLabel = function (btn, input) {
+  try {
+    if (!btn || !input || !btn.appendChild) return;
+    if (!input.id) input.id = 'mochi-file-pick-' + Date.now().toString(36);
+    if (getComputedStyle(btn).position === 'static') btn.style.position = 'relative';
+    var mark = 'data-file-pick-for';
+    var label = btn.querySelector('label[' + mark + '="' + input.id + '"]');
+    if (!label) {
+      label = document.createElement('label');
+      label.setAttribute(mark, input.id);
+      label.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;margin:0;padding:0;border:0;opacity:0;cursor:pointer;';
+      btn.appendChild(label);
+    }
+    label.htmlFor = input.id;
+  } catch (e) { /* 兼容助手绝不能成为错误源 */ }
+};
+
+// ===== 统一文件选择入口（FIX 2026-09-18 #755）——同族第五波根治 =====
+// 用户（vivo X200s + 百度浏览器，SP-engine/T7 内核）实报「任何图片，上传无反应；上传头像点了相册
+// 点了图片，但是没有任何反应」，明说其他机型也有、要求不要覆盖式修补。第五波复盘：#677（input 要
+// 挂文档）→ #717（去 display:none）→ #738（加原生 label）→ #753（聊天两入口 + accept 前置）四轮
+// 修的都是「同一个模具的另一个入口」，而**全站仍有十余个入口在点击时现场 new 一个 input、从不挂
+// 文档、无 label 兜底、accept 也常迟到**——每修一处，下次用户就在另一处报同一个症状，这正是
+// 「反复出现」的结构性原因。本轮不再逐个入口手抄模具（手抄必然漏），改成**单一实现 + 全站调用**：
+// 一个常驻 sr-only clip input 挂 body（给稳定 id）+ 先设 accept/multiple 与样式 + 接原生 label 激活层
+// + 最后才 click()，顺序固定在一个函数里，调用方无法写错顺序。
+//   opts.id       常驻 input 的稳定 id（诊断/验证句柄）
+//   opts.accept   ∈ 'image/*' | 'audio/*' | '.json,...' | '.ttf,...' 等（**必须在 click 前生效**，
+//                 否则 iOS/部分内核首次激活会退回通用文档选择器——#753 的核心判据）
+//   opts.multiple 是否多选
+//   opts.btn      触发按钮（可选）：给了就接 mochiFilePickLabel 原生激活层兜底
+//   opts.onFiles  (files: File[]) => void，读取完成回调（空 FileList 也会回调，调用方自行提示）
+//   opts.noClick  true＝只登记/复用 input 与回调、不立刻激活（供「多个按钮共用一个选择器、
+//                 想先挂好 label 再在各自 click 里激活」的场景；默认 false 即刻激活）
+// 返回常驻 input（同一 id 复用，绝不随点按堆积节点）。
+window.mochiFilePick = function (opts) {
+  var o = opts || {};
+  var id = o.id || 'mochi-file-pick';
+  var input = null; // 常驻单例：同一 id 复用，绝不随点按堆积节点 mochi-755-single
+  try { input = document.getElementById(id); } catch (e) {}
+  if (!input) {
+    input = document.createElement('input');
+    input.type = 'file';
+    input.id = id;
+    // sr-only clip：不可用 display:none（#717/#738 已证部分内核对不可见 input 拒绝激活），
+    // 也不能 detached（#677：iOS 对未挂载 file input 不保证派发 change／不保证带上 files）
+    input.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:1;margin:0;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;';
+    document.body.appendChild(input);
+  }
+  // ★ 属性顺序：accept/multiple 必须落在任何 click() 之前（#753 判据）
+  try { input.accept = o.accept || ''; } catch (e) {}
+  input.multiple = !!o.multiple;
+  // 读取回调每次重设（闭包随调用方变，常驻 input 不能留旧回调）
+  input.onchange = function () {
+    var files = Array.prototype.slice.call(input.files || []);
+    try { input.value = ''; } catch (e) {} // 允许重选同一文件
+    if (o.onFiles) { try { o.onFiles(files); } catch (e) {} }
+  };
+  // 原生 label 激活层（部分分叉内核忽略 JS 合成 click；注意 #756 实测：label 在国产内核上
+  // 也可能既不转发也不报错，故它只是「加速路径」，真正的兜底见下方 activate()）
+  if (o.btn && window.mochiFilePickLabel) window.mochiFilePickLabel(o.btn, input);
+  // ★ 激活：不再「有 label 就跳过 JS click」（那是 #738~#755 整族复发的根源，见上方 #756 说明）。
+  // 统一走 mochiFilePickGuard —— 先给原生转发一个窗口期，只有确认「没弹出选择器」才补 JS click。
+  var activate = function () { try { input.click(); } catch (e) { if (o.onError) { try { o.onError(e); } catch (x) {} } } };
+  if (!o.noClick) {
+    if (o.btn && window.mochiFilePickGuard) window.mochiFilePickGuard(input, activate);
+    else activate();
+  }
+  return input;
+};
