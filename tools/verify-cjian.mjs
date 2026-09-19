@@ -2,7 +2,8 @@
 // 重设计核心：刷新机制本质是随机，梦角自己随机选择状态（受世界时辰/最近互动加权 + 冷却约束）；
 //   时间连续流动（现实+偏移，十二时辰+初/正，非重抽）；每次打开此间 TA 们重新随机选择今天的轨迹。
 // v3.14.x：名单/状态按桌面命名空间分离；页内顶部 chips 直接切换别的桌面梦角；
-//   「全部」总览一次看完全部梦角状态；详情可上一位/下一位跨桌面切换。
+//   「全部」总览一次看完全部梦角状态；详情上一位/下一位跟随当前视图（#786a：单桌面视图只在本桌
+//   名单里循环，「全部」总览才跨桌面——旧实现恒跨桌面＝用户报「单个 tag 打开后里面有别人的名字」）。
 // 用例：
 //   T1 更多功能面板出现「此间」入口，点击后进入 page-cjian（记录来源，可返回聊天）
 //   T2 首次打开自动播种一个梦角；世界时间/时辰细分（初/正）渲染出来；桌面分组条渲染
@@ -13,7 +14,7 @@
 //   T6 刷新机制=随机选择：冷却没过的梦角状态保持不动；冷却过了会重新随机（sinceP 更新时间戳）
 //   T7 今日轴：12 行、当前时辰行反映实时状态、预测文案为可能性表述；再次打开会重新随机选择
 //   T8 梦角管理：添加（名字→时间偏移两阶段，含「独立时间流」）→ 改名 → 删除
-//   T8b 详情上一位/下一位：不回列表直接切换别的梦角（跨桌面循环）
+//   T8b 详情上一位/下一位：不回列表直接切换梦角，且范围＝当前视图（单桌只在本桌循环／全部跨桌面，#786a）
 //   T9 梦角详情：点卡片进入 TA 的一天（12 时辰轨迹 + 世界时间 + 偏移标签），可返回
 //   T9b 总览模式下管理先进「选桌面」，动作作用于所选桌面自己的名单
 //   T10 突然靠近：长时间无变化+低概率事件路径不报错
@@ -135,7 +136,8 @@ try {
   ok('今日时间轴渲染 12 行', hero && hero.todayRows === 12, hero && hero.todayRows);
   ok('有梦角时空态提示隐藏', hero && hero.emptyHidden, hero && hero.emptyHidden);
   const bar = await evalJs("(function () { const b = document.getElementById('cj-groups'); if (!b) return null; const cs = Array.prototype.map.call(b.querySelectorAll('.cj-gchip'), function (x) { return x.textContent; }); return { n: cs.length, labels: cs, on: (b.querySelector('.cj-gchip.on') || {}).textContent }; })()");
-  ok('桌面分组条渲染（各桌面 chips + 「全部」，当前桌面高亮）', bar && bar.n === 2 && bar.labels.indexOf('全部') >= 0 && bar.on !== '全部' && bar.on === bar.labels[0], bar);
+  // #615：「全部」固定居首（原排在末尾，桌面多了要横滑到底才点得到）
+  ok('桌面分组条渲染（「全部」居首 + 各桌面 chips，当前桌面高亮）', bar && bar.n === 2 && bar.labels[0] === '全部' && bar.on !== '全部' && bar.on === bar.labels[bar.labels.length - 1], bar);
   // v3.14.x 回归：新梦角初始状态必须落盘，30s 心跳重渲染不得重抽
   const persist = await evalJs("(function () { const cid = window.__activeCid || 'default'; const P = 'xy-home-v2:' + cid + ':'; const r = JSON.parse(localStorage.getItem(P + 'cjian-roster') || '[]'); const id = r[0] && r[0].id; const st1 = JSON.parse(localStorage.getItem(P + 'cjian-state') || '{}'); if (!id || !st1[id]) return { hasState: false }; const before = st1[id].p + '|' + st1[id].a; window.renderCjian(false); const st2 = JSON.parse(localStorage.getItem(P + 'cjian-state') || '{}'); return { hasState: true, same: st2[id].p + '|' + st2[id].a === before, sinceKept: st2[id].sinceP === st1[id].sinceP }; })()");
   ok('新梦角初始状态已落盘（30s 重渲染不重抽、时间戳稳定）', persist && persist.hasState && persist.same && persist.sinceKept, persist);
@@ -145,7 +147,7 @@ try {
   await evalJs("window.openCjian(); true");
   await sleep(250);
   const bar2 = await evalJs("(function () { const b = document.getElementById('cj-groups'); return Array.prototype.map.call(b.querySelectorAll('.cj-gchip'), function (x) { return x.textContent; }); })()");
-  ok('新桌面的梦角出现在分组条（含「小柒」与「全部」）', bar2 && bar2.length === 3 && bar2.indexOf('小柒') >= 0 && bar2[bar2.length - 1] === '全部', bar2);
+  ok('新桌面的梦角出现在分组条（「全部」居首 + 含「小柒」）', bar2 && bar2.length === 3 && bar2.indexOf('小柒') >= 0 && bar2[0] === '全部', bar2);
   // 点「小柒」直接切换查看别的桌面的梦角（自动播种，名字取该桌 TA）
   await evalJs("(function () { const cs = document.querySelectorAll('#cj-groups .cj-gchip'); for (let i = 0; i < cs.length; i++) { if (cs[i].textContent === '小柒') { cs[i].click(); break; } } return true; })()");
   await sleep(200);
@@ -157,8 +159,8 @@ try {
   const all = await evalJs("(function () { return { heads: Array.prototype.map.call(document.querySelectorAll('#cj-list .cj-group-head'), function (x) { return x.textContent; }), cards: document.querySelectorAll('#cj-list .cj-card').length, emptyHidden: document.getElementById('cj-empty').hidden }; })()");
   ok('「全部」总览按桌面分组（两个分组头）', all && all.heads.length === 2 && all.heads[1].indexOf('小柒') >= 0, all);
   ok('「全部」总览同时显示所有桌面的梦角卡片', all && all.cards === 2 && all.emptyHidden, all);
-  // 切回当前桌面
-  await evalJs("(function () { const cs = document.querySelectorAll('#cj-groups .cj-gchip'); if (cs.length) cs[0].click(); return true; })()");
+  // 切回当前桌面（#615 起 cs[0] 是「全部」，当前桌面 chip 在其后一位）
+  await evalJs("(function () { const cs = document.querySelectorAll('#cj-groups .cj-gchip'); if (cs.length > 1) cs[1].click(); return true; })()");
   await sleep(200);
 
   console.log('\n== T3 时间引擎 ==');
@@ -205,7 +207,9 @@ try {
   await evalJs("window.cjianManage(); true");
   await sleep(150);
   const mg1 = await evalJs("(function () { return Array.prototype.map.call(document.querySelectorAll('#modal-pills .pill'), function (b) { return b.textContent; }); })()");
-  ok('管理弹窗三选项（添加/改名/删除）——单桌视图直接进动作阶段', mg1 && mg1.join('|') === '添加梦角|改名|删除梦角', mg1);
+  // 2026-09-16：#611 期望值同步——此间动作菜单自 v3.16.x 起为四项（含「时辰区间」）。
+  // 档案页入口只做名单（三项）由 tools/verify-narc-manage-arc.mjs 覆盖，不在本脚本口径内。
+  ok('管理弹窗四选项（添加/时辰区间/改名/删除）——单桌视图直接进动作阶段', mg1 && mg1.join('|') === '添加梦角|时辰区间|改名|删除梦角', mg1);
   await evalJs("Array.prototype.find.call(document.querySelectorAll('#modal-pills .pill'), function (b) { return b.textContent === '添加梦角'; }).click(); document.getElementById('modal-ok').click(); true");
   await sleep(120);
   const add1 = await evalJs("(function () { return { title: document.getElementById('modal-title').textContent, hasInput: document.getElementById('modal-input').hidden === false }; })()");
@@ -222,21 +226,31 @@ try {
   const roOff = await evalJs("(function () { const cid = window.__activeCid || 'default'; const r = JSON.parse(localStorage.getItem('xy-home-v2:' + cid + ':cjian-roster') || '[]'); const c = r.find(function (x) { return x.name === '那刻夏'; }); return c ? c.offsetMin : null; })()");
   ok('独立时间流 = 非整点随机偏移', typeof roOff === 'number' && roOff % 60 !== 0, roOff);
 
-  console.log('\n== T8b 详情上一位/下一位（跨桌面直接切换） ==');
+  console.log('\n== T8b 详情上一位/下一位（#786a：翻页范围跟随当前视图） ==');
+  // 此刻处于单桌面视图（当前桌 default 的名单），另一桌面「小柒」的梦角不属于本视图
+  const nCards = await evalJs("document.querySelectorAll('#cj-list .cj-card').length");
   await evalJs("(function () { const card = document.querySelector('#cj-list .cj-card'); if (card) card.click(); return true; })()");
   await sleep(150);
   const dnav1 = await evalJs("(function () { return { shown: !document.getElementById('cj-detail').hidden, name: (document.querySelector('.cj-d-name') || {}).textContent, pos: (document.querySelector('.cj-d-nav-pos') || {}).textContent, src: (document.querySelector('.cj-d-src') || {}).textContent }; })()");
-  ok('详情显示来源桌面 + 位次（1/3）', dnav1 && dnav1.shown && dnav1.pos === '1/3' && dnav1.src.indexOf('的此间') >= 0, dnav1);
-  await evalJs("(function () { const bs = document.querySelectorAll('.cj-d-nav-btn'); bs[bs.length - 1].click(); return true; })()");
+  ok('详情来源标签＝当前桌面（不再挂着别桌的名字）', dnav1 && dnav1.shown && dnav1.src === '来自「默认」的此间', dnav1);
+  ok('位次分母＝本桌卡片数（翻页范围不越出当前视图）', dnav1 && (!dnav1.pos ? nCards <= 1 : Number(String(dnav1.pos).split('/')[1]) === nCards), { pos: dnav1 && dnav1.pos, nCards: nCards });
+  const stay = await evalJs("(function () { var out = []; for (var i = 0; i < 4; i++) { var bs = document.querySelectorAll('.cj-d-nav-btn'); if (!bs.length) break; bs[bs.length - 1].click(); var nm = document.querySelector('.cj-d-name'); out.push(nm ? nm.textContent : '?'); } return out; })()");
   await sleep(120);
-  const dnav2 = await evalJs("(function () { return { shown: !document.getElementById('cj-detail').hidden, name: (document.querySelector('.cj-d-name') || {}).textContent, pos: (document.querySelector('.cj-d-nav-pos') || {}).textContent }; })()");
-  ok('「下一位」不回列表直接切到下一个梦角（那刻夏 2/3）', dnav2 && dnav2.shown && dnav2.name === '那刻夏' && dnav2.pos === '2/3', dnav2);
-  await evalJs("(function () { const bs = document.querySelectorAll('.cj-d-nav-btn'); bs[bs.length - 1].click(); return true; })()");
-  await sleep(120);
-  const dnav3 = await evalJs("(function () { return { name: (document.querySelector('.cj-d-name') || {}).textContent, pos: (document.querySelector('.cj-d-nav-pos') || {}).textContent }; })()");
-  ok('继续「下一位」跨到别的桌面的梦角（小柒 3/3）', dnav3 && dnav3.name === '小柒' && dnav3.pos === '3/3', dnav3);
+  ok('单桌视图连按「下一位」不越出本桌（旧实现翻到别桌「小柒」＝用户报的串名）', (stay || []).every(function (n) { return n !== '小柒'; }), stay);
   await evalJs("(function () { document.getElementById('cj-detail-back').click(); return true; })()");
   await sleep(120);
+  // 「全部」总览照旧跨桌面：从第一张卡连按下一位应见到别桌的「小柒」
+  await evalJs("(function () { const cs = document.querySelectorAll('#cj-groups .cj-gchip'); for (let i = 0; i < cs.length; i++) { if (cs[i].textContent === '全部') { cs[i].click(); break; } } return true; })()");
+  await sleep(200);
+  await evalJs("(function () { const card = document.querySelector('#cj-list .cj-card'); if (card) card.click(); return true; })()");
+  await sleep(150);
+  const walkAll = await evalJs("(function () { var out = []; for (var i = 0; i < 5; i++) { var bs = document.querySelectorAll('.cj-d-nav-btn'); if (!bs.length) break; bs[bs.length - 1].click(); var nm = document.querySelector('.cj-d-name'); out.push(nm ? nm.textContent : '?'); } return out; })()");
+  await sleep(120);
+  ok('「全部」总览详情翻页仍跨桌面（能翻到小柒）', (walkAll || []).indexOf('小柒') >= 0, walkAll);
+  await evalJs("(function () { document.getElementById('cj-detail-back').click(); return true; })()");
+  // 切回当前桌面（下方 T8c 改名/删除按单桌视图口径）
+  await evalJs("(function () { const cs = document.querySelectorAll('#cj-groups .cj-gchip'); if (cs.length > 1) cs[1].click(); return true; })()");
+  await sleep(200);
 
   console.log('\n== T8c 改名/删除（作用于当前桌面名单） ==');
   await evalJs("window.cjianManage(); true");
@@ -282,7 +296,7 @@ try {
   await evalJs("(function () { const p = Array.prototype.find.call(document.querySelectorAll('#modal-pills .pill'), function (b) { return b.textContent === '小柒'; }); if (p) p.click(); document.getElementById('modal-ok').click(); true; })()");
   await sleep(120);
   const act = await evalJs("(function () { return { title: document.getElementById('modal-title').textContent, pills: Array.prototype.map.call(document.querySelectorAll('#modal-pills .pill'), function (b) { return b.textContent; }) }; })()");
-  ok('选定桌面后进入该桌的动作菜单', act && act.title.indexOf('小柒') >= 0 && act.pills.join('|') === '添加梦角|改名|删除梦角', act);
+  ok('选定桌面后进入该桌的动作菜单', act && act.title.indexOf('小柒') >= 0 && act.pills.join('|') === '添加梦角|时辰区间|改名|删除梦角', act);
   await evalJs("Array.prototype.find.call(document.querySelectorAll('#modal-pills .pill'), function (b) { return b.textContent === '删除梦角'; }).click(); document.getElementById('modal-ok').click(); true");
   await sleep(120);
   await evalJs("(function () { const ps = document.querySelectorAll('#modal-pills .pill'); if (ps.length === 1) ps[0].click(); document.getElementById('modal-ok').click(); true; })()");
