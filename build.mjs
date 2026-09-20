@@ -766,6 +766,8 @@ const FIX_SENTINELS = [
   { name: '#101 占比条样式已接入产物（setting.css 的 .storage-cat-bar，漏接入 cssFiles 或样式被删即报警）', file: 'css/setting.css', needle: '.storage-cat-bar i { display:block' },
   { name: 'iOS 真全屏聊天顶部栏收紧贴顶（苹果17 自带浏览器+全屏模式顶部一大块空白：.fs-active 的 max(env,12px) 在 iOS 系统状态栏常驻下算多余白带，用 ios-native-fs 压平；删掉规则/漏接入 cssFiles 即报警）', file: 'css/base.css', needle: 'html.ios-native-fs .phone .page.full .chat-head' },
   { name: 'iOS 原生全屏标记类同步（fullscreen.js syncFsClass 给根元素加 ios-native-fs，与之配套的 base.css 收紧规则靠它命中，标记删了修复就哑）', file: 'js/fullscreen.js', needle: "classList.toggle('ios-native-fs', _fs)" },
+  { name: '#889 全屏开关 iOS 文案只在 iOS 生效（relabelIosToggle 曾被无条件调用，安卓也被换成 iOS 文案误以为用不了；isIOS 门被删即回归）', file: 'js/fullscreen.js', needle: 'if (isIOS) { try { relabelIosToggle(); } catch (e) {} }' },
+
   { name: '#95 朋友圈图片格宽统一：单图/双图容器特判已删除（原 .feed-imgs:has(...) 使 1/2/3+ 图格宽 22%/40%/33% 不一致，加回即回归）', file: 'css/chat-pages.css', needle: 'feed-imgs:has(', absent: true },
   { name: '#95 朋友圈图片格宽统一：单图放弃 1:1 裁切的 aspect-ratio:auto 特例已删除（加回则单图随原图比例自由变高）', file: 'css/chat-pages.css', needle: 'feed-imgs img:only-of-type', absent: true },
   { name: '#96 网易云外链播放区分 play() reject 错误类型（非 NotAllowedError 走外链兜底，不再一律弹"被浏览器拦截"）', file: 'js/music-player.js', needle: "err.name !== 'NotAllowedError'" },
@@ -1075,6 +1077,7 @@ const FIX_SENTINELS = [
   { name: '#217 屏幕诊断·切页前抢拍钩（syncChrome 的 blur 在切页瞬间触发残留自愈，必须在 pages hidden 之前同步采集）', file: 'js/tabs.js', needle: 'const sdLeaveSnap = () =>' },
   { name: '#132 功能字卡概率·stepper 绑定与 dcfGet（#518 起出口改经 dcfEffGet 套总档；改掉 DCF_DEF 默认表或删 window.dcfGet 暴露即回归——字卡库【其他互动功能字卡】各分类使用概率可显示可调）', file: 'js/default-cards.js', needle: 'window.dcfGet = dcfEffGet;' },
   { name: '#132 温柔前缀/动作概率接 dcf-period（改回硬编码 Math.random()*100>=25 即回归——经期字卡概率可调）', file: 'js/period.js', needle: 'if (Math.random() * 100 >= _warmP) return text;' },
+  { name: '#844 摸鱼抓包结算总账（奖励＝距上次抓包以来 TA 涨的全部 fish-total-ta，基线 settledTa 只随抓包推进；改回 Math.max(1, delta) 单 60s 窗口即回归——用户报「抓到只加个位数，与自动增长量级不符」）', file: 'js/p2-features.js', needle: 'const bonus = Math.max(1, cur - base);' },
   { name: '#132 摸鱼浮字/抓包回应概率接 dcf-fish（改回 Math.random()<0.35 硬编码即回归；#224 改经本 IIFE 助手 dcfPFish→window.dcfGet，原锚 dcfP 跨 IIFE 不可见是作用域 bug 本体）', file: 'js/p2-features.js', needle: 'dcfPFish(35)' },
   { name: '#132 吃饭追问关心概率接 dcf-eat（改回硬编码 0.35 即回归）', file: 'js/p2-features.js', needle: "dcfP('eat', 35)" },
   { name: '#132 同频敲三下回应概率接 dcf-sync（改回硬编码 0.6 即回归）', file: 'js/p2-features.js', needle: "dcfP('sync', 60)" },
@@ -1498,10 +1501,10 @@ const FIX_SENTINELS = [
   // ==== 2026-09-15 #492 帮我决定/多人决定结果发到聊天后不滑到最新消息（多机型同报）：决策结果是用户主动触发，与 out 侧（自己发消息必跟底）和群聊 followGcBottom(true) 同权；chatAddIn({follow:true}) 一次性标记 + maybeScrollChatBottom 消费，TA 自发消息 #162/#378/#416 不打扰契约零改动 ====
   { name: '#492 follow 一次性消费+跟底闸放行（删则决策结果在解钉态永不跟底＝症状复发）', file: 'js/chat.js', needle: 'const userFollow = !out && chatUserFollowScroll;' },
   { name: '#492 chatAddIn 用户主动通道入口（删则 decision/group-decision 的 follow 传参失效）', file: 'js/chat.js', needle: 'if (opts && opts.follow) chatUserFollowScroll = true;' },
-  { name: '#492 帮我决定结果发送接 follow 通道（删则发到聊天后不滑到最新复发；#544 该行追加 dedupExempt，锚点随契约同步）', file: 'js/decision.js', needle: 'window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true }); // FIX 2026-09-15 #492 帮我决定结果' },
+  { name: '#492 帮我决定结果发送接 follow 通道（删则发到聊天后不滑到最新复发；#544 该行追加 dedupExempt，锚点随契约同步）', file: 'js/decision.js', needle: 'window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true, nightAllow: true }); // FIX 2026-09-15 #492 帮我决定结果' },
   // ==== 2026-09-17 拍一拍发出后不自动滑到最新消息（用户报）：sendPoke 是用户主动触发的 in 侧消息，置 #492 同款 chatUserFollowScroll 一次性跟底标记；TA 自发消息与 TA 回拍不受影响 ====
-  { name: '拍一拍发出跟底标记（删则上翻历史后发拍一拍不自动滑到最新复发）', file: 'js/chat.js', needle: "chatUserFollowScroll = true;\naddRec({ side: 'in', text: text, special: 'poke' });" },
-  { name: '#492 多人决定结果发送接 follow 通道（删则发到聊天后不滑到最新复发；#544 该行追加 dedupExempt，锚点随契约同步）', file: 'js/group-decision.js', needle: 'window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true }); // FIX 2026-09-15 #492 多人决定结果' },
+  { name: '拍一拍发出跟底标记（删则上翻历史后发拍一拍不自动滑到最新复发；#876 该行追加 nightAllow 夜间放行标记，needle 随之换锚）', file: 'js/chat.js', needle: "chatUserFollowScroll = true;\naddRec({ side: 'in', text: text, special: 'poke', nightAllow: true });" },
+  { name: '#492 多人决定结果发送接 follow 通道（删则发到聊天后不滑到最新复发；#544 该行追加 dedupExempt，锚点随契约同步）', file: 'js/group-decision.js', needle: 'window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true, nightAllow: true }); // FIX 2026-09-15 #492 多人决定结果' },
   { name: '#378/#416 单聊手动滚回贴底回钉（解钉后自动跟底可恢复；#416 起只认真的贴到底 ≤8px，防上翻读最新时误回钉拽底；2026-09-18 随 #716d 手势闸演进，锚收到未变的 ≤8px 判定本体，回钉调用点锚归 #716d）', file: 'js/chat.js', needle: 'cb.clientHeight <= 8;' },
   { name: '#378 单聊轻点不杀跟底（位移<10px 且贴底=回钉，点气泡不再永久解钉）', file: 'js/chat.js', needle: 'const dy = Math.abs(e.changedTouches[0].clientY - chatUnpinTsY);' },
   { name: '#378 群聊跟底闸改按接管标记（同单聊距离闸问题）', file: 'js/group-chat.js', needle: 'if (!force && gcUserGcScrollTouched) return;' },
@@ -2335,8 +2338,8 @@ const FIX_SENTINELS = [
   // TA 批次防同款去重与 out 侧 #437 反馈零改动。行为断言 tools/verify-decision-dedup-exempt.mjs（修前产物 RED 1/5＝症状复现） ====
   { name: '#544 addRec 实时去重豁免闸（删则决定答案快速重跑同文撞 2500ms 窗被静默吞＝「联系人消息被吞了几条」复发）', file: 'js/chat.js', needle: 'i >= Math.max(0, len - 5) && !rec.dedupExempt' },
   { name: '#544 刷新归一化豁免（normCollapseRange，删则刷新后带标记答案仍会被相邻合并回吞＝屏上所见≠刷新后所见）', file: 'js/chat.js', needle: 'if (a.dedupExempt || b.dedupExempt) continue; // FIX 2026-09-15 #544' },
-  { name: '#544 帮我决定答案带豁免标记发送（删则决策结果重新裸奔进去重窗＝吞答案复发）', file: 'js/decision.js', needle: '{ enter: true, silent: true, follow: true, dedupExempt: true }); // FIX 2026-09-15 #492 帮我决定结果' },
-  { name: '#544 多人决定答案带豁免标记发送（删则决策结果重新裸奔进去重窗＝吞答案复发）', file: 'js/group-decision.js', needle: '{ enter: true, silent: true, follow: true, dedupExempt: true }); // FIX 2026-09-15 #492 多人决定结果' },
+  { name: '#544 帮我决定答案带豁免标记发送（删则决策结果重新裸奔进去重窗＝吞答案复发）', file: 'js/decision.js', needle: '{ enter: true, silent: true, follow: true, dedupExempt: true, nightAllow: true }); // FIX 2026-09-15 #492 帮我决定结果' },
+  { name: '#544 多人决定答案带豁免标记发送（删则决策结果重新裸奔进去重窗＝吞答案复发）', file: 'js/group-decision.js', needle: '{ enter: true, silent: true, follow: true, dedupExempt: true, nightAllow: true }); // FIX 2026-09-15 #492 多人决定结果' },
   // ==== 2026-09-16 #547 表情包面板「每次打开都重新加载」复发 + 拍卖会页面显示不全（小米15Pro Chrome 等多机型同发，用户明说其他设备型号也有）：
   // ①表情面板：#457 内容指纹短路被「令牌化翻转」废掉——池视图卡被 ccTokenizeGiantMedia 异步令牌化
   //  （dataURL→@@m:token）后原文变了、显示没变，按原文签名误判内容变化→整面板 innerHTML 重建+全部图
@@ -2409,7 +2412,7 @@ const FIX_SENTINELS = [
   // ==== 2026-09-16 #559 经期预警按「语境 × 经期规律」分级：经前/推迟不再发经期中口吻；不规律者不说「推迟」改间隔口吻 ====
   { name: '#559a 经前预警 {d} 替换为距预测经期天数（删则经前预警不带日期参数）', file: 'js/period.js', needle: "String(line).replace(/\\{d\\}/g, String(diffDays(today, st.nextStart)));" },
   { name: '#559b 推迟预警 {d} 替换为已推迟天数（删则推迟预警不带日期参数）', file: 'js/period.js', needle: "String(line).replace(/\\{d\\}/g, String(delayDays));" },
-  { name: '#559c 标签按语境区分（删则经前预警日又以「经期关心」标签发经期中口吻语料＝症状回流）', file: 'js/period.js', needle: "{ tag: kind === 'in' ? '经期关心' : '经期预警' }" },
+  { name: '#559c 标签按语境区分（删则经前预警日又以「经期关心」标签发经期中口吻语料＝症状回流）', file: 'js/period.js', needle: "{ tag: kind === 'in' ? '经期关心' : '经期预警', nightAllow: true }" },
   { name: '#559d 经前预警语料分组（删则经前预警日无专属预警语、字卡库缺该组）', file: 'js/default-cards-data.js', needle: '["经前预警", [' },
   { name: '#559e 规律分级判据（删则不规律用户也被当「预测可信」按推迟口径轰炸＝「太扯淡」回流）', file: 'js/period.js', needle: "if (s.n >= 3 && s.cv < 0.2) return 'rule';" },
   { name: '#559f 规律型推迟门 ≥5 天（删则规律用户推迟无预警）', file: 'js/period.js', needle: "if (tier === 'rule' && delayDays >= 5)" },
@@ -2769,7 +2772,7 @@ const FIX_SENTINELS = [
   { name: '#673 过渡期运营判定探针 transitionBlocks（删掉＝回归脚本测不到「过渡期内全新消息放行/重放拦截」，跨机型回归失守）', file: 'js/bg-keep.js', needle: 'transitionBlocks: transitionBlocks,' },
   // ==== 2026-09-17 音乐互动台词静默通道（用户报障 vivo iQOO Z9x Edge 等多机型「播放导入的本地歌时出现消息
   //     提示音、音乐没法正常听」；与后台弹窗 #673 撞编号，本批即该音乐 #673 的哨兵，接在后台 #673 块之后）====
-  { name: '音乐互动台词静默通道·chatAddSystem 带 silent（删掉＝音乐互动系统消息重回响铃通道，听歌时每掷中一次概率就响一次提示音盖在音乐上复发；needle 唯一于 music-player.js 的 taMusicSys）', file: 'js/music-player.js', needle: 'window.chatAddSystem(text, { silent: true })' },
+  { name: '音乐互动台词静默通道·chatAddSystem 带 silent（删掉＝音乐互动系统消息重回响铃通道，听歌时每掷中一次概率就响一次提示音盖在音乐上复发；needle 唯一于 music-player.js 的 taMusicSys）', file: 'js/music-player.js', needle: 'window.chatAddSystem(text, { silent: true, nightAllow: true })' },
   { name: '音乐互动台词静默通道·chatAddIn 带 silent（删掉＝「TA 暂停播放/恢复播放」字卡重回响铃通道，听歌时被消息提示音盖住复发；needle 唯一于 music-player.js 的 taMusicSay）', file: 'js/music-player.js', needle: 'window.chatAddIn(text, { silent: true })' },
   { name: '音乐互动台词静默·chatAddSystem 透传 silent：true（删掉＝调用方传的 silent 被就地吞掉，上面两条静默通道全部失效＝听歌提示音复发；needle 唯一于 chat.js 的 chatAddSystem）', file: 'js/chat.js', needle: "special: opts.special || 'poke', silent: opts.silent," },
   { name: '音乐互动静默·TA 暂停交互被用户介入打断也要记账（删掉＝用户点播放打断 TA 暂停后同歌/下一首还能再掷中＝「不管点哪首歌一播放就被打断、还响一声提示音」复发；needle 唯一于 music-player.js 的 cancelTaPause）', file: 'js/music-player.js', needle: 'if (taPauseActive && taPauseFiredId) bookTaPauseFired(taPauseFiredId);' },
@@ -2929,7 +2932,7 @@ const FIX_SENTINELS = [
   { name: '#642b 操作条定位误差自校正（删掉＝内核 fixed 包含块语义差异时一次定位即偏）', file: 'js/chat.js', needle: 'const _maDx = x - m.left, _maDy = y - m.top;' },
   { name: '#642c 群聊操作条接入同一跟随助手（删掉＝群聊操作条乱跑复发）', file: 'js/group-chat.js', needle: 'window.mochiFollowActionBar(gcMsgActions, bk, closeGcMsgActions)' },
   { name: '#643a chat-body 盒尺寸 ResizeObserver 接线（删掉＝键盘收起恢复高度后最新消息悬半屏无人回钉）', file: 'js/chat.js', needle: "if (!cb643 || typeof ResizeObserver === 'undefined') return;" },
-  { name: '#643b 盒子真变高后按钉住闸回钉贴底（删掉＝#643 只观察不动作，半屏残留照旧）', file: 'js/chat.js', needle: 'if (chatPinnedBottom && chatVisible()) scrollChatBottom();' },
+  { name: '#643b 盒子真变高后按钉住闸回钉贴底（删掉＝#643 只观察不动作，半屏残留照旧；#868 起该动作在 chatRepinStep 里）', file: 'js/chat.js', needle: 'if (cb868 && chatScrollMax() - cb868.scrollTop > 8) scrollChatBottom();' },
   // v3.26.x #645：通知栏媒体卡此前只有播放/暂停/上下首（用户反馈「没有下一首等功能按钮」）。
   // 任务号原认领 #644，与并行会话（摸鱼天数批 / 逐卡连发翻案批的 #644a/b）撞号，改 #645
   { name: '#645a 音乐通知栏 seekto 拖动定位接线（删掉＝媒体卡没有进度基准拖不动，快进快退/划掉停止的收尾也一并丢失）', file: 'js/music-player.js', needle: "setActionHandler('seekto', function (d)" },
@@ -3631,7 +3634,7 @@ const FIX_SENTINELS = [
   //   搜索按「名称/留言/分类」匹配，搜「药」只命中「感冒药」一条。本批把医药单独成类（第 13 类）并补齐
   //   常备药与外伤处理。三条锚都钉在目录数据本身：类目从 CATS 消失、外伤处理商品被删、既有医药商品
   //   被挪回大分类，任一发生即报红。====
-  { name: '#859a 「药品医护」分类登记在 CATS 末位（删＝第 13 类胶囊与整柜药一起退场，用户回到「市集里只有感冒药」）', file: 'js/gift-shop.js', needle: "'日常用品', '药品医护']" },
+  { name: '#859a 「药品医护」分类在位（CAT_ICON 登记；删＝整柜药从胶囊里退场，用户又回到「市集里只有感冒药」。#870 追加两类后不再钉 CATS 末位）', file: 'js/gift-shop.js', needle: "'药品医护': '💊'" },
   { name: '#859b 外伤处理商品在位（碘伏等，与常备药同批；删＝「手受伤了要用的」那几件没有入口）', file: 'js/gift-shop.js', needle: "id: 'g_mediodine', name: '碘伏'" },
   { name: '#859c 既有医药商品已归入本分类（改回「日常用品」＝创可贴等又散进大分类翻不到）', file: 'js/gift-shop.js', needle: "price: 5.00, cat: '药品医护', wish: '磕磕碰碰的，有我呢' }" },
   { name: '#855a 寻踪预设＋自定义合并去重函数（删＝「使用系统预设」开启时回到自定义非空即整体顶掉预设的旧口径）', file: 'js/p2-features.js', needle: 'function ckMergeDef(custom, def)' },
@@ -3656,6 +3659,8 @@ const FIX_SENTINELS = [
   { name: '#857c 占卜记录写闸两层就绪（同 #857a，删＝抽牌记录与主页占卜记录全被缓冲吞掉）', file: 'js/divination.js', needle: 'if (window.__mochiDataReady) onDivRestore();' },
   { name: '#857d 帮我决定切桌面时缓冲落盘（改回置空＝恢复窗口内攒下的记录白丢）', file: 'js/decision.js', needle: 'try { histReady = true; flushPendingHist(); } catch (e) {}' },
   { name: '#857e 多人决定切桌面时缓冲落盘（改回置空＝同上白丢；本文件写成裸语句，与 #857d 的 try 包裹形态各在其位，勿「统一」两条 needle）', file: 'js/group-decision.js', needle: 'histReady = true; flushPendingHist();' },
+  { name: '#865a 功能大全新增【桌面应用】组＝29 个桌面图标逐页索引（删＝桌面应用在功能大全里又没有统一入口，搜「桌面/图标」空手）', file: 'js/feature-hub.js', needle: "{ g: '桌面应用', items: [" },
+  { name: '#865b 功能大全「心情日记」两段链直达日记页（改回只 go 日历＝搜「心情日记」点进去停在日历首页）', file: 'js/feature-hub.js', needle: "go: ['.app[data-app=\"calendar\"]', '#cal-mood-entry']" },
   { name: '#861a 动态图标落位即套用隐藏名单（删＝备忘录/市集/心意柜/喝水等注入图标躲过启动期 applyHiddenIcons，下次再跑要等 contact-switched＝「启动看得见、切一次桌面就消失」复发；红米 K80 实报第三页备忘录图标不见了。改回裸暴露 window.applyDeskLayout = applyDeskLayout 即复发）', file: 'js/personalize.js', needle: 'window.applyDeskLayout = function () { try { applyDeskLayout(); } finally { try { applyHiddenIcons(); } catch (e) {} } };' },
   { name: '#861b 备忘录图标登记进装修组件库三张表（删＝app-memo 不在 WIDGET_IDS 白名单、装修「添加卡片」找不到备忘录，图标一旦离页进隐藏池永远无法找回——gift-shop.js 注释里 #market 同案原话「不在白名单永远无法找回」）', file: 'js/personalize.js', needle: "'app-memo': '备忘录图标'" },
 
@@ -3666,7 +3671,106 @@ const FIX_SENTINELS = [
   { name: '#858d 导入判重跳过已存在（删＝同一个文件导入两次商品翻倍）', file: 'js/gift-shop.js', needle: 'if (sig in bySig) { skipped++; return; }' },
   { name: '#858e 外来图片只收内嵌 data: 图（删＝文件里的外链/超大图原样入库，离线看不到图又撑爆本地存储）', file: 'js/gift-shop.js', needle: "if (!/^data:image\\//i.test(img) || img.length > GOODS_IMG_MAX) img = '';" },
   { name: '#858f 上传主按钮深色渐变（改浅＝与满页白卡同色，「显眼」失效；css/market.css 内唯一）', file: 'css/market.css', needle: '.market-mine-add { display: flex; align-items: center; gap: 13px; width: 100%;' },
-  { name: '#858g 开屏公告第十节在位（notice.json 是联网权威源；删＝不上集市的人也看不到「能自己上传商品」这条，入口再显眼也只覆盖进过市集的人）', file: 'pwa/notice.json', needle: '十、心意市集：自己上传商品 + 商品数据导入导出' },
+  // ==== 2026-09-19 #868 键盘收起/全屏切换后「闪一下回弹再恢复」根治：#466/#643 两个快速回钉改走与 #706 同闸的落定锁（一次变形只写一枪）====
+  { name: '#868a 回钉落定闸（改回 60ms 单发＝收键盘/开全屏时先按中间态写一枪、看门狗再校正＝回弹复发）', file: 'js/chat.js', needle: 'return now - _vvGeomChangeTs >= 180 && now - _cbBoxChangeTs >= 180 && now - _chatScrollActTs >= 200' },
+  { name: '#868b RO 记聊天盒变化时刻（删掉＝盒子仍在分步恢复时也敢写 scrollTop）', file: 'js/chat.js', needle: '_cbBoxChangeTs = Date.now();' },
+  { name: '#868c 落定锁有界重试（改成无限重试＝与用户滑动对打；删掉等待＝中间态写入回归）', file: 'js/chat.js', needle: 'if (!chatRepinQuietEnough(now)) { if (now < _kbSettleDeadline) _kbSettleT = setTimeout(chatRepinStep, 120); return; }' },
+  { name: '#868d 看门狗补「盒子还在变」闸（删掉＝mobile-adapt 恢复 .phone 途中补钉一次＝弹跳）', file: 'js/chat.js', needle: 'if (Date.now() - _cbBoxChangeTs < 180) return;' },
+  { name: '#858g 上传商品+导入导出说明常驻 设置→关于→功能介绍 04（原开屏公告第十章已删、移入此处；删＝用户看不到「能自己上传商品、数据能搬家」这条）', file: 'template.html', needle: '<b>心意市集·上传我的商品</b>' },
+  // ==== 2026-09-19 #870 心意市集四组缺口商品（用户直派「1234都要补」：节日节令 / 美妆个护 / 经期关怀 / 花束补齐）——
+  //   改前：节日食品散在 48 件「美食」里且只有中秋月饼；美妆个护在 78 件「日常用品」里只有 4 件；
+  //   经期关怀 0 件（而 app 自己有经期记录）；花束仅 8 件是全库最少。当批新增两类目与 31 件商品
+  //   （另把月饼归入节日节令、4 件个护移入美妆个护）。五条锚各钉一组：类目登记、节日成套、
+  //   美妆成套、经期关怀、花束补齐，任一组被删/被挪回都当场报红。====
+  { name: '#870a 两个新类目登记在 CATS 末位（删＝节日节令/美妆个护两个胶囊与整组商品一起退场）', file: 'js/gift-shop.js', needle: "'药品医护', '节日节令', '美妆个护']" },
+  { name: '#870b 节日节令成套（删＝端午/元宵/春节/腊八又回到「美食」里翻）', file: 'js/gift-shop.js', needle: "id: 'g_festzongzi', name: '粽子'" },
+  { name: '#870c 美妆个护成套（删＝美妆回到 0 件，口红/面膜无处可送）', file: 'js/gift-shop.js', needle: "id: 'g_beautylip', name: '口红'" },
+  { name: '#870d 经期关怀在位（删＝疼的那几天没有任何东西可送）', file: 'js/gift-shop.js', needle: "id: 'g_periodpad', name: '痛经贴'" },
+  { name: '#870e 花束补齐（删＝花束退回全库最少分类）', file: 'js/gift-shop.js', needle: "id: 'g_lily', name: '百合'" },
+  // ==== 2026-09-20 #869 「回复条数最少/最多」说明重写（用户直派「这个没写清楚…很多用户根本看不懂…调很多，导致联系人一直发很多消息」；零机型分支，纯文案）——
+  //   单聊/群聊两处说明从行上方挪到「回复条数最少/最多」两行正下方、开头点破语义「这两项＝你每发 1 条消息，TA 就跟着回你几条」，
+  //   加粗强调「这是每条消息的条数、不是 TA 一天最多发几条，不建议调大」＋调大后果实例（连发各触发一批／群聊成员各算各的）。
+  //   群聊设置抽屉镜像（group-chat.js cntNote）同文案随 #794 在途批收口、本批不携带。====
+  { name: '#869a 单聊条数说明点破「每条消息」语义（删回笼统说明＝再被读成总上限、调大后联系人刷屏复发）', file: 'template.html', needle: '注意：这是「每条消息」的条数，不是 TA 一天最多发几条' },
+  { name: '#869b 群聊条数说明点破「每条消息每个成员」语义（删＝群聊各算各的刷屏提醒缺失）', file: 'template.html', needle: '注意：这是「每条消息、每个成员」的条数' },
+  // ==== 2026-09-19 #875 「TA在身边」藏在寻踪里是设计（位置面板唯一入口就在寻踪半框/寻踪页），
+  //   但入口原是全宽浅色虚线的次要按钮、排在面板最底部 ⇒ 被读成寻踪的附加说明：用户既不知道
+  //   这是独立功能，也找不到只住在位置面板里的三个换位开关（TA 自动换位 / 换位提醒弹窗 /
+  //   换位发到聊天）。本批把两处入口改成图标＋主副两行＋箭头的功能卡，放置与点击行为一字未动；
+  //   四条针各钉一处改动面：两条入口 markup、一条副标题（用户找不到的就是它）、一条 CSS 卡片形态。====
+  { name: '#875a 寻踪半框入口改功能卡（退回「全宽浅色虚线」＝用户又把 TA在身边 读成寻踪的附加说明、找不到这个功能）', file: 'template.html', needle: 'id="ck-loc-entry"><span class="ck-loc-ico">' },
+  { name: '#875b 桌面寻踪页入口同款（两入口形态必须一致，否则从桌面进来的用户看不到改动）', file: 'template.html', needle: 'id="ck-loc-entry-desk"><span class="ck-loc-ico">' },
+  { name: '#875c 副标题点出「换位开关」（删＝收到 TA 自动换位消息想关掉的用户没有线索，三个开关仍只藏在位置面板里）', file: 'template.html', needle: '方位感知·位置时间线·换位开关' },
+  { name: '#875d 入口卡 flex 形态（退回 display:block 居中＝弱按钮复发，与两条 markup 针脱钩）', file: 'css/chat-pages.css', needle: '.ck-loc-entry { display:flex; align-items:center; gap:9px; width:100%;' },
+  { name: '#875e 矮屏抬起寻踪半框上限（删＝320×568/360×640 上入口被 56% 上限裁到滚动区外，用户仍看不见它）', file: 'css/chat-main.css', needle: '@media (max-height:700px) { #ck-panel { max-height:72%; } }' },
+  // ==== 2026-09-19 #872 平板桌面（html.tablet）「重排＋放大」：图标 6/8 列＋盒/字形放大（88/40、≥1250 宽 104/46）＋组件两栏网格。背景：base.css 的平板区块只给了 .phone 100vw 铺满，桌面轴仍是手机像素（图标盒 64、字形恒 28、组件高/字号一条未改）＝用户报「小组件和图标特别小、平板看起来很空」；实测横向需 2.08~3.50× 而纵向只给 1.09~1.53×，纯放大填不满，故重排吃横向、尺寸档按屏高分两档（横屏矮屏基准档/竖屏高屏升档）。规则全在 src/css/home.css 与 src/css/tabbar.css，作用域 html.tablet＝手机端与电脑外壳零命中 ====
+{ name: '#872a 平板桌面两栏网格（改回单列/块级＝组件回到整宽横条、横向又空掉）', file: 'css/home.css', needle: 'html.tablet .page-slide, html.tablet .page-slide.desk-page {' },
+{ name: '#872b 平板图标字形放大（删掉＝图标盒里恒 28px 字形，「图标特别小」复发）', file: 'css/home.css', needle: 'html.tablet .app .app-ico svg { width:var(--tb-glyph); height:var(--tb-glyph); }' },
+{ name: '#872c 平板双卡行竖排（.page-slide 前缀压第三页 .page-slide.third 横排；改回＝第三页双卡行钉回 92px 横排）', file: 'css/home.css', needle: 'html.tablet .page-slide .mini-row { flex-direction:column; gap:16px; }' },
+{ name: '#872d 平板音乐卡整宽（改回半宽＝第二页「本周日常」与它同排被拉成 300 高空壳，截图实测）', file: 'css/home.css', needle: 'html.tablet .page-slide > .music-widget,' },
+{ name: '#872e 平板高屏尺寸档（竖屏 iPad 再升一档；删掉＝竖屏桌面区多出 ~250px 空底）', file: 'css/home.css', needle: '@media (min-height:950px) {' },
+{ name: '#872f 平板底部导航放大兜底（用户个性化过的内联变量优先；删掉＝桌面放大后导航仍 23px）', file: 'css/tabbar.css', needle: 'html.tablet { --tabbar-ico-size:30px; }' },
+  // ==== 2026-09-19 #871 iPhone 12 Pro Max Safari「展开撤回消息再收起／贴底轻划／划太快／点撤回字卡明细再打开，气泡和头像错位」（用户直派，注明多机型同现；零机型分支）——
+  //   无头实证 DOM 几何逐像素复原＝错位不在布局层，出自表现层滚动偏移撕裂：滚动容器内高度突变
+  //   （就地展开/收起、两组「撤回 N 条字卡▾」明细开合）后，程序化 scrollTop 修正要么缺席（解钉态
+  //   零接管）要么迟到（钉住态等 250ms 看门狗，最后一行先推出屏再弹回）；且 #162 图片 onload 双写
+  //   是唯一没接 #716/#765 让路闸的 scrollTop 写手，手势/惯性进行中当场写＝与用户滑动对打。修＝
+  //   三处开合收尾统一走 chatRetractToggleAfter（钉住态立即贴底＋#861 落定锁复核；解钉态静默后
+  //   显式钳回真实 max＋同值重落一枪＝强制 WebKit 滚动树对新几何重对齐），#162 补滚接让路闸
+  //   （静默态保持 #504 双写快路）。#572d 既定语义不动：推挤不做锚定补偿。====
+  { name: '#871a 展开收起收尾钩子在位（删＝三处开合回到「解钉零接管/钉住等看门狗」＝错位复发）', file: 'js/chat.js', needle: "function chatRetractToggleAfter(kind)" },
+  { name: '#871b 解钉态落定重落入口（删＝收起缩短内容后 scrollTop>max 超界靠内核钳位时机、滚动树不重对齐）', file: 'js/chat.js', needle: "else chatResyncScrollQuiet(kind);" },
+  { name: '#871c 显式钳回＋同值重落（改成只会钳不会落＝WebKit 滚动树重对齐枪失效；删 Math.min＝超界回归）', file: 'js/chat.js', needle: "cb.scrollTop = Math.min(cb.scrollTop, realMax);" },
+  { name: '#871d 图片 onload 补滚让路闸（删＝手势/惯性进行中当场双写 scrollTop＝与用户滑动对打，贴底轻划错位复发）', file: 'js/chat.js', needle: "if (Date.now() - _chatScrollActTs < 200 || chatTouchActive) { chatRepinAfterSettle(); return; }" },
+  { name: '#871e 就地展开/收起接钩（删＝该入口回到无收尾）', file: 'js/chat.js', needle: "chatRetractToggleAfter('toggle');" },
+  { name: '#871f 字卡明细开合接钩（删＝该入口回到无收尾）', file: 'js/chat.js', needle: "chatRetractToggleAfter('rc');" },
+  { name: '#871g 情绪字卡明细开合接钩（删＝该入口回到无收尾）', file: 'js/chat.js', needle: "chatRetractToggleAfter('rcm');" },
+  // ==== 2026-09-20 #876 夜间静默总闸收口（用户直派「夜间模式就是什么也不能发」：开了夜间模式挂后台睡觉，换头像换昵称/互动卡/回复还在夜里发）====
+  //   根因＝旧夜间模式只装在 tryAutoSend/来电/跨桌面三条链上，换头像换昵称（avatar-lib 四个 60s 轮询）、
+  //   互动卡（ta-ask 五类 maybeTrigger）、被动回复、红包礼物换位朋友圈等各自独立链全部无夜间检查。
+  //   本批＝addRec/addIn 收件总闸（nightAllow 例外通道放行用户当刻回执与到点提醒）+ 各自发链源头闸 +
+  //   被动回复顺延到 7:00 后（单聊 scheduleReply / 群聊 memberReply）。行为锚逐条登记如下：
+  { name: '#876a addRec 收件总闸（删＝换头像/红包/战绩等直调通道夜里照发，回归「开了夜间模式还发」主诉）', file: 'js/chat.js', needle: "!rec.nightAllow && !(window.__nightReplyOpen" },
+  { name: '#876b addIn 音效前守卫（删＝夜里响一声没消息；音效在 addRec 之前播，必须前置换闸）', file: 'js/chat.js', needle: "!opts.nightAllow && !(window.__nightReplyOpen" },
+  { name: '#876c 被动回复夜间顺延到 7:00 后（删＝夜里发消息 TA 照回，总闸拦掉会丢回复，必须保留顺延链）', file: 'js/chat.js', needle: "const __nmHold = window.nightModeActive" },
+  { name: '#876d 继续说/点名字放行窗口置位（删＝用户当刻点「继续说」TA 回复被总闸吞＝「点了没反应」回归）', file: 'js/chat.js', needle: "window.__nightReplyOpen = Date.now();" },
+  { name: '#876e 换头像换昵称夜间静默助手（删＝四个 60s 轮询回到无夜间检查，主诉最大来源复发）', file: 'js/avatar-lib.js', needle: "function avNightQuiet() {" },
+  { name: '#876f 互动卡频率闸内夜间拦截（删＝询问/小问题/好奇/吐槽/查岗卡夜间照发）', file: 'js/ta-ask.js', needle: "nightModeActive && window.nightModeActive()) return false;" },
+  { name: '#876g 群聊成员回复夜间顺延（删＝夜间群聊照常七嘴八舌）', file: 'js/group-chat.js', needle: "if (!__force && window.nightModeActive" },
+  { name: '#876h TA 自动换位夜间不触发（删＝「隔着世界在你身边」等换位消息夜间照发）', file: 'js/p2-features.js', needle: "nightModeActive && window.nightModeActive()) return;\nconst companion" },
+  { name: '#876i TA 自动送礼源头闸（删＝扣款已发生而礼物消息被总闸拦＝扣了钱没礼物）', file: 'js/gift-shop.js', needle: "nightModeActive && window.nightModeActive()) return;\nconst st = wlSettings();" },
+  { name: '#876j 朋友圈自动动态夜间不生成（删＝夜里照发动态+聊天提示）', file: 'js/feed.js', needle: "nightModeActive && window.nightModeActive()) return;\nconst cs = window.storeFor(cid);" },
+  { name: '#876k 跨桌面消息队列回放夜间暂停（删＝夜里回放其他桌面队列照常进聊天）', file: 'js/bg-keep.js', needle: "if (!force && window.nightModeActive && window.nightModeActive()) return 0;" },
+  { name: '#876l 夜间模式说明改「完全静默」口径（退回旧「只拦主动」文案＝用户再被误导「为什么回复还在发」）', file: 'js/settings-help.js', needle: "这段时间内 TA 完全静默" },
+  // ==== 2026-09-20 #876 吃什么转盘「转盘抽取」中奖片不在指针下：旧公式把指针当在右侧 0 角（2π-normalized），CSS 指针实际钉在正上方（.eat-pointer top:-12px 尖朝下＝画布角 3π/2）＝高亮片/「今天吃」菜名恒与指针错开约 1/4 圈（2~30 格×500 随机角仿真 100% 错位）。修法＝抽 eatIdxUnderPtr（顶部指针几何），主转盘＋切菜单转盘两处接线 ====
+  { name: '#876a 转盘中奖片按顶部指针几何计算（指针 .eat-pointer 在 12 点＝画布角 3π/2；改回 2π-零角旧形态＝高亮/菜名恒不在指针下）', file: 'js/p2-features.js', needle: 'function eatIdxUnderPtr(normalized, n, slice) { return Math.floor((((3 * Math.PI / 2 - normalized)' },
+  { name: '#876b 主转盘接线（删＝吃什么页「转盘抽取」中奖片与指针错位复发）', file: 'js/p2-features.js', needle: 'eatIdxUnderPtr(normalized, dishes.length, slice)' },
+  { name: '#876c 切菜单转盘接线（删＝切换菜单转盘中奖菜单与指针错位复发）', file: 'js/p2-features.js', needle: 'eatIdxUnderPtr(normalized, names.length, slice)' },
+  { name: '#878a 卡片入场动画类在挂载前补加（#878 报障：礼物/互动卡无动画突兀出现。根因=renderMsg 建节点时加 msg-enter、随后所有分支 m.className=… 整体覆盖抹掉；needle=补类与挂载同行的接线锚——类加回建节点处即失效消失）', file: 'js/chat.js', needle: "if (!batchRendering) m.classList.add('msg-enter'); (appendTarget || body).appendChild(m);" },
+  // ==== 2026-09-20 #877 聊天设置两行头像「点击无反应」第七波根治（小米14 Edge 实报、多机型同现；零机型分支）：激活链原来只有「label 转发＋JS 合成 click」两条腿，#738 已实锤小米系对 JS click 静默不弹——两条腿同时失效的内核上彻底无声（probe-877-thirdleg 在 HEAD 复现 chooser=0 零提示）。兜底腿升级「showPicker→click→可诊断 toast」三级，guard 信号窗保证不双开 ====
+  { name: '#877a 头像兜底第三条腿 showPicker（删＝label 不转发＋click 被无视的内核回到点击无声）', file: 'js/chat-settings.js', needle: 'try { headInput.showPicker(); opened = true; } catch (e) {}' },
+  { name: '#877b 三条腿全失效时不再无声（删＝用户点击无反应且拿不到任何可反馈现场）', file: 'js/chat-settings.js', needle: "toast('相册没能打开：请换系统浏览器或 Chrome 打开再试，仍不行请截图本提示反馈（头像#877）');" },
+  // ==== 2026-09-20 #879 苹果11 Safari 实报「美化文件导入用不了」（用户注明多机型同现、勿做机型分支；诊断实证收到 9916 字符、开头 <!DOCTYPE html>＝分享/售卖链路把方案打包成网页文件，打开全选复制或选文件选中 .html 后 #408 自救解析①~③全失效、抛天书 JSON Parse error）。修法＝mochiParsePastedJSON 追加第④步（纯数据链路、零机型分支，桌面/聊天美化两个导入入口共用）：<textarea>/<pre>/application.json 容器内文实体还原优先＋全文字符串感知花括号配平扫描取 {...} 候选按长度降序，逐候选走完整清洗梯子、仅真解析成顶层对象才采用（提错由导入方用途校验兜底）；提取失败换可行动报错 ====
+  { name: '#879a 网页包裹方案提取入口（删＝分享/售卖网页文件里的方案解析失败复发「美化文件导入用不了」）', file: 'js/personalize.js', needle: "const htmlLike = /<!doctype\\s*html|<html[\\s>]|<body[\\s>]|<textarea[\\s>]/i.test(t1);" },
+  { name: '#879b 提取失败可行动报错（删＝用户再拿到天书 JSON error 无从下手）', file: 'js/personalize.js', needle: "lastErr = new Error('粘贴的是网页不是方案文本" },
+  // ==== 2026-09-20 #881 聊天设置两行头像补「头像和昵称互动也能换＋会覆盖」静态提示（用户直派：互动触发联系人换头像会覆盖聊天设置的头像，用户不知情以为设置失效）====
+  { name: '#881a 联系人头像行覆盖提醒（删＝开随机更换的用户不知道 TA 换头像会顶掉这里设置的头像）', file: 'template.html', needle: '开了随机更换后，TA 换头像会覆盖这里设置的' },
+  { name: '#881b 我的头像行覆盖提醒（删＝开 TA 主动给我换头像的用户不知道会顶掉这里设置的头像）', file: 'template.html', needle: '「TA 主动给我换头像」触发时会覆盖这里设置的' },  // ==== 2026-09-20 #886 吃什么转盘「指针永远跟着显示的菜走」＋切桌面复位＋提醒键清扫（用户确认三项都修）：①打开/「换一个」/改菜单重抽（都走 eatPick）后 eatAlignWheelToDish 把显示菜扇区中线转到顶部指针下——#876 只修了「转盘抽取」，静置/换一个时指针仍与显示菜无关；②编辑菜单面板/切换菜单浮层是页内常驻节点，.page 整页隐藏看不见但跨桌面重进会带着上一桌面的面板状态（第一次点「编辑菜单」变关闭），contact-switched 时停转＋关浮层＋收面板；③eat-remind-done「今日已提醒」键每天至多 4 键永不清理，清扫只留当天（xyStore.remove 三处同清） ====
+  { name: '#886a 指针永远指着显示的菜（显示菜扇区中线转到 3π/2；删＝打开/换一个后指针与显示菜无关）', file: 'js/p2-features.js', needle: 'eatSpinAngle = ((3 * Math.PI / 2 - (i + 0.5) * slice) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);' },
+  { name: '#886b 切桌面复位（删＝跨桌面重进带着上一桌面的编辑面板/切换浮层状态）', file: 'js/p2-features.js', needle: "document.addEventListener('contact-switched', function () { eatClearSpin(); eatSwitchClose(); const mp = document.getElementById('eat-menu-panel'); if (mp) mp.hidden = true; });" },
+  { name: '#886c 提醒键清扫只留当天（删＝eat-remind-done 键每天至多 4 个无限累积）', file: 'js/p2-features.js', needle: "const scan = pfx + ':eat-remind-done:';" },
+  { name: '#894a 读取中不清注入（删＝弱内核切桌面字体应用消失复发）', file: 'js/chat-settings.js', needle: "if (!v && rawVal.indexOf('@@font:') === 0 && !_fontBlobGone[rawVal.slice(7)]) return;" },
+  { name: '#894b 丢失终局广播（删＝美化页入口不跟随清除丢失字体）', file: 'js/chat-settings.js', needle: 'csFontChanged(); // #894：丢失是终局' },
+  { name: '#894c 美化页读取中保留（删＝切桌面美化入口误清字体）', file: 'js/personalize.js', needle: "if (!v && raw.indexOf('@@font:') === 0 && keepPending) return;" },
+  // ==== 2026-09-20 #893 进群「聊天记录滚动闪一下才恢复」根治（PWA 装桌面用户实报每次进出群聊都闪、无加载缓冲；零机型分支）——enterGroupChat 无条件 body.innerHTML='' 整窗重渲 200 条＝图片头像全部重新解码＝每次进都闪；修法＝群聊同窗跳过指纹（单聊 #220 同款思路）：同群同条数＋首尾消息指纹＋成员名/头像/昵称开关指纹一致且无 gcSwitchDirty 时只回底不重建，任何变化照旧全量重建、展示结果一字不差 ====
+  { name: '#893a 群聊进群同窗跳过判定（删＝退回每次进群都整窗重建、历史滚动闪一下复发；gcRenderedFp 只在这处比较点有意义，勿「统一」成其他写法）', file: 'js/group-chat.js', needle: 'if (!gcSwitchDirty && body.children.length && gcEntrySig() === gcRenderedFp) {' },
+  { name: '#893b renderAll 结尾登记屏上窗口指纹（删＝指纹永不更新，跳过判定失效退化成每次重建或永不重建，两头都是回归）', file: 'js/group-chat.js', needle: 'gcRenderedFp = gcEntrySig(); //' },
+  { name: '#874a 进聊天分帧空窗期 scroll 不作数（删＝空窗期旧滚动位被钳回 0 的必发事件误触发上翻加载、appendTarget 被改道、finishSwap 首批甩到列表尾＝「进聊天跳到历史记录、底部永远看不到最新」）', file: 'js/chat.js', needle: 'if (batchRendering) return; // #874a' },
+  { name: '#874b loadOlderIncremental 空窗入口守卫（删＝#874a 同根因换路径：renderStart 白前移＋自身 frag 在空 body 下整批丢弃）', file: 'js/chat.js', needle: 'if (batchRendering) return; // #874b' },
+  { name: '#874c loadNewerIncremental 同闸（删＝构建期增量下插/追加改道 appendTarget 踩乱换装顺序）', file: 'js/chat.js', needle: 'if (batchRendering) return; // #874c' },
+  { name: '#874d 空窗期 touchstart 不解钉（删＝进度条期一次上滑令 finishSwap 跳过落底、看门狗/稳定窗全被 pinned=false 关在门外＝停在列表顶部旧记录）', file: 'js/chat.js', needle: 'if (!batchRendering) unpinChatAndAnchor(); // #874d' },
+  { name: '#874e wheel 与 #874d 同闸（删＝桌面端滚轮路径空窗期照解钉，同一缺陷留后门）', file: 'js/chat.js', needle: "'wheel', function () { if (!batchRendering) unpinChatAndAnchor(); }" },
+
 ];
 try {
   const built = CHECK_SENTINELS ? '' : readFileSync(join(root, 'index.html'), 'utf8');
