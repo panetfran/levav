@@ -1874,6 +1874,9 @@ if (ckRefresh) {
   function doLocAuto() {
     if (document.hidden || Date.now() < locWakeAt || !window.__mochiDataReady) return;
     if (store.get('loc-auto') === '0') return; // 设置「TA 自动换位」关：到点也不发（拦设置后仍残留的当次定时器）
+    // #876 夜间静默：TA 自动换位（含「隔着世界在你身边」等换位消息）夜间不触发；
+    // scheduleLocAuto 循环独立，跳过本次后照常排下一轮，位置时间线零写入
+    if (window.nightModeActive && window.nightModeActive()) return;
     const companion = ['在你身边', '一直没走远', '隔着世界在你身边', '隐约在你身旁', '在你看不到的地方'];
     let text;
     if (Math.random() < 0.7) {
@@ -2860,6 +2863,10 @@ if (ckRefresh) {
     ctx.restore(); ctx.restore();
   }
   function eatDrawWheel(dishes, hlIdx) { const c = document.getElementById('eat-wheel'); if (!c) return; eatDrawWheelCore(c, dishes, hlIdx, eatSpinAngle); }
+  // #876 转盘指针在正上方（.eat-pointer top:-12px，svg 尖(10,18)朝下）＝屏幕 12 点方向＝画布角 3π/2；
+  // 转过 normalized 后指针压住的扇区＝画布角 (3π/2 - normalized) 所在片。旧公式按指针在右侧 0 角
+  // （2π - normalized）算，中奖片恒不在指针下＝高亮片与「今天吃」菜名和指针错开约 1/4 圈。
+  function eatIdxUnderPtr(normalized, n, slice) { return Math.floor((((3 * Math.PI / 2 - normalized) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI)) / slice) % n; }
   function eatSpinWheel(dishes, cb) {
     if (eatSpinning) return;
     if (!dishes.length) { toast('当前菜单是空的，先添加菜名'); return; }
@@ -2887,7 +2894,7 @@ if (ckRefresh) {
       eatSpinTimer = null; clearTimeout(flashTimer);
       const n = dishes.length; const slice = 2 * Math.PI / n;
       const normalized = (totalAngle % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
-      const idx = Math.floor(((2 * Math.PI - normalized + slice / 2) % (2 * Math.PI)) / slice) % n;
+      const idx = eatIdxUnderPtr(normalized, dishes.length, slice);
       var ptr = document.getElementById('eat-pointer'); if (ptr) { ptr.classList.add('pop'); setTimeout(function () { ptr.classList.remove('pop'); }, 500); }
       eatHlIdx = idx; eatDrawWheel(dishes, idx); vibrate([10, 40, 10]);
       eatHlTimer = setTimeout(function () { eatHlIdx = -1; eatDrawWheel(dishes); eatHlTimer = null; eatSpinning = false; eatSetBtns(false); }, 1200);
@@ -2921,8 +2928,8 @@ if (ckRefresh) {
     if (i === eatCurMenuIdx()) { eatSwitchClose(); return; }
     const name = menus[i].name;
     eatSwitchClose();
-    eatSaveCurMenuIdx(i); eatClearSpin(); eatSpinAngle = 0;
-    eatRenderCurName(); eatDrawWheel(eatDishes()); eatLastPick = eatPick(); eatRenderHistory();
+    eatSaveCurMenuIdx(i); eatClearSpin();
+    eatRenderCurName(); eatLastPick = eatPick(); eatRenderHistory();
     toast('已切换到「' + name + '」');
   }
   document.getElementById('eat-switch-chips').addEventListener('click', (e) => {
@@ -2960,18 +2967,27 @@ if (ckRefresh) {
       eatSwTimer = null; clearTimeout(flashTimer);
       const n = names.length; const slice = 2 * Math.PI / n;
       const normalized = (totalAngle % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
-      const idx = Math.floor(((2 * Math.PI - normalized + slice / 2) % (2 * Math.PI)) / slice) % n;
+      const idx = eatIdxUnderPtr(normalized, names.length, slice);
       const ptr = document.getElementById('eat-switch-pointer'); if (ptr) { ptr.classList.add('pop'); setTimeout(() => ptr.classList.remove('pop'), 500); }
       eatSwHlIdx = idx; eatSwitchDraw(names, idx); vibrate([10, 40, 10]);
       if (nameEl) { nameEl.classList.add('fade'); setTimeout(() => { nameEl.textContent = names[idx]; nameEl.classList.remove('fade'); }, 200); }
       eatSwHlTimer = setTimeout(() => {
         eatSwHlIdx = -1; eatSwSpinning = false; eatSwHlTimer = null;
-        eatSaveCurMenuIdx(idx); eatClearSpin(); eatSpinAngle = 0;
-        eatRenderCurName(); eatDrawWheel(eatDishes()); eatLastPick = eatPick(); eatRenderHistory();
+        eatSaveCurMenuIdx(idx); eatClearSpin();
+        eatRenderCurName(); eatLastPick = eatPick(); eatRenderHistory();
         eatSwitchClose(); toast('已切换到「' + names[idx] + '」');
       }, 1200);
     }
     eatSwTimer = requestAnimationFrame(tick);
+  }
+  // #886 指针永远指着显示的菜：把显示菜扇区的中线转到顶部指针下（打开/「换一个」/改菜单重抽都走 eatPick
+  // → 自动对齐；「转盘抽取」本身停在扇区内不需再对齐）。居中放置＝指针两侧各留半格余量，视觉最稳。
+  function eatAlignWheelToDish(dish) {
+    const dishes = eatDishes(); const i = dishes.indexOf(dish);
+    if (i < 0) return;
+    const slice = 2 * Math.PI / dishes.length;
+    eatSpinAngle = ((3 * Math.PI / 2 - (i + 0.5) * slice) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+    eatDrawWheel(dishes);
   }
   function eatPick() {
     const dishes = eatDishes();
@@ -2986,10 +3002,11 @@ if (ckRefresh) {
     const de = document.getElementById('eat-dish'); const ce = document.getElementById('eat-comment');
     if (de) { de.classList.add('fade'); setTimeout(() => { de.textContent = dish; de.classList.remove('fade'); }, 200); }
     if (ce) { ce.classList.add('fade'); setTimeout(() => { ce.textContent = '\u201c' + comment + '\u201d'; ce.classList.remove('fade'); }, 200); }
+    eatAlignWheelToDish(dish);
     return dish + ' · ' + comment;
   }
   let eatLastPick = '';
-  if (eatApp) eatApp.addEventListener('click', () => { if (editingNow()) return; eatClearSpin(); eatInitCanvas(); openPage(eatPage); eatRenderCurName(); eatLastPick = eatPick(); eatRenderHistory(); eatDrawWheel(eatDishes()); eatRenderRemind(); });
+  if (eatApp) eatApp.addEventListener('click', () => { if (editingNow()) return; eatClearSpin(); eatInitCanvas(); openPage(eatPage); eatRenderCurName(); eatLastPick = eatPick(); eatRenderHistory(); eatRenderRemind(); eatRemindSweep(); });
   document.getElementById('eat-back').addEventListener('click', () => { eatClearSpin(); backHome(eatPage); });
   (function () {
     var de = document.getElementById('eat-dish'); if (!de) return;
@@ -3090,6 +3107,9 @@ if (ckRefresh) {
   document.getElementById('eat-switch-menu').addEventListener('click', () => { if (editingNow() || eatSpinning) return; eatSwitchOpen(); });
   document.getElementById('eat-switch-cancel').addEventListener('click', () => { eatSwitchClose(); });
   document.getElementById('eat-switch-go').addEventListener('click', () => { eatSwitchSpin(); });
+  // #886 切桌面复位：编辑菜单面板/切换菜单浮层是页内常驻节点（.page 整页隐藏时看不见，但重进会带着上一
+  // 桌面的面板状态——编辑面板开着、第一次点「编辑菜单」变关闭）。切桌面时停转＋关浮层＋收面板。
+  document.addEventListener('contact-switched', function () { eatClearSpin(); eatSwitchClose(); const mp = document.getElementById('eat-menu-panel'); if (mp) mp.hidden = true; });
 
   // ---- TA 饭点提醒（v3.14.x）：概率触发梦角发字卡到聊天提醒吃饭 ----
   // 世界观同喝水「他视角温柔提醒」：梦角是灵体，饭点偶尔冒出来催你吃饭。
@@ -3141,8 +3161,23 @@ if (ckRefresh) {
       }, 1400);
     }
   }
+  // #886 清扫历史「今日已提醒」标记键：每天至多 4 键、只留当天（开吃什么页＋eatRemindMaybe 每 4 分钟各扫一次；
+  // 走 xyStore.remove＝内存/LS/IDB 三处同清，删除联系人同款管线）
+  function eatRemindSweep() {
+    try {
+      const pfx = (window.activePrefix ? window.activePrefix() : 'xy-home-v2:default'); // 无尾冒号：xyStore 合键时自己补 ':'
+      const scan = pfx + ':eat-remind-done:';
+      const today = eatDayKey(); const dead = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf(scan) === 0 && k.slice(-10) !== today) dead.push(k);
+      }
+      dead.forEach(function (k) { try { window.xyStore(pfx).remove(k.slice(pfx.length + 1)); } catch (e) {} });
+    } catch (e) {}
+  }
   function eatRemindMaybe() {
     try {
+      eatRemindSweep();
       if (!window.chatAddIn) return;
       const h = new Date().getHours(); if (h >= 23 || h < 6) return; // v3.26.x：23:00-06:00 静默期，不提醒吃饭（深更半夜吃饭提醒离谱）
       if (!eatRemindEn()) return;
@@ -4007,7 +4042,7 @@ if (ckRefresh) {
     try { if (window.giftWalletChange) window.giftWalletChange(-fen, 0); } catch (e) {}
     const log = piggyCoinLog(); log.push({ t: Date.now(), type: 'in', amt: amt, note: note || '' });
     piggySaveCoinLog(log); piggyCoinRender();
-    if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我往存钱罐存了 ¥' + piggyFmt(amt), {}); } catch (e) {} }
+    if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true }); } catch (e) {} }
     const st = piggyCoinGoalState(); const bal = piggyCoinBal(log);
     if (st.act.g && !st.act.g.done) {
       if (bal >= st.act.g.a) {
@@ -4027,7 +4062,7 @@ if (ckRefresh) {
     try { if (window.giftWalletChange) window.giftWalletChange(fen, 0); } catch (e) {}
     const log = piggyCoinLog(); log.push({ t: Date.now(), type: 'out', amt: amt, note: note || '' });
     piggySaveCoinLog(log); piggyCoinRender();
-    if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我从存钱罐取了 ¥' + piggyFmt(amt), {}); } catch (e) {} }
+    if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我从存钱罐取了 ¥' + piggyFmt(amt), { nightAllow: true }); } catch (e) {} }
     piggyCoinShowMsg(piggyPick(COIN_OUT_MSG));
   }
   // 心意币概率配置（root 命名空间，供 chat.js 读取申请概率）：{ deposit(塞币/存钱), withdraw(取钱), ask(申请) }，均存 0-1 小数
@@ -4063,7 +4098,7 @@ if (ckRefresh) {
     vibrate([20, 40, 20]);
     try {
       const who = (window.chatPartnerName ? window.chatPartnerName() : '') || 'TA';
-      if (window.chatAddSystem) window.chatAddSystem(who + ' 往存钱罐存了 ¥' + piggyFmt(amt), {});
+      if (window.chatAddSystem) window.chatAddSystem(who + ' 往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true });
     } catch (e) {}
     setTimeout(function () { piggyCoinShowMsg((window.taFit ? window.taFit(note) : note) + ' ¥' + piggyFmt(amt)); }, 300);
   }
@@ -4527,10 +4562,12 @@ if (ckRefresh) {
 // TA 摸鱼值由 personalize.js 每 60s 60% 概率自动涨（"他在那边也偷了个懒"的来源）。
 // 这里只做监听：值变化且通过频率控制（冷却 45 分钟 + 每日最多 12 次 + 35% 随机，
 // 让"他一整天都可能摸鱼被看见"，又不至于刷屏）时，桌面浮一行小字。
-// v3.13.x：浮字 6 秒内可点——「抓包成功」：这次涨值翻倍（TA 补一份 + 我得同额），
-//   并触发一条害羞回应进聊天；不点就只是看着 TA 涨（原行为不变）。
+// v3.13.x：浮字 6 秒内可点——「抓包成功」：并触发一条害羞回应进聊天；不点就只是看着 TA 涨（原行为不变）。
+// #844：抓包结算改为「距上次抓包以来 TA 涨的全部」——旧实现只翻倍触发浮字那一个 60 秒窗口的涨幅
+//（平均 +5），浮字有 45 分钟冷却＋35% 概率，冷却期里涨的几十点全被跳过，奖励远小于实际懒账。
 (function () {
   let lastTa = null;
+  let settledTa = null; // 上次抓包结算基线（fish-total-ta）；只随抓包推进，浮字未点不结算
   // v3.13.x：浮字/抓包回应改走系统预设字卡池（DEFAULT_CARD_DATA.fish，字卡库「摸鱼浮字」
   // tab 同源可查看/逐张开关）；过滤用户已关闭的卡片，池缺失时回退内置兜底
   const FISH_NOTE_FALLBACK = ['ta在那边也偷了个懒'];
@@ -4584,7 +4621,7 @@ if (ckRefresh) {
     } catch (e) {}
     const s = window.activeStore && window.activeStore(); if (!s) return;
     let cur = 0; try { cur = parseInt(s.get('fish-total-ta') || '0', 10) || 0; } catch (e) {}
-    if (lastTa === null) { lastTa = cur; return; }
+    if (lastTa === null) { lastTa = cur; settledTa = cur; return; }
     const delta = cur - lastTa;
     // v3.32.x #132：摸鱼字卡概率接 dcf-fish（默认 35%=原值，单值替换非叠加）
     if (delta > 0 && Math.random() * 100 < dcfPFish(35) && window.taChimeAllow && window.taChimeAllow('fish-ta-note', { cooldown: 45 * 60 * 1000, dailyMax: 12 })) {
@@ -4595,8 +4632,12 @@ if (ckRefresh) {
           dur: 6000,
           onClick: function () {
             try {
-              // 抓包奖励：本次涨值翻倍——TA 再补一份，我得同额
-              const bonus = Math.max(1, delta);
+              // #844 抓包结算＝距上次抓包以来 TA 涨的全部（触发浮字前的展示时刻值，浮字 6 秒展示期新涨的归入下次结算）：
+              // TA 补一份总账，我得同额。旧实现只补 delta（单个 60s 窗口涨幅），冷却期涨值全被吞
+              const base = settledTa === null ? cur - Math.max(0, delta) : settledTa;
+              const bonus = Math.max(1, cur - base);
+              // 基线含 TA 收到的这份补账：抓包奖励不是 TA 摸出来的，不进下次懒账（防连抓利滚利）
+              settledTa = cur + bonus;
               if (window.addFishPts) window.addFishPts(bonus, bonus);
               let rec = null;
               try { rec = JSON.parse(s.get('fish-catch-day') || 'null'); } catch (e) {}

@@ -3260,7 +3260,7 @@ rpWalletSet(w);
 saveMsgsNow();
 if (!rpPatchStatusInPlace(msgs.indexOf(rpRec))) renderWindow(true, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
 const amtTxt = '（心意币 ¥' + Number(rpRec.rpAmount || 0).toFixed(2) + '）';
-setTimeout(() => addIn('你退回了红包' + amtTxt, { special: 'poke' }), randInt(300, 800));
+setTimeout(() => addIn('你退回了红包' + amtTxt, { special: 'poke', nightAllow: true }), randInt(300, 800));
 }, { okText: '退回', cancelText: '取消' });
 }
 }, 500);
@@ -3322,7 +3322,7 @@ const amtTxt = '（心意币 ¥' + Number(rpRec.rpAmount || 0).toFixed(2) + '）
 // 黑色浮层只是重复打扰。勿恢复：原为 toast('已领取' + amtTxt);
 // 注：本条上方「等待 TA 领取」的 toast 是无效操作提示（点自己发出的未领红包），语义不同，保留。
 if (!rpPatchStatusInPlace(rpIdx)) renderWindow(true, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
-setTimeout(() => addIn('你领取了红包' + amtTxt, { special: 'poke' }), randInt(400, 1000));
+setTimeout(() => addIn('你领取了红包' + amtTxt, { special: 'poke', nightAllow: true }), randInt(400, 1000));
 return;
 }
 if (e.target.closest('.msg-inplace')) return;
@@ -3430,12 +3430,55 @@ b.dataset.showing = '0';
 b.innerHTML = b.dataset.orig;
 b.dataset.showing = '1';
 }
+chatRetractToggleAfter('toggle'); // #871：展开/收起＝滚动区内容高突变，按钉住/解钉两态做贴底或落定重落
 };
+}
+// FIX 2026-09-19 #871（iPhone 12 Pro Max Safari 实报「展开撤回消息再收起／贴底轻划／划太快／点
+// 撤回字卡明细再打开，气泡和头像错位」，用户注明多机型同现）：就地展开/收起与「撤回 N 条字卡▾」
+// 明细开合都是**滚动容器内的高度突变**，无头实证 DOM 几何逐像素复原（错位不在布局层）——错位出
+// 自表现层：高度在滚动会话中途增减后，WebKit 的滚动树仍可按旧偏移呈现旧瓦片；而程序化 scrollTop
+// 修正要么缺席（解钉态零接管，靠内核钳位），要么迟到（钉住态等 250ms 看门狗，窗口里最后一行先被
+// 推出屏再弹回），要么对打（#162 图片 onload 双写是唯一没接 #716/#765 让路闸的写手，手势/惯性
+// 进行中当场写 scrollTop）。修法＝统一纪律，零机型分支，全部复用 #861 的落定锁：
+//   ①三处开合动作收尾走本助手：钉住态立即贴底（消掉 250ms 推出-弹回窗口）＋交 #861 落定锁复核
+//     一次（几何/滚动静默后补写，防内核丢写）；解钉态走 chatResyncScrollQuiet——滚动/触摸静默后
+//     显式钳回真实 max（收起缩短内容时 scrollTop>max 的超界不再依赖内核钳位时机）＋同值重落一枪
+//     （强制滚动树对新几何重对齐；Blink/Gecko 对同值写零副作用，健康引擎零变化）。
+//   ②#162 图片 onload 补滚接让路闸：滚动/触摸进行中不当场写，交 #861 落定锁；静默态保持原双写
+//     快路（#504 契约不变）。
+// #572d 既定语义不动：展开/收起对下方内容的推挤不做锚定补偿。
+function chatRetractToggleAfter(kind) {
+if (batchRendering || !chatVisible()) return;
+if (chatPinnedBottom) { scrollChatBottom(); chatRepinAfterSettle(); }
+else chatResyncScrollQuiet(kind);
+}
+let _rsyncT = null;
+let _rsyncDeadline = 0;
+function chatResyncScrollQuiet(kind) {
+if (_rsyncT || chatPinnedBottom) return; // 钉住态归 #861 落定锁管，不双排
+_rsyncDeadline = Date.now() + 1200;
+_rsyncT = setTimeout(chatResyncStep, 120);
+}
+function chatResyncStep() {
+_rsyncT = null;
+const now = Date.now();
+if (!chatVisible() || chatPinnedBottom) return; // 等待期用户已回钉＝归 #861 管
+if (!chatRepinQuietEnough(now)) { if (now < _rsyncDeadline) _rsyncT = setTimeout(chatResyncStep, 120); return; }
+const cb = document.getElementById('chat-body');
+if (!cb) return;
+const realMax = cb.scrollHeight - cb.clientHeight;
+cb.scrollTop = Math.min(cb.scrollTop, realMax); // 超界显式钳回；未超界＝同值重落（滚动树重对齐）
 }
 let batchRendering = false;
 let pendingOutScroll = false;
 let appendTarget = null;
-function appendMsg(m) { (appendTarget || body).appendChild(m); }
+// FIX 2026-09-20 #878（用户报障「聊天里发送的礼物卡片没有任何动画缓冲突然出现很突兀，
+// 互动卡片都有这个问题」）：入场动画类原先在 renderMsg 建节点时加（原 4405 行位置），
+// 但礼物/互动卡/文本等**所有**分支随后都以 m.className = 'msg-gift'/'msg-ask'/'msg …'
+// 整体覆盖 className，msg-enter 在挂载前就被抹掉＝动画实际从未触发。类补加挪到
+// appendMsg 挂载前（此处恒在各分支覆盖之后）；batchRendering 闸口径不变：
+// 批量渲染/原位重画不入场动画。
+function appendMsg(m) { if (!batchRendering) m.classList.add('msg-enter'); (appendTarget || body).appendChild(m); }
 function appendAvatarBatch(on) {
 if (on) { if (!avatarBatchCache) avatarBatchCache = {}; }
 else avatarBatchCache = null;
@@ -3857,6 +3900,7 @@ suppressScrollUntil = Date.now() + 200;
 return true;
 }
 function loadOlderIncremental() {
+if (batchRendering) return; // #874b：构建中途重入会把 appendTarget 改道（自身 frag 在空 body 下整批丢弃）并把 renderStart 白前移＝finishSwap 首批被甩到列表尾＝底部永远是旧记录
 const len = msgs.length;
 if (renderStart <= 0 || renderStart >= len) {
 // #722：已到已加载历史的顶部——头部冷块还有货就先 rebase（并入+位移下标），并入后
@@ -3901,6 +3945,7 @@ if (renderEnd - renderStart > WINDOW_MAX) pruneWindowBottom();
 suppressScrollUntil = Date.now() + 200;
 }
 function loadNewerIncremental(targetLen) {
+if (batchRendering) return; // #874c：同 #874b——增量下插/追加在构建期改道 appendTarget 会踩乱换装顺序
 const len = msgs.length;
 // FIX 2026-09-07 #241：可选 targetLen——原地补丁的尾部增量一次补到权威长度（不传=
 // 滚动加载语义不变，每批 LOAD_STEP）
@@ -3987,6 +4032,7 @@ if (bodyScrollTimer) return;
 bodyScrollTimer = setTimeout(function () {
 bodyScrollTimer = null;
 if (!chatVisible()) return;
+if (batchRendering) return; // #874a：分帧整窗重建的空窗期（body 已清空、新窗未换装）里到达的 scroll 不作数——清空旧滚动位被钳回 0 必发事件，防抖 100ms 撞上慢设备构建时长就误触发上翻加载
 if (body.scrollTop < TOP_THRESHOLD) {
 loadOlderIncremental();
 } else if (renderEnd < msgs.length && body.scrollHeight - body.scrollTop - body.clientHeight < TOP_THRESHOLD) {
@@ -4013,7 +4059,7 @@ let chatTouchActive = false; // #716：触摸手势进行中——手势刚开�
 body.addEventListener('touchstart', function (e) {
 try { chatUnpinTsY = e.touches[0].clientY; } catch (err) { chatUnpinTsY = 0; }
 chatTouchActive = true;
-unpinChatAndAnchor();
+if (!batchRendering) unpinChatAndAnchor(); // #874d：空窗期屏上没有列表可翻，进度条期的一次上滑不该把贴底永久解掉（finishSwap 落底全看 pinned）
 }, { passive: true, capture: true });
 body.addEventListener('touchend', function (e) {
 chatTouchActive = false; // #716：手势结束才恢复自动回钉资格
@@ -4023,17 +4069,16 @@ if (dy < 10 && chatAtBottom()) scrollChatBottom();
 } catch (err) {}
 }, { passive: true });
 body.addEventListener('touchcancel', function () { chatTouchActive = false; }, { passive: true }); // #716
-body.addEventListener('wheel', unpinChatAndAnchor, { passive: true });
+body.addEventListener('wheel', function () { if (!batchRendering) unpinChatAndAnchor(); }, { passive: true }); // #874e：与 #874d 同闸
 // FIX #466（红米/小米 Chrome 等多机型报「发送消息时界面闪到最顶上半部分再恢复」）：
 // 安卓键盘弹出/收起会让 mobile-adapt 按 visualViewport 高度改 .phone 高度，聊天 scrollTop
 // 却不会随之更新＝消息列表长期被键盘顶到上半区、最新消息被盖住，到发送/收键盘那刻才被
 // scrollChatBottom 拽回＝观感「闪一下再恢复」。补钉住守卫的回钉：视口高度变化（键盘/地址栏
-// 显隐）且仍贴底钉住时，防抖后回到底部；用户手动滚动解钉即停，与 #162 闸同名语义，零机型分支。
-let _kbRepinT = null;
+// 显隐）且仍贴底钉住时回到底部；用户手动滚动解钉即停，与 #162 闸同名语义，零机型分支。
+// #868：这里的「60ms 单次防抖」改走 chatRepinAfterSettle()（见下方同闸助手）——不再自己定时刻，
+// 而是等几何真正落定后只写一次；函数名与 vv resize 接线保持原样（哨兵 #466 锚点）。
 function refreshKbRepin() {
-if (!chatVisible() || !chatPinnedBottom) return;
-if (_kbRepinT) clearTimeout(_kbRepinT);
-_kbRepinT = setTimeout(function () { _kbRepinT = null; if (chatPinnedBottom) scrollChatBottom(); }, 60);
+chatRepinAfterSettle();
 }
 (function () {
 const vv466 = window.visualViewport;
@@ -4049,17 +4094,15 @@ if (vv466) vv466.addEventListener('resize', refreshKbRepin);
 // 还是 .phone 内联高度恢复，「盒子真变了」这一事实发生时才回钉，天然躲开事件时序竞态；仍受
 // chatPinnedBottom 闸约束（用户翻历史＝解钉，绝不拽底，#162 契约不变）。无 ResizeObserver 的
 // 老内核保留 #466 原路，零回退。scrollChatBottom 只写 scrollTop、不改 chat-body 盒子，不会自激励成环。
+let _cbBoxChangeTs = 0; // 聊天盒自身最近一次变尺寸时刻（下面 #643 的 RO 里记；无 RO 的老内核恒 0＝不成为闸）
 (function () {
 const cb643 = document.getElementById('chat-body');
 if (!cb643 || typeof ResizeObserver === 'undefined') return;
-let t643 = null;
 new ResizeObserver(function () {
-if (!chatVisible() || !chatPinnedBottom) return;
-if (t643) clearTimeout(t643);
-t643 = setTimeout(function () {
-t643 = null;
-if (chatPinnedBottom && chatVisible()) scrollChatBottom();
-}, 60);
+// #868：盒子变化本身＝「还在变形」的最新证据，先记时刻再交给同闸助手（旧写法 60ms 后照写，
+// 而 mobile-adapt 恢复 .phone 内联高是分步到位的，那一枪常打在中间态高度上＝回弹）。
+_cbBoxChangeTs = Date.now();
+chatRepinAfterSettle();
 }).observe(cb643);
 })();
 // FIX 2026-09-17 #706（iPhone 17 Safari 26.6 iOS 独立应用实报「聊天里所有消息不贴底、
@@ -4083,10 +4126,37 @@ const mark706 = function () { _vvGeomChangeTs = Date.now(); };
 if (vv706) { vv706.addEventListener('resize', mark706); vv706.addEventListener('scroll', mark706); }
 window.addEventListener('resize', mark706);
 })();
+// FIX 2026-09-19 #868（红米 K80 实报「发送消息后收起输入法弹窗，聊天消息还是会闪屏回弹一下、
+// 然后恢复正常」，用户点名其他型号同现，并说明「主动开/关全屏模式」也闪）：#466/#643 两个
+// 快速回钉各自 60ms 单发，而一次键盘收起/全屏切换的几何变化是**分多帧、多步**落地的（vv resize
+// 先响、mobile-adapt 随后分步恢复 .phone 内联高、聊天盒跟着再变）。60ms 那一枪常打在中间态
+// 高度上＝按「假底部」写 scrollTop，等真布局落地后 #706 看门狗再校正一次＝肉眼所见「弹一下
+// 再恢复」。修法＝两个回钉不再自己定时刻，统一走下面这把与 #706 **同闸**的落定锁：几何
+// （视口/盒子）与列表滚动都静默够久才写，且一次变形只写一枪；静默不了 1200ms 就彻底放弃，
+// 交回看门狗周期复核——绝不与用户滑动/触摸对打（#716/#765 契约不变），零机型分支。
+let _kbSettleT = null;
+let _kbSettleDeadline = 0;
+function chatRepinQuietEnough(now) {
+return now - _vvGeomChangeTs >= 180 && now - _cbBoxChangeTs >= 180 && now - _chatScrollActTs >= 200 && !batchRendering && !_ccSmoothT && !chatTouchActive;
+}
+function chatRepinAfterSettle() {
+if (!chatVisible() || !chatPinnedBottom || _kbSettleT) return; // 已有一枪在膛：由它负责复查，不重复排队
+_kbSettleDeadline = Date.now() + 1200;
+_kbSettleT = setTimeout(chatRepinStep, 120);
+}
+function chatRepinStep() {
+_kbSettleT = null;
+const now = Date.now();
+if (!chatVisible() || !chatPinnedBottom) return; // #162：用户已解钉（翻历史/触摸）＝绝不拽底
+if (!chatRepinQuietEnough(now)) { if (now < _kbSettleDeadline) _kbSettleT = setTimeout(chatRepinStep, 120); return; }
+const cb868 = document.getElementById('chat-body');
+if (cb868 && chatScrollMax() - cb868.scrollTop > 8) scrollChatBottom(); // #416：≤8px 不折腾
+}
 setInterval(function () {
 if (!chatVisible() || !chatPinnedBottom || batchRendering || _ccSmoothT || chatTouchActive) return; // #716：触摸手势进行中不让路=看门狗与用户上滑对打
 if (Date.now() - _chatScrollActTs < 200) return; // #765：列表滚动中（含抬手后的惯性滑行）不让路，落定后再复核
 if (Date.now() - _vvGeomChangeTs < 180) return; // 视口变形进行中不写，等落定
+if (Date.now() - _cbBoxChangeTs < 180) return; // #868：聊天盒还在变尺寸（mobile-adapt 分步恢复中）同样不写
 const cb706 = document.getElementById('chat-body');
 if (!cb706) return;
 if (cb706.scrollTop < chatScrollMax() - 8) scrollChatBottom();
@@ -4097,6 +4167,9 @@ body.addEventListener('load', (e) => {
 const t = e.target;
 if (!t || t.tagName !== 'IMG') return;
 if (!chatPinnedBottom || batchRendering || !chatVisible()) return;
+// #871：滚动/触摸进行中不再当场写（与用户手势对打＝贴底轻划错位源），交 #861 落定锁；
+// 静默态保持原双写快路（#504 契约：同步写当帧即修正，rAF 兜部分内核丢弃同步写）
+if (Date.now() - _chatScrollActTs < 200 || chatTouchActive) { chatRepinAfterSettle(); return; }
 scrollChatBottom(); requestAnimationFrame(scrollChatBottom); // FIX #504：同步写当帧即修正（load 先于新尺寸首帧绘制），rAF 留作部分内核丢弃同步写的兜底
 }, true);
 // FIX 2026-09-06 #202 表情/图片加载失败占位：#186 只覆盖了媒体池令牌缺失，其余失败路径
@@ -4305,7 +4378,8 @@ m.dataset.mk = msgKeyOf(rec); // FIX 2026-09-15 #491 身份锚随渲染写入，
 // 批量/整窗渲染侧本就按真实下标覆盖（见 renderWindow 与 loadOlder/loadNewerIncremental 的
 // `m.dataset.idx = i`），此处预写 msgs.length-1 与旧兜底句口径一致、零新语义。
 m.dataset.idx = msgs.length - 1;
-if (!batchRendering) m.classList.add('msg-enter');
+// #878：msg-enter 不在此处加——下面各分支的 m.className=… 整体覆盖会把它抹掉，
+// 统一由 appendMsg 挂载前补加（见其定义处注释）。
 const __fit = rec.side !== 'out' && !!window.taFit;
 const __taNm = chatPartnerName();
 const __meNm = chatUserName();
@@ -4731,6 +4805,7 @@ tip.addEventListener('click', (e) => {
 e.stopPropagation();
 const d = tip.nextElementSibling;
 if (d) d.style.display = d.style.display === 'block' ? 'none' : 'block';
+chatRetractToggleAfter('rc'); // #871：字卡明细开合同样是滚动区高度突变
 });
 }
 } else {
@@ -4787,6 +4862,7 @@ rctip.addEventListener('click', (e) => {
 e.stopPropagation();
 const d = rctip.nextElementSibling;
 if (d) d.style.display = d.style.display === 'block' ? 'none' : 'block';
+chatRetractToggleAfter('rcm'); // #871：情绪字卡明细开合同样是滚动区高度突变
 });
 }
 }
@@ -4930,7 +5006,7 @@ text = '{ta} ' + action.slice(1);
 } else {
 text = '{ta} ' + action;
 }
-addIn(text, { special: 'poke' });
+addIn(text, { special: 'poke', nightAllow: true });
 }
 function chatUnread() { try { return parseInt(store.get('chat-unread'), 10) || 0; } catch (e) { return 0; } }
 function incChatUnread() {
@@ -5223,6 +5299,13 @@ try { store.set('desk-msg-en', deskMsgToggle.checked ? '1' : '0'); } catch (e) {
 });
 }
 function addRec(rec) {
+// #876 夜间静默总闸（22:00–7:00 且设置开启）：夜间 TA 不落任何收件消息——主动消息、被动回复/
+// 多字卡/追问、卡片互动、红包/礼物/心意币、系统记录，全部在此一处收口（此前「按链逐条加闸」
+// 漏掉换头像/互动卡等整批链路＝用户报「开了夜间模式挂后台睡觉还在发」的根因）。rec.nightAllow
+// 是唯一例外通道：只放行「用户当刻操作直接引发的回执/账目/回应」与「用户配置的到点提醒」
+//（红包领取退回、心意币结算、拍一拍回应、经期/记账/备忘提醒、决策结果等），保证夜间用户
+// 自己的动作不无痕、账目对得上；TA 自发内容一律不放行。时段外/开关关零影响。
+if (rec.side === 'in' && !rec.nightAllow && !(window.__nightReplyOpen && Date.now() - window.__nightReplyOpen < 180000) && window.nightModeActive && window.nightModeActive()) return null;
 if (!rec.ts) rec.ts = Date.now();
 chatRecStampUid(rec); // FIX #776：出生号——同一条消息被哪条通道克隆回去，认号不认正文
 const len = msgs.length;
@@ -5392,6 +5475,9 @@ return el;
 }
 function addIn(text, opts) {
 opts = opts || {};
+// #876 夜间静默：音效在 addRec 之前播，必须在最前面拦——否则夜里「响一声却没有消息」。
+// addRec 内的同款总闸仍保留（兜底 addRec 直调路径：红包/战绩/拍一拍回显等）。
+if (!opts.nightAllow && !(window.__nightReplyOpen && Date.now() - window.__nightReplyOpen < 180000) && window.nightModeActive && window.nightModeActive()) return null;
   // v3.26.x：联系人发消息音效——TA 主动消息/系统通知统一在 addIn 触发「联系人发送和回复消息」音效
   // （sfx-in）。此前只有群聊播 in 音效、单聊从未触发，所有手机单聊收 TA 消息都静音（红米 Turbo4Pro
   // + Via 反馈）。silent（小游戏互动/后台批量/静默通知）与已读回执（special:'read'）不打扰，不播放。
@@ -5410,7 +5496,7 @@ opts = opts || {};
   const _tagExtra = Array.isArray(opts.tagExtra) ? opts.tagExtra.filter(md => md && String(md.tag || '').trim()).map(md => ({ tag: String(md.tag), label: md.label == null ? '' : String(md.label) })) : null;
   const _tagMerged = (_tagExtra && _tagExtra.length) ? (_tagMood ? _tagMood.concat(_tagExtra) : _tagExtra) : _tagMood;
   // v3.16.x：gInv = 联系人主动邀请的游戏类型（pong/snake/rps），随消息持久化供小游戏记录识别
-	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, dedupExempt: opts.dedupExempt, nickKeep: opts.nickKeep, mood: opts.mood || _tagMerged || undefined });
+	return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, nightAllow: opts.nightAllow, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, dedupExempt: opts.dedupExempt, nickKeep: opts.nickKeep, mood: opts.mood || _tagMerged || undefined });
 }
 // v3.27.x：对话型回复补「正在输入」过渡——TA 回应先 showTyping 再落地，消除气泡凭空冒出的突兀感。
 // items 可为单条文本或数组（数组=逐条连发，条与条之间再出一次 typing）。仅当前桌面生效：期间切走
@@ -5494,12 +5580,15 @@ if (S.legacy && oldName !== S.legacy && hist.indexOf(S.legacy) < 0) window.chatS
 };
 window.chatAddSystem = function (text, opts) {
 opts = opts || {};
+// #876：nightAllow 透传——夜间静默总闸在 addRec，用户当刻操作引发的系统记录（接受邀请、
+// 游戏战绩、写信回信、交卷等）经此处放行；TA 自发内容（定时器链）不得传此标记。
+opts.nightAllow = opts.nightAllow === true;
 // #673：silent 透传——此前本函数只挑白名单字段转发，调用方传的 { silent: true } 被就地吞掉：
 // 凡是想「进聊天但不响消息提示音」的系统台词（音乐互动等）都照样响铃。chatAddIn 是一路
 // 透传 opts 的，所以同款写法在那边有效、在这边无声失效（本批实测：音乐互动传了 silent，
 // 播放时仍响 3 次提示音）。既无调用方依赖「silent 被忽略」，补上即恢复 silent 的既定语义。
 // #616：nickKeep 透传（见 sysNickSweepable——昵称池的「换成了「XXX」」是事件记录，豁免改名清扫）
-return addIn(text, { special: opts.special || 'poke', silent: opts.silent, img: opts.img, mailNotice: opts.mailNotice, nickKeep: opts.nickKeep, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers });
+return addIn(text, { special: opts.special || 'poke', silent: opts.silent, img: opts.img, mailNotice: opts.mailNotice, nickKeep: opts.nickKeep, nightAllow: opts.nightAllow, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers });
 };
 window.chatAddIn = function (text, opts) {
 // FIX 2026-09-15 #492：opts.follow = 用户主动通道（帮我决定/多人决定结果发到聊天）——落聊天
@@ -6089,9 +6178,17 @@ if (hit(c['rn-prob'])) {
 setTimeout(() => { if (!sameCid()) return; addIn('', { special: 'read' }); }, randInt(1000, 4000));
 return;
 }
-const delay = (c['rs-min'] + Math.random() * Math.max(1, c['rs-max'] - c['rs-min'])) * 1000;
+// #876 夜间静默：夜间发的消息不显示「正在输入」、TA 不出声，整条回复顺延到次日 7:00 后随机
+// 1–10 分钟补上（nightModeActive 到点自动解除，与主动消息同一开关口径；页面中途被杀则该次
+// 回复放弃，与既有定时器语义一致）。时段外照旧即时回复。
+let delay = (c['rs-min'] + Math.random() * Math.max(1, c['rs-max'] - c['rs-min'])) * 1000;
+const __nmHold = window.nightModeActive && window.nightModeActive();
+if (__nmHold) {
+const __t7 = new Date(); __t7.setHours(7, 0, 0, 0);
+delay = Math.max(60000, __t7.getTime() - Date.now()) + randInt(60, 600) * 1000;
+}
 try { window.__rsDrawS = Math.round(delay / 100) / 10; } catch (eRD) {} // #571 本次掷到的设定延迟（秒）
-showTyping();
+if (!__nmHold) showTyping();
 setTimeout(() => {
 if (!sameCid()) { hideTyping(); return; }
 hideTyping();
@@ -6337,6 +6434,10 @@ setTimeout(() => { if (!sameCid()) return; if (window.callMaybeTrigger) window.c
 setTimeout(() => { if (!sameCid()) return; trySystemAutoSend(); trySystemAskMochi(); tryCollectPending(); if (window.maybeAutoGift) window.maybeAutoGift(); }, 2500);
 }
 window.continueChat = function () {
+// #876：continueChat 由用户当刻操作触发（点联系人名字 / 「继续说」按钮）——用户要求的
+// 回应，夜间放行（与手动查岗同口径）。回复链经 replyOnce→addIn 无差别走总闸，无法逐处
+// 打标，故置 3 分钟放行窗口：窗口内 addIn/addRec 豁免夜间拦截，超时自动收回。
+if (window.nightModeActive && window.nightModeActive()) { window.__nightReplyOpen = Date.now(); }
 const myCid = window.__activeCid || 'default';
 const sameCid = () => (window.__activeCid || 'default') === myCid;
 const c = cfg();
@@ -7288,7 +7389,7 @@ text = '{me} ' + action;
 // FIX 2026-09-17 拍一拍发出不跟底：用户主动触发的 in 侧消息（同 #492 决策结果），置一次性
 // 跟底标记——否则上翻过聊天＝解钉态，拍一拍气泡永远落在视口下方不自动滚到最底
 chatUserFollowScroll = true;
-addRec({ side: 'in', text: text, special: 'poke' });
+addRec({ side: 'in', text: text, special: 'poke', nightAllow: true });
 if (window.logFish) window.logFish();
 setTimeout(() => {
 const c2 = cfg();
@@ -7307,7 +7408,7 @@ const rMulti = pyMultiDrawn;
 // tryAutoSend 同病：addIn 弹横幅/系统通知后才掷 rc-prob，900ms 后 retractMsg＝通知已承诺的
 // 内容进聊天没有。投递前定生死：命中撤回的本条静默落地（未读角标照增），900ms 后照常撤回。
 const willRetractP = hit(c2['rc-prob']);
-const m2 = addIn(r.text, { type: r.type, silent: willRetractP, tag: rMulti ? '多字卡回复' : undefined, tagNoDup: true });
+const m2 = addIn(r.text, { type: r.type, silent: willRetractP, nightAllow: true, tag: rMulti ? '多字卡回复' : undefined, tagNoDup: true });
 if (willRetractP && m2) {
 setTimeout(() => { retractMsg(m2, 'in'); }, 900);
 }
@@ -7586,7 +7687,7 @@ return -1;
 function sendRps(mine) {
 closeRpsPanel();
 const mineName = { rock: '石头', scissors: '剪刀', paper: '布' }[mine] || '';
-addRec({ side: 'in', special: 'poke', text: '我出了 ' + mineName + '，等 TA 出拳…' });
+addRec({ side: 'in', special: 'poke', text: '我出了 ' + mineName + '，等 TA 出拳…', nightAllow: true });
 showTyping();
 setTimeout(() => {
 hideTyping();
@@ -7595,7 +7696,7 @@ const judge = rpsJudge(mine, ta);
 const s = rpsReadScore();
 if (judge > 0) s.w++; else if (judge < 0) s.l++; else s.d++;
 rpsWriteScore(s);
-addRec({ side: 'in', special: 'rps', rpsMine: mine, rpsTa: ta, rpsResult: judge });
+addRec({ side: 'in', special: 'rps', rpsMine: mine, rpsTa: ta, rpsResult: judge, nightAllow: true });
 // v3.15.x 二调：奖励对齐红包金额体系——胜 70% ¥5.2 / 30% ¥13.14，平 ¥1.3（日封顶 ¥26）
 // v3.16.x：石头剪刀布改为双方同步同额入账（不再只给赢家），记赚钱流水「石头剪刀布」
 try {
@@ -7606,7 +7707,7 @@ const w = rpWalletGet();
 w.myBalance += real; w.systemBalance += real;
 rpWalletSet(w);
 try { if (window.giftCoinLedgerAdd) window.giftCoinLedgerAdd('earn', real, real, '石头剪刀布'); } catch (e2) {}
-setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke' }), randInt(800, 1600));
+setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke', nightAllow: true }), randInt(800, 1600));
 }
 } catch (e) {}
 if (window.logFish) window.logFish();
@@ -7847,6 +7948,9 @@ try { const v = parseInt(store.get('cs-rp-daily-max'), 10); if (isFinite(v) && v
 return 5;
 }
 function trySystemAutoSend() {
+// #876 夜间静默：TA 自动红包夜间不生成——钱包扣款发生在投递前，必须在源头拦（总闸拦消息
+// 会造成扣了钱没红包）。同口径：trySystemAskMochi / maybeAutoGift。
+if (window.nightModeActive && window.nightModeActive()) return;
 if (rpDailyCount() >= rpDailyMax()) return;
 // v3.6.x：TA 自动红包概率可调——读对话设置「红包-自动发红包概率」cs-rp-auto-prob（每联系人独立，默认 4%）
 let baseRate = 0.04;
@@ -7914,6 +8018,8 @@ return 0;
 window.rpAskProbRate = rpAskProbRate;
 window.rpAskDailyMax = rpAskDailyMax;
 function trySystemAskMochi() {
+// #876 夜间静默：TA 主动申请心意币夜间不生成（同 trySystemAutoSend，须在入账前拦）
+if (window.nightModeActive && window.nightModeActive()) return;
 const askMax = rpAskDailyMax();
 if (askMax > 0 && askDailyCount() >= askMax) return;
 if (Math.random() >= rpAskProbRate()) return;
@@ -7948,7 +8054,7 @@ function rpCollectFeedback() {
 const myCid = window.__activeCid || 'default';
 const r = Math.random();
 if (r < 0.5) {
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn(rpThanksMsg(), { silent: true }); }, randInt(600, 1800));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn(rpThanksMsg(), { silent: true, nightAllow: true }); }, randInt(600, 1800));
 } else if (r < 0.8) {
 setTimeout(() => {
 if ((window.__activeCid || 'default') !== myCid) return;
@@ -7975,7 +8081,7 @@ wallet.myBalance += amtFen;
 rpWalletSet(wallet);
 saveMsgsNow();
 if (!rpPatchStatusInPlace(idx)) renderWindow(false, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 退回了你的红包（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）', { special: 'poke' }); }, randInt(500, 1200));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 退回了你的红包（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）', { special: 'poke', nightAllow: true }); }, randInt(500, 1200));
 } else if (r < 0.9) {
 rec.rpStatus = 'received';
 rec.rpOpenedAt = Date.now();
@@ -7984,7 +8090,7 @@ rpWalletSet(wallet);
 saveMsgsNow();
 if (!rpPatchStatusInPlace(idx)) renderWindow(false, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
 const amtTxt = '（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）';
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke' }); }, randInt(400, 1000));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke', nightAllow: true }); }, randInt(400, 1000));
 rpCollectFeedback();
 }
 }
@@ -8002,7 +8108,7 @@ saveMsgsNow();
 if (!rpPatchStatusInPlace(idx)) renderWindow(false, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
 const amtTxt = '（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）';
 const myCid = window.__activeCid || 'default';
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke' }); }, randInt(400, 1000));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke', nightAllow: true }); }, randInt(400, 1000));
 rpCollectFeedback();
 }
 function rpExpireCheck() {
@@ -9566,7 +9672,7 @@ if (moreBrick) {
 }
 window.sendSnakeResult = function (d) {
 if (!d) return;
-addRec({ side: 'in', special: 'snake', snkResult: d.result, snkPLen: d.pLen, snkOLen: d.oLen, snkPFood: d.pFood, snkOFood: d.oFood, snkPScore: d.pScore, snkOScore: d.oScore, snkTime: d.time });
+addRec({ side: 'in', special: 'snake', snkResult: d.result, snkPLen: d.pLen, snkOLen: d.oLen, snkPFood: d.pFood, snkOFood: d.oFood, snkPScore: d.pScore, snkOScore: d.oScore, snkTime: d.time, nightAllow: true });
 // v3.15.x 二调：奖励对齐红包金额体系——胜 80% ¥13.14 / 20% ¥52，平 ¥5.2（日封顶 ¥104）
 // v3.16.x：贪吃蛇改为双方同步同额入账（不再只给赢家），记赚钱流水「贪吃蛇」
 try {
@@ -9579,7 +9685,7 @@ const w = rpWalletGet();
 w.myBalance += real; w.systemBalance += real;
 rpWalletSet(w);
 try { if (window.giftCoinLedgerAdd) window.giftCoinLedgerAdd('earn', real, real, '贪吃蛇'); } catch (e2) {}
-setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke' }), randInt(800, 1600));
+setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke', nightAllow: true }), randInt(800, 1600));
 }
 } catch (e) {}
 if (window.logFish) window.logFish();
@@ -9589,7 +9695,7 @@ hideTyping();
 const grp = d.result === 'win' ? '游戏失败·回应' : d.result === 'lose' ? '游戏胜利·回应' : '游戏平局·回应';
 const pool = window.getInteractPool ? window.getInteractPool(grp, ['再来一局？']) : ['再来一局？'];
 const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : '再来一局？';
-addRec({ side: 'in', text: say });
+addRec({ side: 'in', text: say, nightAllow: true });
 }, randInt(900, 1600));
 };
 if (chatCallClose) chatCallClose.addEventListener('click', (e) => { e.stopPropagation(); closeChatCall(); });
