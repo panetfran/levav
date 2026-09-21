@@ -145,8 +145,9 @@
 [data-theme="dark"] #qs-diag .qsdiag-okline { color:#4ade80; }
 [data-theme="dark"] #qs-diag .qsdiag-blocked { color:#f87171; background:rgba(239,68,68,.14); }
 /* #390：词典独立页「防未成年人锁定」提示条——锁定时词典场景开关全开也无效，红条在词典页当场讲清因果（同 qsdiag 红条视觉） */
-.dict-lock-hint { margin:8px 12px 0; font-size:11px; font-weight:600; color:#b3261e; background:rgba(220,38,38,.1); border-radius:8px; padding:6px 9px; line-height:1.6; }
-[data-theme="dark"] .dict-lock-hint { color:#f87171; background:rgba(239,68,68,.14); }
+/* #961：字卡库顶部「字卡太多、不常用词典建议关掉」提醒条复用同一条红色提示视觉（默认聊天字卡页与词典页各一条） */
+.dict-lock-hint, .dc-size-hint { margin:8px 12px 0; font-size:11px; font-weight:600; color:#b3261e; background:rgba(220,38,38,.1); border-radius:8px; padding:6px 9px; line-height:1.6; }
+[data-theme="dark"] .dict-lock-hint, [data-theme="dark"] .dc-size-hint { color:#f87171; background:rgba(239,68,68,.14); }
 .gs-row {
   display:flex; align-items:center; justify-content:space-between; gap:10px;
   padding:12px 14px; border-bottom:1px solid rgba(0,0,0,.05);
@@ -164,6 +165,39 @@
 .gs-row .tag:hover, .gs-row .tag:focus-visible { background:rgba(0,0,0,.06); border-color:rgba(0,0,0,.12); outline:none; }
 [data-theme="dark"] .gs-row .tag { color:#aaa; border-color:rgba(255,255,255,.14); background:rgba(255,255,255,.06); }
 [data-theme="dark"] .gs-row .tag:hover, [data-theme="dark"] .gs-row .tag:focus-visible { background:rgba(255,255,255,.1); border-color:rgba(255,255,255,.2); }
+/* v8.29：设置页平台标记（.plat-tag「仅安卓 / 仅 iPhone」）与「非本机平台」弱化。
+   平台标记故意不复用 .tag：settings-help.js 注入「功能说明」前会跳过行内已有 .tag 的行
+   （label.querySelector('.tag') 命中即 return），复用会让那几行的「功能说明」胶囊整条消失。
+   .plat-off 只弱化标签不 disabled 开关——device.js 的平台判定有 UA 伪装失手面（OPPO/Via
+   伪装 iPhone、桌面版网站模式），识别失手的用户必须仍能点到这个开关。 */
+.set-row .txt .plat-tag {
+  display:inline-block; margin:5px 0 0 6px; font-size:10.5px; font-weight:700; letter-spacing:.3px;
+  line-height:1.4; padding:2px 8px; border-radius:9px; white-space:nowrap;
+  color:#2f6fd0; border:1px solid rgba(47,111,208,.35); background:rgba(47,111,208,.1);
+}
+.gs-row .plat-tag {
+  display:inline-block; flex:none; font-size:10.5px; font-weight:700; letter-spacing:.3px;
+  line-height:1.4; padding:2px 8px; border-radius:9px; white-space:nowrap;
+  color:#2f6fd0; border:1px solid rgba(47,111,208,.35); background:rgba(47,111,208,.1);
+}
+[data-theme="dark"] .set-row .txt .plat-tag, [data-theme="dark"] .gs-row .plat-tag { color:#8ab4f8; border-color:rgba(138,180,248,.35); background:rgba(138,180,248,.12); }
+.set-row.plat-off .txt, .gs-row.plat-off > span { opacity:.6; }
+.plat-hint .plat-go {
+  display:inline-block; margin-left:6px; padding:2px 9px; border-radius:9px; font-weight:700;
+  cursor:pointer; color:#2f6fd0; background:rgba(47,111,208,.12);
+}
+[data-theme="dark"] .plat-hint .plat-go { color:#8ab4f8; background:rgba(138,180,248,.16); }
+@keyframes platFlash { 0% { background:rgba(47,111,208,.18); } 100% { background:rgba(47,111,208,0); } }
+.set-row.plat-flash, .gs-row.plat-flash { animation:platFlash 1.5s ease-out 1; }
+/* #848 设置行右侧「档位胶囊」——非布尔的多档选择（如红包捎话内容三档），点一下弹 pills */
+.gs-pick {
+  flex-shrink:0; font-size:12px; font-weight:600; color:var(--ink); line-height:1.4; white-space:nowrap;
+  border:1px solid rgba(0,0,0,.1); background:rgba(0,0,0,.04); border-radius:99px; padding:6px 12px;
+  cursor:pointer; -webkit-tap-highlight-color:transparent;
+}
+.gs-pick:active { background:rgba(0,0,0,.09); }
+[data-theme="dark"] .gs-pick { color:#ddd; border-color:rgba(255,255,255,.16); background:rgba(255,255,255,.07); }
+[data-theme="dark"] .gs-pick:active { background:rgba(255,255,255,.13); }
 /* #650 多字卡「拼接符号」多选 chips——药丸复用 .gs-row .tag，选中态对齐 .rps-tab.sel；
    .dis＝「拼接随机标点」总开关关闭时置灰（仍可点，方便提前配好符号池） */
 .ppy-chips { display:flex; flex-wrap:wrap; gap:6px 6px; justify-content:flex-end; max-width:62%; }
