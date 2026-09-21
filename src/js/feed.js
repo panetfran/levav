@@ -1087,7 +1087,71 @@
   //     那组硬编码 emoji），而面板只列图片贴纸，用户选不到 TA 会贴的那类。这里把 emoji 抽成
   //     常量 FEED_STICKER_EMOJI，TA 回贴与面板共用，并作为「emoji 贴纸」分组列出。
   const FEED_STICKER_EMOJI = ['\u2764\ufe0f', '\ud83d\ude18', '\ud83e\udd70', '\ud83d\udc4d', '\ud83d\ude02', '\ud83c\udf08', '\u2728', '\ud83c\udf80', '\ud83d\ude3b', '\ud83e\udd17'];
+  // FIX 2026-09-19 #798 用户报「【emoji贴纸】里贴纸不全，没有联系人默认可以使用的全部 emoji 贴纸」：
+  //   #669 把这组兜底常量当成了面板与 TA 回贴的唯一 emoji 来源（10 个），而联系人在聊天/朋友圈里贴的
+  //   emoji 出自「emoji 字卡」池——有自建就用自建，没有则用系统预设 emoji 分类（7 组）。改为与回复池
+  //   同源，常量只在两池皆空时兜底（预设字卡被总闸/分类闸关掉、二级锁、库缺失）；TA 回贴走同一函数，
+  //   维持 #669 的不变式「面板里能选到的＝TA 真的会贴的」。闸门口径照抄本文件朋友圈补池那一段
+  //  （按当前联系人桌面读开关＋单卡停用过滤），关掉「朋友圈使用」时面板不再越权列出预设 emoji。
+  // FIX 2026-09-20 #931 渲染用分组缓存：原来一次交互要「全库拍平」4~5 遍（分组条 1 遍 +
+  //   网格 items 1 遍，而那 1 遍内部又对每个分组各调一次本函数＝TA/我的两库各重复扫描
+  //   groups.length 次）。本函数每次都要过两作用域分组、必要时还整包 parse 预设字卡，
+  //   emoji 字卡池是数百条量级——慢机型上这就是点一下卡一下的同步大头之一。
+  //   口径＝「同一轮只算一次，轮末作废」（不是长期缓存）：一轮内的重复调用复用结果，
+  //   下一次点按必然重算，因此不存在「对方刚更新的表情包看不到」的新问题；库序号（聊天
+  //   字卡池令牌化代数／我的表情包数组身份）变了也立即作废。零机型分支。
+  const stkPoolCache = new Map();
+  function cachedStkPool(key, compute) {
+    const rev = feedStickerLibRev();
+    let cid = 'x';
+    try { cid = (window.__activeCid || 'default') + ''; } catch (e) {}
+    const k = key + '@' + cid + '@' + rev;
+    if (stkPoolCache.has(k)) return stkPoolCache.get(k);
+    const v = compute();
+    if (!stkPoolCache.size) {
+      // 缓存非空时不再排第二班作废微任务（同一轮内微任务不会先跑）
+      Promise.resolve().then(function () { stkPoolCache.clear(); stkItemsCache.clear(); });
+    }
+    stkPoolCache.set(k, v);
+    return v;
+  }
+  const stkItemsCache = new Map();
+  function feedStickerLibRev() {
+    // 库变→序号变（取不到聊天侧序号时恒 0＝退化为「每事件轮一次」，仍零长期缓存风险）
+    try { if (window.feedStickerLibRev) return window.feedStickerLibRev(); } catch (e) {}
+    return 0;
+  }
+  function feedStickerEmojiPoolBuild() {
+    const out = [], seen = new Set();
+    const add = (v) => { if (typeof v === 'string' && v && !seen.has(v)) { seen.add(v); out.push(v); } };
+    try {
+      ['public', 'own'].forEach(sc => {
+        ((window.getScopedGroups && window.getScopedGroups('emoji', sc)) || []).forEach(g => (g[1] || []).forEach(add));
+      });
+    } catch (e) {}
+    if (!out.length) {
+      try {
+        const st = window.storeFor ? window.storeFor(window.__activeCid || 'default') : null;
+        const a = (window.defaultCardApiFor && st) ? window.defaultCardApiFor(st) : null;
+        const useFeed = a ? a.use('feed') : (window.defaultCardUse ? window.defaultCardUse('feed') : true);
+        const en = a ? a.enabled() : ((window.defaultCardCfg && window.defaultCardCfg().enabled) !== false);
+        if (en && useFeed && window.getDefaultCardGroups) {
+          const catOn = a ? a.cat : (window.defaultCardCat || (() => true));
+          const isOff = a ? a.isOff : (window.isDefaultCardOff || null);
+          if (catOn('emoji')) (window.getDefaultCardGroups('emoji') || []).forEach(g => (g[1] || []).forEach(c => { if (isOff && isOff('emoji', c)) return; add(c); }));
+        }
+      } catch (e) {}
+    }
+    if (!out.length) FEED_STICKER_EMOJI.forEach(add);
+    return out;
+  }
+  function feedStickerEmojiPool() {
+    return cachedStkPool('emojiPool', feedStickerEmojiPoolBuild);
+  }
   function feedStickerGroups() {
+    return cachedStkPool('groups', feedStickerGroupsBuild);
+  }
+  function feedStickerGroupsBuild() {
     const savedTab = comStickerTab;
     let ta = [], mine = [];
     try { comStickerTab = 'ta'; ta = comStickerGroups(); } catch (e) { ta = []; }
@@ -1096,21 +1160,30 @@
     const out = [];
     (ta || []).forEach((g, i) => { if (g && g[1] && g[1].length) out.push({ key: 'ta' + i, label: String(g[0]), kind: 'img', items: g[1] }); });
     (mine || []).forEach((g, i) => { if (g && g[1] && g[1].length) out.push({ key: 'mn' + i, label: '\u6211\u7684\u00b7' + String(g[0]), kind: 'img', items: g[1] }); });
-    out.push({ key: 'em', label: 'emoji \u8d34\u7eb8', kind: 'emoji', items: FEED_STICKER_EMOJI });
+    out.push({ key: 'em', label: 'emoji \u8d34\u7eb8', kind: 'emoji', items: feedStickerEmojiPool() });
     return out;
   }
   let feedStickerCard = null;
   let feedStickerCur = '';
   // 当前分组的条目（''＝全部：分组顺序在前、emoji 收尾，与旧版平铺一致）
+  // FIX 2026-09-20 #931 同一轮内分组条与网格各要一次这份列表：「全部」视图要新建上百个
+  //   包装对象，按 当前分组＋桌面＋库序号 缓存，命中直接复用（返回形态与旧实现一致）。
   function feedStickerItems() {
+    let cid = 'x';
+    try { cid = (window.__activeCid || 'default') + ''; } catch (e) {}
+    const ck = (feedStickerCur || '') + '@' + cid + '@' + feedStickerLibRev();
+    if (stkItemsCache.has(ck)) return stkItemsCache.get(ck);
     const groups = feedStickerGroups();
+    let out;
     if (!feedStickerCur) {
-      const all = [];
-      groups.forEach(g => g.items.forEach(v => all.push({ kind: g.kind, v: v })));
-      return all;
+      out = [];
+      groups.forEach(g => g.items.forEach(v => out.push({ kind: g.kind, v: v })));
+    } else {
+      const g = groups.find(x => x.key === feedStickerCur);
+      out = g ? g.items.map(v => ({ kind: g.kind, v: v })) : [];
     }
-    const g = groups.find(x => x.key === feedStickerCur);
-    return g ? g.items.map(v => ({ kind: g.kind, v: v })) : [];
+    stkItemsCache.set(ck, out);
+    return out;
   }
   function feedRenderStickerBar() {
     const bar = document.getElementById('feed-sticker-groups');
@@ -1134,25 +1207,176 @@
     });
     bar.hidden = groups.length <= 1;   // 只有 emoji 一组时不显示胶囊栏
   }
+  // FIX 2026-09-20 #931 贴纸面板「点开非常卡顿」根治：本面板的图改用聊天表情面板那套已实证
+  //   机制（#435 进视口才补 src + decoding=async、#662 同身份节点回收复用、#435 令牌批量预热），
+  //   零机型分支。原实现＝当前视图全部贴纸一次性 img.src=dataURL/令牌 同步挂进 DOM：实测 150 张
+  //   库里 150/150 立刻带 src、0 张 async 解码（每张 20~68KB 的 dataURL 赋值就是 200ms+ 量级的
+  //   同步活），CPU 4x 节流下最坏帧 183ms、两条 longtask，同库的聊天表情面板 0 掉帧；关掉再开
+  //   还 0 个节点被复用＝每次都从零重解码。聊天侧机制取不到时退化为旧「即时 src」路径，行为不减。
+  const feedStickerImgPool = new Map();   // 稳定身份 -> [img 节点]（重写前收、重建时取，跨渲染存活）
+  const FS_IMG_POOL_MAX = 160, FS_IMG_POOL_PER_KEY = 8;
+  function feedStickerPoolKey(src) {
+    try { if (window.ccMediaCardIdent) return window.ccMediaCardIdent(src); } catch (e) {}
+    return typeof src === 'string' ? src : String(src);
+  }
+  function feedStickerTrim() {
+    // 只按「节点总数」裁剪（Map 保序：先丢最早收进来的＝用户已滚远、最不可能马上回看的）
+    // ——身份数不参与上限判定，否则大库里「每身份 1 节点」会被误删到只剩零头。
+    let total = 0;
+    feedStickerImgPool.forEach(list => { total += list.length; });
+    if (total <= FS_IMG_POOL_MAX) return;
+    feedStickerImgPool.forEach((list, k) => { if (total > FS_IMG_POOL_MAX) { total -= list.length; feedStickerImgPool.delete(k); } });
+  }
+  function feedStickerHarvest(list) {
+    if (!list) return;
+    try {
+      const imgs = list.querySelectorAll('img');
+      for (let i = 0; i < imgs.length; i++) {
+        const im = imgs[i];
+        const k = (im.dataset && im.dataset.emojiKey) || '';
+        if (!k || im.__pooled) continue;
+        im.__pooled = true;
+        let arr = feedStickerImgPool.get(k);
+        if (!arr) { arr = []; feedStickerImgPool.set(k, arr); }
+        if (arr.length < FS_IMG_POOL_PER_KEY) arr.push(im);
+      }
+      feedStickerTrim();
+    } catch (e) {}
+  }
+  function feedStickerNewImg() {
+    // 不预置 data-src：本面板图源不进 DOM 属性（见 feedStickerAttach），只挂在节点上
+    const img = document.createElement('img');
+    img.alt = '\u8d34\u7eb8';
+    img.decoding = 'async';   // #435 口径：大 dataURL 解码不占主线程渲染帧
+    return img;
+  }
+  function feedStickerImg(src) {
+    const k = feedStickerPoolKey(src);
+    let img = null;
+    // ① 本面板上一轮收进去的节点优先（已解码的原样复活、还没补 src 的保住未挂状态）
+    const arr = feedStickerImgPool.get(k);
+    if (arr && arr.length) {
+      img = arr.pop();
+      if (!arr.length) feedStickerImgPool.delete(k);
+      img.__pooled = false;
+    }
+    // ② 聊天表情面板回收池里有同身份节点就捡过来（两面板共用一批图时零重解码）
+    if (!img && window.mochiEmojiLazyAdopt) {
+      try {
+        const got = window.mochiEmojiLazyAdopt(src);
+        if (got && got.dataset && got.dataset.emojiKey === k) img = got; // 身份不符＝聊天侧新建的，不要
+      } catch (e) {}
+    }
+    if (!img) img = feedStickerNewImg();
+    try {
+      img.dataset.emojiKey = k;
+      // #931 复用/捡漏回来的节点可能还挂着未补 src 的 data-src：本面板是大 dataURL 图库，
+      // 整格 150 张时那份字符串复制进属性＝面板 innerHTML 实测 1MB（属性写+序列化都是同步活），
+      // 一律挪进 JS 引用，补 src 时由泵从 __emojiLazySrc 取。
+      if (img.dataset && img.dataset.src) {
+        img.__emojiLazySrc = img.dataset.src;
+        img.removeAttribute('data-src');
+      }
+    } catch (e) {}
+    return img;
+  }
+  // 本容器自己的可见性观察器（参数与聊天面板同款：rootMargin 120px，小容器够预读半屏）；
+  // 命中的图交给聊天侧同一条分批泵（全局每 50ms 只补 4 张 src），两面板同时开也不叠加解码并发。
+  let feedStickerObserver = null;
+  let feedStickerObserverOk = false;
+  function feedStickerEnsureObserver(root) {
+    if (feedStickerObserverOk) return feedStickerObserver;
+    feedStickerObserverOk = true;
+    if (!root || !('IntersectionObserver' in window)) { feedStickerObserver = null; return null; }
+    try {
+      feedStickerObserver = new IntersectionObserver((entries) => {
+        for (let i = 0; i < entries.length; i++) {
+          const en = entries[i];
+          if (!en.isIntersecting) continue;
+          feedStickerLoad(en.target);
+        }
+      }, { root, rootMargin: '120px 0px' });
+    } catch (e) { feedStickerObserver = null; }
+    return feedStickerObserver;
+  }
+  function feedStickerLoad(img) {
+    if (!img) return;
+    const src = img.__fsSrc;
+    // 不另设「已排队」标记：节点会被回收池复活，带旧标记早退＝第二次再也补不上 src（实测 3s
+    // 后 50 张只解出 2 张）。幂等交给泵本身——聊天侧队列按节点去重，且 src 已在的属性不重写。
+    if (!src || img.getAttribute('src')) return;
+    if (window.mochiEmojiLazyEnqueue) {
+      try { window.mochiEmojiLazyEnqueue(img, src); return; } catch (e) {}
+    }
+    try { img.src = src; } catch (e) {}   // 无聊天侧机制：即时补 src 兜底（行为不减）
+  }
+  function feedStickerAttach(img, root, src) {
+    if (!img || img.getAttribute('src')) return;
+    img.__fsSrc = src;
+    const ob = feedStickerEnsureObserver(root);
+    if (ob) { try { ob.observe(img); return; } catch (e) {} }
+    feedStickerLoad(img);   // 无 IO 的浏览器：即时补 src 兜底（与聊天面板同口径）
+  }
+  function feedStickerWarmTokens(items) {
+    if (!window.mochiEmojiWarmGroupTokens) return;
+    const arr = [];
+    for (let i = 0; i < items.length; i++) { if (items[i].kind !== 'emoji') arr.push(items[i].v); }
+    try { window.mochiEmojiWarmGroupTokens(arr); } catch (e) {}
+  }
+  function feedStickerSigTarget(items) {
+    // #457 同口径指纹：只取「条数＋身份串长度和＋首尾身份」，身份串本身是 O(1) 片段
+    //（ccMediaCardIdent 用 length+中间 40 字符），不对 20KB dataURL 整串哈希。
+    let cid = 'x';
+    try { cid = (window.__activeCid || 'default') + ''; } catch (e) {}
+    let sig = cid + '|' + (feedStickerCur || '') + '|' + items.length;
+    const ident = (typeof window.ccMediaCardIdent === 'function') ? window.ccMediaCardIdent : null;
+    let tot = 0, mix = 0;
+    for (let i = 0; i < items.length; i++) {
+      const v = items[i].v;
+      const k = ident ? ident(typeof v === 'string' ? v : String(v)) : String(v);
+      tot += k.length;
+      mix = (mix * 31 + k.charCodeAt(0) + k.charCodeAt(k.length - 1)) | 0;   // 逐身份 O(1) 混合：中间某张被换成等长身份也撞不开签名
+    }
+    sig += '|' + tot + '|' + mix;
+    if (items.length) {
+      const f = items[0].v, l = items[items.length - 1].v;
+      sig += '|' + (ident ? ident(String(f)) : String(f)) + '|' + (ident ? ident(String(l)) : String(l));
+    }
+    return sig;
+  }
+  let feedStickerRenderSig = '';
   function feedRenderStickerList() {
     const list = document.getElementById('feed-sticker-list');
     if (!list) return;
-    list.innerHTML = '';
     const items = feedStickerItems();
+    // #931 内容未变且网格仍在＝整块重建零收益（重建＝上百节点回收＋上百次 observe＋样式重排，
+    // 实测重复打开同步 65.9ms，而聊天面板走同款短路只要 8~10ms）。节点原样留着，可见图已解码
+    // 的直接显示，未进视口的仍挂在旧观察器上（观察器不因复用而丢）。
+    const sig = feedStickerSigTarget(items);
+    const grid0 = list.firstElementChild;
+    let imgN = 0;
+    for (let i = 0; i < items.length; i++) { if (items[i].kind !== 'emoji') imgN++; }
+    if (sig && sig === feedStickerRenderSig && grid0 && grid0.classList.contains('emoji-grid') &&
+        grid0.childElementCount === items.length && grid0.querySelectorAll('img').length === imgN) {
+      return;
+    }
+    feedStickerHarvest(list);   // #931 整格重写前先把旧 img 收进回收池（同身份节点下一轮直接取回）
+    list.innerHTML = '';
     if (!items.length) {
+      feedStickerRenderSig = '';
       list.innerHTML = '<div class="ta-empty">\u6682\u65e0\u8d34\u7eb8\uff0c\u8bf7\u5230\u81ea\u5b9a\u4e49\u5b57\u5361 \u2192 \u8868\u60c5\u5305 \u4e0a\u4f20</div>';
       return;
     }
     const grid = document.createElement('div');
     grid.className = 'emoji-grid';
-    items.forEach(it => {
+    items.forEach((it, idx) => {
       const d = document.createElement('div');
       d.className = 'emoji-item';
-      d.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (it.kind === 'emoji') feedPickStickerPos(feedStickerCard.dataset.pid, '', it.v);
-        else feedPickStickerPos(feedStickerCard.dataset.pid, it.v);
-      });
+      // #931 点击不再逐格挂监听（原来一次渲染上百个闭包+上百条监听器）：整张网格一条委托，
+      // 格子上只落下标——大 dataURL 不写进 DOM 属性，落位时再从本轮 items 取源。
+      d.dataset.stkKind = it.kind;
+      d.dataset.stkIdx = String(idx);
+      grid.appendChild(d);
       if (it.kind === 'emoji') {
         // emoji 贴纸：与照片上已贴的 emoji 同一样式（.feed-sticker-emoji，样式复用零新增）
         const sp = document.createElement('span');
@@ -1160,14 +1384,24 @@
         sp.textContent = it.v;
         d.appendChild(sp);
       } else {
-        const img = document.createElement('img');
-        img.src = it.v;
-        img.alt = '\u8d34\u7eb8';
+        const img = feedStickerImg(it.v);
         d.appendChild(img);
+        feedStickerAttach(img, list, it.v);
       }
-      grid.appendChild(d);
+    });
+    grid.addEventListener('click', (e) => {
+      const d = e.target && e.target.closest ? e.target.closest('.emoji-item') : null;
+      if (!d || !grid.contains(d)) return;
+      e.stopPropagation();
+      const pid = feedStickerCard ? feedStickerCard.dataset.pid : '';
+      const it = items[Number(d.dataset.stkIdx)];
+      if (!it) return;
+      if (it.kind === 'emoji') feedPickStickerPos(pid, '', it.v);
+      else feedPickStickerPos(pid, it.v);
     });
     list.appendChild(grid);
+    feedStickerRenderSig = sig;   // #931 只记「确实按本轮 items 建完」的那一次
+    feedStickerWarmTokens(items);   // #931 令牌交给媒体池批量预热（不等逐图排队单读）
   }
   function openFeedStickerPanel(pid) {
     if (!feedStickerCard) {
@@ -1303,8 +1537,9 @@
     const srcs = [];
     g.forEach(x => (x[1] || []).forEach(s => srcs.push(s)));
     if (srcs.length && Math.random() < 0.7) return { src: srcs[Math.floor(Math.random() * srcs.length)] };
-    // FIX 2026-09-17 #669 与贴纸面板「emoji 贴纸」分组共用同一常量（面板要能选到 TA 会贴的那种）
-    return { emoji: FEED_STICKER_EMOJI[Math.floor(Math.random() * FEED_STICKER_EMOJI.length)] };
+    // FIX 2026-09-19 #798 改走与面板同源的 emoji 池（池空时该函数自己回落到 FEED_STICKER_EMOJI）
+    const em = feedStickerEmojiPool();
+    return { emoji: em[Math.floor(Math.random() * em.length)] };
   }
   function removeFeedSticker(pid, i) {
     if (!window.openModal) return;
@@ -2196,7 +2431,8 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
       e.stopPropagation();
       // FIX 2026-09-18 #756：原 fromLabel 早退在「label 存在但国产内核不转发」时连 JS 兜底
       // 一起跳过＝完全没反应；改为 guard 事后确认未弹出再补 click
-      var _fb = () => { try { feedAvPickInput.click(); } catch (err) { toast('无法打开相册，请重试'); } };
+      // FIX 2026-09-20 #920：兜底腿改走全站统一三腿（showPicker→click；小米系对合成 click 静默不弹）
+      var _fb = () => { window.mochiFilePickFire(feedAvPickInput, { onFail: () => toast('无法打开相册，请重试') }); };
       if (window.mochiFilePickGuard) window.mochiFilePickGuard(feedAvPickInput, _fb);
       else _fb();
     });
@@ -2403,9 +2639,6 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
   // 单个联系人的 TA 自动发动态（用该联系人自己的字卡 + TA 身份）
   function maybeAutoPostFor(cid) {
     try {
-      // #876 夜间静默：TA 自动发动态夜间不生成——不写 feed-last/计数（周期保持到期），
-      // 7:00 后下一个 60 秒轮询照常补发；聊天提示另由 addRec 总闸兜底
-      if (window.nightModeActive && window.nightModeActive()) return;
       const cs = window.storeFor(cid);
       const now = Date.now();
       // v3.7.x：各桌面的 TA 用各自桌面的朋友圈设置（原实现用当前桌面 cfg，串设置）

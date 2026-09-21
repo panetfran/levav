@@ -26,6 +26,18 @@
     } catch (e) {}
   })();
   (function () {
+  // #961 字卡库顶部标红提醒（聊天默认字卡页 #dc-size-hint、词典页 #dict-size-hint）：两池体量很大，
+  //   不常用词典时建议关掉。文案唯一来源＝card-lock.js 的 window.mochiPresetSizeTip（二级密码解锁
+  //   成功弹窗用同一份），本处只负责填字；放在页面锚点守卫之前——它的两个容器与字卡列表无关，
+  //   列表锚点以后若改名也不该让提醒条变成空白。
+  (function presetSizeHints() {
+    const tip = window.mochiPresetSizeTip;
+    if (!tip) return;
+    ['dc-size-hint', 'dict-size-hint'].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = tip;
+    });
+  })();
   const list = document.getElementById('dc-list');
   const tabsWrap = document.getElementById('dc-tabs');
   const enabledEl = document.getElementById('dc-enabled');
@@ -46,6 +58,43 @@
     const s = String(txt == null ? '' : txt);
     toast((off ? '已关闭：' : '已开启：') + (s.length > 18 ? s.slice(0, 18) + '…' : s));
   }
+  // ================= #926 分组开关（整组停用/启用） =================
+  // 此前只能逐张关闭（dc-off-<分类>:<内容>），一个分组几十上百张（词典「常用词·双字」
+  // 1380 张），想停用一整组只能一张张点。补一层分组开关，与自定义字卡库的 cc-groups-off
+  // 同构同形态：存 <桌面>:dc-groups-off = { 分类: [分组名, ...] }（按联系人桌面独立，同 dc-off-*）。
+  // 生效口径＝「该组内全部字卡视为已关闭」，收在 isOff 这一个消费端总闸上——聊天混入/群聊/
+  // 写信/朋友圈/日历/词典拼字/梦角造句/各功能同源池全部自动跟上，无需逐个加分支。
+  // 单卡开关各自的存值一字不动：分组开关只是叠一层，重新启用分组即恢复原状。
+  const GOFF_KEY = 'dc-groups-off';
+  let goffRaw = null;   // 单格缓存：读到的原始值没变才复用解析结果（切桌面读到另一桌面的值＝自动重解析）
+  let goffObj = null;
+  const goffExp = {};   // 分类 -> { src, names, set }：停用组内文案展开；没有分组停用时不建、不占内存
+  function groupOffRecord(st) {
+    let raw = null;
+    try { raw = st.get(GOFF_KEY); } catch (e) { return null; }
+    if (raw === goffRaw) return goffObj;
+    let o = null;
+    try {
+      if (raw) { const p = JSON.parse(raw); if (p && typeof p === 'object' && !Array.isArray(p)) o = p; }
+    } catch (e) {}
+    goffRaw = raw; goffObj = o;
+    return o;
+  }
+  function groupOffTexts(cat, names) {
+    const src = DATA[cat] || [];
+    const e = goffExp[cat];
+    if (e && e.src === src && e.names === names) return e.set;
+    const kill = new Set(names), set = new Set();
+    src.forEach(g => { if (kill.has(g[0])) (g[1] || []).forEach(c => set.add(c)); });
+    goffExp[cat] = { src, names, set };
+    return set;
+  }
+  // 同一条文案出现在多个分组时，任一所在分组停用即算停用（保守：停用即不出现）
+  function groupOffFor(cat, c, st) {
+    const o = groupOffRecord(st);
+    const names = o && o[cat];
+    return !!(names && names.length) && groupOffTexts(cat, names).has(c);
+  }
   // ---- 开关/概率读取（store 参数化）----
   // 所有 dc-* 键都按桌面（联系人命名空间）独立保存；顶层 API 绑 activeStore（当前
   // 桌面），群聊等跨桌面场景用 defaultCardApiFor(目标桌面 store) 按成员自己的桌面读。
@@ -59,7 +108,10 @@
     const gP = function (k) { const v = st.get('dc-prob-' + k); return v === null ? 25 : Number(v); };
     const gU = function (k) { const v = st.get('dc-use-' + k); return v === null ? true : v === '1'; };
     const gC = function (k) { const v = st.get('dc-cat-' + k); return v === null ? true : v === '1'; };
-    const gOff = function (cat, c) { return st.get('dc-off-' + cat + ':' + c) === '1'; };
+    const gOff = function (cat, c) {
+      if (st.get('dc-off-' + cat + ':' + c) === '1') return true;
+      return groupOffFor(cat, c, st);
+    };
     return {
       enabled: gE,
       overall: gO,
@@ -246,6 +298,23 @@
   // v3.6.x：暴露单卡开关查询（供 chat.js 字卡池兜底过滤：自定义字卡为空时
   //   系统字卡补池也必须跳过用户已关闭的字卡）
   window.isDefaultCardOff = function (cat, c) { return isCardOff(cat, c); };
+  // #926：分组开关读写（当前桌面）——写时整份重写，不改缓存里的对象（缓存靠 raw/数组引用失效）
+  function isGroupOff(cat, gname) {
+    const o = groupOffRecord(ls);
+    const names = o && o[cat];
+    return !!(names && names.indexOf(gname) >= 0);
+  }
+  function setGroupOff(cat, gname, off) {
+    const cur = groupOffRecord(ls) || {};
+    const arr = (cur[cat] || []).slice();
+    const i = arr.indexOf(gname);
+    if (off && i < 0) arr.push(gname);
+    if (!off && i >= 0) arr.splice(i, 1);
+    const next = {};
+    Object.keys(cur).forEach(k => { if (k !== cat && Array.isArray(cur[k]) && cur[k].length) next[k] = cur[k].slice(); });
+    if (arr.length) next[cat] = arr;
+    ls.set(GOFF_KEY, JSON.stringify(next));
+  }
 
   // ---- 页面 UI ----
   let cur = 'main';
@@ -276,7 +345,8 @@
     const note = document.createElement('div');
     note.id = 'dc-scope-note';
     note.style.cssText = 'margin:8px 12px 10px;font-size:11px;line-height:1.6;color:#999;';
-    note.textContent = '以上开关按当前桌面对应的联系人独立保存：当当前桌面联系人关闭【聊天使用】，聊天和群聊里这个联系人也无法使用默认字卡（其他联系人不受影响）。';
+    note.textContent = '以上开关按当前桌面对应的联系人独立保存：当当前桌面联系人关闭【聊天使用】，聊天和群聊里这个联系人也无法使用默认字卡（其他联系人不受影响）。\n下方字卡列表里，每个分组标题右侧的开关是「整组停用/启用」——停用后本组字卡全部不再使用，组内每张卡自己的开关一字不改，重新启用分组即恢复原样。';
+    note.style.whiteSpace = 'pre-line';
     grp.parentNode.insertBefore(note, grp.nextSibling);
   })();
   // v3.8.x：分类开关绑定——主字卡 / 颜文字 / emoji / 拍一拍 分别控制默认字卡分类使用
@@ -486,7 +556,7 @@
   //   点击弹 openModal 静态说明，讲清该功能何时触发、概率控制什么、如何彻底关。用事件委托避免
   //   为每个分类单独绑监听。
   const DCF_DESC = {
-    fish: '【摸鱼】联系人按你摸鱼/钓鱼的进度，在桌面上飘出「摸鱼浮字」打趣你；点击浮字可抓包，抓包后双方摸鱼值翻倍，并在聊天里回应。\n触发时机：页面在前台时每 60 秒检查一次摸鱼值变化，仅在摸鱼值上涨、距上次 ≥45 分钟、当天不超过 12 次时判定；后台不触发。\n概率 = 每次判定出现浮字的概率（默认 35%），0% = 不出现浮字（本页字卡也可逐张关闭）。',
+    fish: '【摸鱼】联系人按你摸鱼/钓鱼的进度，在桌面上飘出「摸鱼浮字」打趣你；点击浮字可抓包，抓包会结算 TA 自上次被抓以来涨的全部摸鱼值（TA 补一份总账、你得同额），并在聊天里回应。\n触发时机：页面在前台时每 60 秒检查一次摸鱼值变化，仅在摸鱼值上涨、距上次 ≥45 分钟、当天不超过 12 次时判定；后台不触发。\n概率 = 每次判定出现浮字的概率（默认 35%），0% = 不出现浮字（本页字卡也可逐张关闭）。',
     eat: '【吃饭】到饭点（早 06:30–09:30、午 11:00–13:30、晚 17:00–19:30、夜宵 21:30–23:30）时，联系人主动来聊天提醒你吃饭，并按概率补一句「追问关心」（夜宵时段用夜宵关心话术）。\n触发时机：每 4 分钟判定一次，每个饭点每天只提醒一次，23:00–06:00 静默。主提醒由本功能自带的概率（默认 2%）控制；本项概率只控制提醒之后是否补发追问。\n概率 = 补发追问的概率（默认 35%），0% = 只提醒、不追问。',
     period: '【经期·温柔化】处于经期时，联系人的每条文字回复有概率被加上温柔前缀/后缀（如「抱抱」「慢慢来」）。\n触发时机：TA 每生成一条文字回复时判定一次，仅经期生效。\n概率 = 每条回复被温柔化的概率（默认 25%），0% = 不加温柔前缀/后缀。\n拼接时前缀、正文、动作各自是一张字卡，中间空一格（与单气泡拼字同款，不是被粘成一串）。\n（本项属经期专属语态，与「回复设置→字卡·拼字」的多字卡回复/词典拼字/梦角自由造句是两回事——那边全关也只停各自玩法；想停掉温柔语态只认本页概率与逐张开关。）\n（预测期的「梦角关心」是独立的一项「TA的关心」，另见其说明。）',
     water: '【喝水】每天 06:00–23:00，联系人会来聊天里催你喝水；当天已打卡达标时改为约 1/4 概率发夸奖。\n触发时机：页面在前台时每 8 分钟判定一次，至少隔 50 分钟、每天最多 4 条；打开喝水页时也可能补发；后台不触发。\n概率 = 每次判定发出催水的概率（默认 35%），0% = 完全不催。',
@@ -613,6 +683,9 @@
     const viewSearch = document.getElementById(ids.search);
     const pageEl = document.getElementById(ids.page);
     if (!viewList || !viewTabs || !viewBar || !viewSearch || !pageEl) return null;
+    // #926：四个预设字卡列表（默认聊天字卡/功能字卡/词典/查岗）共用的分组开关样式锚，
+    // 只打在这批列表容器上——#emoji-list、#poke-list 等同样用 .cc-group-header 但没有开关
+    viewList.classList.add('preset-list');
     const view = {
       keys: allowedKeys.slice(),
       searchKeys: (searchKeys || []).slice(),
@@ -703,11 +776,18 @@
       while (a < b) { const m = (a + b) >> 1; if (offs[m] <= y) a = m + 1; else b = m; }
       return Math.max(0, Math.min(n - 1, a - 1));
     }
+    function groupHeaderHTML(label, count, off) {
+      return '<span class="ccg-name">' + label + (off ? '<em class="ccg-off-tag">已停用</em>' : '') + '</span>' +
+        '<span class="ccg-count">' + count + '</span>' +
+        '<label class="toggle ccard-toggle" title="' + (off ? '启用该分组' : '停用该分组') + '"><input type="checkbox"' + (off ? '' : ' checked') + '><span class="tk"></span></label>';
+    }
     function makeNode(it, i) {
       const d = document.createElement('div');
       if (it.header) {
-        d.className = 'cc-group-header';
-        d.innerHTML = '<span class="ccg-name">' + it.gname + '</span><span class="ccg-count">' + it.count + '</span>';
+        // #926：分组标题右侧整组开关——停用后该组字卡一律不参与抽取（组内单卡开关各自存值不变）
+        const goff = isGroupOff(it.cat, it.gname);
+        d.className = 'cc-group-header' + (goff ? ' off' : '');
+        d.innerHTML = groupHeaderHTML(it.glabel, it.count, goff);
       } else {
         const off = isCardOff(it.cat, it.c);
         d.className = 'cc-item glass' + (off ? ' off' : '');
@@ -831,7 +911,7 @@
       }
       const list = [];
       shown.forEach(it => {
-        list.push({ header: true, gname: (it.key !== view.cur ? '[' + tabLabel(it.key) + '] ' : '') + it.gname, count: it.arr.length });
+        list.push({ header: true, cat: it.key, gname: it.gname, glabel: (it.key !== view.cur ? '[' + tabLabel(it.key) + '] ' : '') + it.gname, count: it.arr.length });
         it.arr.forEach(c => list.push({ header: false, c, cat: it.key }));
       });
       flat = list; n = list.length;
@@ -848,6 +928,17 @@
     viewList.addEventListener('change', (e) => {
       const input = e.target;
       if (!input || input.type !== 'checkbox') return;
+      const head = input.closest('.cc-group-header');
+      if (head) {
+        const hrec = flat[Number(head.dataset.idx)];
+        if (!hrec || !hrec.header) return;
+        const nowOff = !input.checked;
+        setGroupOff(hrec.cat, hrec.gname, nowOff);
+        // 「已停用」徽标可能让分组头换行变高：整窗重排一次，顺带重测高度（滚动位置不漂）
+        requestLayout(true);
+        toast(nowOff ? '已停用分组：' + hrec.gname + '（本组 ' + hrec.count + ' 张字卡不再使用）' : '已启用分组：' + hrec.gname);
+        return;
+      }
       const item = input.closest('.cc-item');
       if (!item) return;
       const rec = flat[Number(item.dataset.idx)];

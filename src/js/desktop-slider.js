@@ -119,14 +119,54 @@
     requestAnimationFrame(tick);
   }
 
+  // ===== #884：切回桌面帧耗时现场采样 =====
+  // 用户主诉「聊天返回主页面卡、主页面切换卡」（iPhone 15 Pro / 16 Pro 实报，iOS 18.7 PWA），
+  // 而诊断里「实测帧率」是静态页读数、「桌面翻页帧耗时」只采左右滑——切页现场没尺子。
+  // 本采样器在 page-phone 从隐藏变可见那一刻起采 30 帧（≈0.5s，覆盖切页布局+栅格化窗口），
+  // 写 xy-home-v2:__diag-swperf，device.js 诊断【性能】段读出。约束同 #690：只在切页瞬间
+  // 采、采满即停；每帧只做 now 相减 + push；同一次隐藏→可见只起采一回（swOn 闸）；
+  // 后台冻结帧只重置基线不记样本（#707 同款）。
+  const SW_KEY = 'xy-home-v2:__diag-swperf';
+  const SW_FRAMES = 30;
+  function swSample() {
+    if (swOn) return;
+    // FIX 2026-09-20 #943e：自动采样限频——原实现每次从聊天/设置切回桌面都开一轮 30 帧
+    // rAF 循环，恰在回桌面/翻页的卡顿敏感窗口自我加压（采的正是自己扰动的帧）。限到
+    // 5 分钟一次；设置→性能检测的手动 perfcheck 走 perf-check.js 独立通道，不受影响。
+    const now943 = Date.now();
+    if (now943 - (swSample.last || 0) < 300000) return;
+    swSample.last = now943;
+    swOn = true;
+    const gaps = [];
+    let last = 0, hid = 0;
+    const tick = (now) => {
+      if (document.hidden) { hid++; last = 0; requestAnimationFrame(tick); return; }
+      if (last) gaps.push(now - last);
+      last = now;
+      if (gaps.length < SW_FRAMES) { requestAnimationFrame(tick); return; }
+      swOn = false;
+      gaps.sort((a, b) => a - b);
+      const sum = gaps.reduce((a, b) => a + b, 0);
+      try {
+        localStorage.setItem(SW_KEY, JSON.stringify({
+          t: Date.now(), n: gaps.length, hid: hid,
+          mean: Math.round(sum / gaps.length),
+          p90: Math.round(gaps[Math.floor(gaps.length * 0.9)]),
+          worst: Math.round(gaps[gaps.length - 1])
+        }));
+      } catch (e) {}
+    };
+    requestAnimationFrame(tick);
+  }
+  let swOn = false;
+
   // v3.27.x（#580）：滚动中每帧跟随——手指滑到哪，圆点跟到哪（原来只在松手后 120ms 才动）
   let rafId = 0;
   let settleTimer = null;
   function syncFrame() {
     rafId = 0;
     sync();
-  }
-  pages.addEventListener('scroll', () => {
+  }  pages.addEventListener('scroll', () => {
     if (!rafId) rafId = requestAnimationFrame(syncFrame);
     perfSample(); // #690：翻页现场记一段帧耗时（静止时不跑）
     // 吸附/回弹终点再校一次：末次 scroll 事件与 snap 终点可能差一帧亚像素；
@@ -157,6 +197,7 @@
         refreshCache();
         pages.scrollLeft = idx * pageStep();
         sync();
+        swSample(); // #884：从聊天/其他页切回桌面那一刻现场采一段帧耗时
       }
     });
     mo.observe(phonePage, { attributes: true, attributeFilter: ['hidden'] });

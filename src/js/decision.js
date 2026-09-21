@@ -203,6 +203,10 @@
   function closePanel() {
     if (panel) panel.hidden = true;
   }
+  // FIX 2026-09-20 #906：点面板外（聊天记录/输入栏/桌面）关闭——用户报「帮我决定点屏幕其他地方关不掉」。
+  // 本半框自建立起就没有 document 层点外关闭路径（同族的拍一拍/表情包/寻踪都有），只能点 ✕。
+  // 判据（刚开不关 / 弹窗遮罩不算点外 / 走 ✕ 同一条关闭路）统一在 chat.js 的 mochiSheetOutsideClose。
+  if (window.mochiSheetOutsideClose) window.mochiSheetOutsideClose(panel, closePanel);
   function panelHtml() {
     return '' +
       '<div class="dc-tabs"><button class="dc-tab sel" data-dtab="typea">是/否/半对</button>' +
@@ -358,8 +362,15 @@
           const replyText = type === 'typeb' && options
             ? '【帮我决定】' + question + '\n选项：\n' + options.map((o, i) => (i + 1) + '. ' + o).join('\n') + '\n→ ' + result
             : '【帮我决定】' + question + ' → ' + result;
-          if (panelFromGroup && window.gcSendDecisionText) window.gcSendDecisionText(replyText);
-          else if (window.chatAddIn) window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true, nightAllow: true }); // FIX 2026-09-15 #492 帮我决定结果是用户主动触发，跟底不吃 in 侧钉住闸（chat.js follow 通道）；FIX 2026-09-15 #544 dedupExempt 决定答案豁免收件侧去重（快速重跑同问题同文答案被 2500ms 窗静默吞且连锁吞多条，用户视角「联系人消息被吞了几条」。#544 编号顺延：#542 已被并行会话（房间亮度）占用）
+          if (panelFromGroup && window.gcSendDecisionText) window.gcSendDecisionText(replyText); // 群聊那一路自己响 playSfxGc('in')，此处不补（补了就是两声）
+          else if (window.chatAddIn) {
+            window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true }); // FIX 2026-09-15 #492 帮我决定结果是用户主动触发，跟底不吃 in 侧钉住闸（chat.js follow 通道）；FIX 2026-09-15 #544 dedupExempt 决定答案豁免收件侧去重（快速重跑同问题同文答案被 2500ms 窗静默吞且连锁吞多条，用户视角「联系人消息被吞了几条」。#544 编号顺延：#542 已被并行会话（房间亮度）占用）
+            // #968 单聊这一路要自己补响「联系人发送和回复消息」音效（用户直派「结果发送到聊天，需要触发
+            // 联系人发消息的音效」）：silent:true 当初只用来压桌面横幅（结果不是 TA 真发来的消息），
+            // 但 v3.26.x 给 addIn 加了收消息音效后，同一枚标记也被那道闸门认下（chat.js `!opts.silent`）
+            // ＝单聊决定结果一声不响。只补音效、silent 保留（横幅语义不动），与其他入口听感一致。
+            try { if (window.playSfx) window.playSfx('in'); } catch (e) {} // FIX 2026-09-21 #968 帮我决定结果响收消息音效
+          }
         }
         toast('帮我决定已完成');
       };
@@ -390,8 +401,10 @@
           '<div class="dc-h-result">→ ' + esc(r.result) + '</div>' +
           '<div class="dc-h-time">' + fmtDT(r.ts) + '</div></div>'
         ).join('')
-      : '<div class="ta-empty">暂无帮我决定记录</div>';
+      : ((window.mochiDataPending && window.mochiDataPending()) ? window.mochiLoadingHtml('决定记录') : '<div class="ta-empty">暂无帮我决定记录</div>');
   }
+  // #797：回填完成补渲一次（renderHistory 现读现画幂等；只写文本，页面关着也无害）
+  if (window.mochiOnDataReady) window.mochiOnDataReady(function () { try { renderHistory(); } catch (e) {} });
 
   // 入口：聊天更多功能 → 帮我决定（chat.js 里 more-decide 调用）
   // v3.27.x #421b：不再整体覆盖 window.openDecision（顶部已挂分派器），回填真实实现引用即可

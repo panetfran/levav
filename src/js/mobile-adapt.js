@@ -1653,6 +1653,10 @@
         // #479：#369 钉高时刻——「钉高前提失败阀」用（钉后 10s 内核仍不回全屏高且
         // 用户在深缩态有新交互＝在用这个窗口尺寸，放弃钉高、基线重锚到现实）。
         var _aVpPinAt = 0;
+        // FIX 2026-09-20 #916：稳态高度对账状态——_aFitPend=上一拍实测的期望底边（两拍
+        // 同值才动手＝避开工具条显隐动画中途）；_aFitPin=对账内联钉高在位。
+        var _aFitPend = null;
+        var _aFitPin = false;
         // FIX 2026-09-05 #209：稳态停靠残留清扫（安卓侧唯一视口看门狗——iOS 侧
         // healViewport 在 isIOS 分支，安卓不经过；device.js 监视只读不修）。
         // 场景：安卓返回键/手势收键盘不派 blur（activeElement 保留），#197 族
@@ -1820,14 +1824,63 @@
               _aPhone.style.alignSelf = '';
               return;
             }
-            if (!_aPhone.style.height && !_aPhone.style.alignSelf) return;
-            var _hNow = Math.round(_aVV.height || 0);
-            if (_hNow <= 0 || _hNow < _aH - 12) return;
-            if ((window.innerHeight || 0) < _aIH - 12) return;
-            _aPhone.style.height = '';
-            _aPhone.style.alignSelf = '';
-            _aPanComp();
-            kbUndockPanels();
+            // #916：原「无内联高即早退」改为包一层——稳态高度对账（下方 #916 块）必须
+            // 每拍都能跑到（发病态恰恰是【没有】内联高而 dvh 滞留）；键盘残留清扫语义
+            // 原样保留（有内联高且视口回基线才清）。
+            var _aInlineHad = !!(_aPhone.style.height || _aPhone.style.alignSelf);
+            if (_aInlineHad) {
+              var _hNow = Math.round(_aVV.height || 0);
+              if (_hNow > 0 && _hNow >= _aH - 12 && (window.innerHeight || 0) >= _aIH - 12) {
+                _aPhone.style.height = '';
+                _aPhone.style.alignSelf = '';
+                _aPanComp();
+                kbUndockPanels();
+              }
+            }
+            // FIX 2026-09-20 #916：安卓浏览器稳态高度对账（「顶部白条/显示不全、聊天页
+            // 闪动、刷新才恢复」根治——OPPO Find X8s + Edge 实报，用户明说多机型同现）。
+            // 现场签名（错误环多日反复）：inner=725 不动而 .phone 底边=699（少填 26px 白带）
+            // 或 =751（超出 26px、tabbar 被裁）——26px=Edge 底部工具条高。根因：工具条
+            // 显隐切换布局视口高度时，该内核的 100dvh 读数滞后/滞留旧值（CSS 唯一高度
+            // 来源），而本模块的实测写高链路（syncVvFit/--mochi-ios-h）在 isIOS 分支，
+            // 安卓稳态无人重写 → 白带/跳动持续到用户手动刷新。修法（零机型分支、纯结果
+            // 量）：本 1s 看门狗稳态期（无键盘会话/无推定停靠/无 #369 钉高、无文本聚焦、
+            // vv≈inner±12 排除键盘与动画中途、vv 读数已稳 1.2s、非 standalone PWA——
+            // standalone 的 dvh 语义不同走既有形态链）实测 .phone 底边 vs innerHeight，
+            // 偏差 >8px 连续两拍同值才把 .phone 内联钉高到实测期望值（内联赢选择器，
+            // dvh 滞留不再生效）；偏差回 ≤8px（dvh 自行恢复/旋转/窗口变化后）摘除钉高
+            // 回落 CSS。上方清扫块每拍先清内联再落到这里＝钉高态每拍「清→实测→复钉」
+            // 单拍内完成，渲染帧始终是钉正后的形态，无来回抖动。健康设备偏差恒 ≤8px、
+            // 零写入零重排，行为零变化。
+            try {
+              var _aExpB = window.innerHeight || 0;
+              var _aVvQ = Math.round(_aVV.height || 0);
+              var _aFitGo = _aExpB > 0 && _aVvQ > 0 && _coarse && !_aVpPin && !_aKb && !_aProv
+                && Math.abs(_ihNow - _aVvQ) <= 12
+                && !_aIsText(document.activeElement) && !_aIsText(_aTextFocused)
+                && Date.now() - _aVvChgAt > 1200
+                && !(window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+              if (_aFitGo) {
+                var _aPbNow = Math.round(_aPhone.getBoundingClientRect().bottom);
+                var _aDev = (_aPbNow > 0) ? (_aPbNow - _aExpB) : 0;
+                if (_aDev > 8 || _aDev < -8) {
+                  if (_aFitPend === _aExpB) {
+                    if (_aPhone.style.height !== _aExpB + 'px') _aPhone.style.height = _aExpB + 'px';
+                    _aFitPin = true;
+                    _aPanComp();
+                  } else {
+                    _aFitPend = _aExpB; // 首见只记账，下一拍（≥1s 后）同值才动手
+                  }
+                } else {
+                  _aFitPend = null;
+                  if (_aFitPin) { _aPhone.style.height = ''; _aFitPin = false; _aPanComp(); }
+                }
+              } else {
+                // 守卫不满足（键盘/聚焦/动画期/standalone）→ 摘对账钉高让既有链接管
+                _aFitPend = null;
+                if (_aFitPin) { _aPhone.style.height = ''; _aFitPin = false; }
+              }
+            } catch (eFit) {}
           } catch (e) {}
         }, 1000);
         // v3.26.x：安卓键盘内部状态只读探针（与 iOS __mochiIosKb 同字段名，供
@@ -2008,10 +2061,37 @@
             else d.style.removeProperty('--mochi-safe-bottom');
           } catch (e) {}
         }
+        // FIX 2026-09-19 #810：键盘弹出「整个页面被缩小、两边和底部大面积露底色」自愈的状态。
+        // 华为 nova 10 SE 华为系统自带浏览器实报「点输入框弹键盘：页面被顶上去+画面缩小+
+        // 两侧和底部大面积留白+严重卡顿」，用户明说其他机型也有、要求勿致跨机型回归。
+        // 这类内核键盘弹出时不只缩 vv.height，还会把可视视口【缩放】拉到 <1（zoom-out 让出
+        // 键盘+焦点）：页面整体变小、文档外区域露 body 底色＝两侧/底部留白；叠加键盘期的
+        // 逐帧 .phone 高度跟随＝resize 风暴级卡顿。A/B 两串等价仅 scale 写法（1.0↔1）不同＝
+        // 交替写保证 setAttribute 每次都是真实变更、强制内核重新解析。
+        var _aZoomFixCnt = 0, _aZoomFixAt = 0;
+        var _aZoomMetaA = 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-visual';
+        var _aZoomMetaB = _aZoomMetaA.replace('initial-scale=1.0', 'initial-scale=1').replace('minimum-scale=1.0', 'minimum-scale=1').replace('maximum-scale=1.0', 'maximum-scale=1');
         function syncAndroidKb() {
           if (!_aVV || !_aPhone) return;
           try { syncSafeBottomA(); } catch (eSB) {}
           var h = _aVV.height;
+          // #810 主判据：键盘/聚焦会话内 vv.scale<0.95＝内核把页面整体缩小了。判据全是内核
+          // 可观测信号（正常内核键盘只缩 height、scale 恒 1，永不触发；缩放只在文本聚焦期
+          // 出现，用户闲时手动捏合缩放不在聚焦态＝不误伤）。处置＝#174 iOS 同款「重写
+          // viewport meta 按 initial-scale=1 吸附回原大」，每会话 ≤3 次、间隔 4s 防循环；
+          // 重写串严格保持 resizes-visual（绝不在键盘会话中途换键盘模型）。
+          if (_aVV.scale && _aVV.scale < 0.95 && (_aKb || _aProv || _aIsText(_aTextFocused) || _aIsText(document.activeElement))) {
+            var _zn = Date.now();
+            if (_aZoomFixCnt < 3 && _zn - _aZoomFixAt > 4000) {
+              _aZoomFixCnt++; _aZoomFixAt = _zn;
+              try {
+                document.querySelectorAll('meta[name="viewport"]').forEach(function (m) {
+                  m.setAttribute('content', (_aZoomFixCnt % 2) ? _aZoomMetaB : _aZoomMetaA);
+                });
+              } catch (eZM) {}
+              window.__mochiKbZoomFix = { n: _aZoomFixCnt, at: _zn, scale: +_aVV.scale.toFixed(2) };
+            }
+          }
           // FIX 2026-09-07 #236：vv 回基准=读数健康，解除残留闩；高度变化刷新稳定
           // 时刻（收起动画每帧都变，1s 看门狗凭「vv 已稳 1.2s」避开动画中途误清）
           if (h >= _aH - 60) _aVvStale = false; // #236：vv 回基准=读数诚实，解除残留闩
@@ -3092,4 +3172,17 @@
       return true;
     }
   };
+})();
+
+/* FIX 2026-09-20 #913 手机发烫收口①：页面切后台（document.hidden）全局暂停 CSS 动画——「后台保活」
+   用户把页面挂在后台/锁屏过夜时，进行中的无限动画（花园摇曳、房间流星/雨、漂流瓶波浪、音频可视化
+   条等）仍按合成器节奏推进＝后台发热/耗电的纯浪费源；音频播放、定时器、保活锚点都不是 CSS 动画，
+   不受影响；回前台移除类名即刻恢复，前台观感零变化。CSS 落点在 base.css（body.mochi-bg-pause）。 */
+(function () {
+  var apply = function () {
+    if (!document.body) return;
+    document.body.classList.toggle('mochi-bg-pause', !!document.hidden); // #911
+  };
+  document.addEventListener("visibilitychange", apply);
+  if (document.body) apply(); else document.addEventListener("DOMContentLoaded", apply);
 })();

@@ -302,6 +302,12 @@
   // ---- 渲染主入口 ----
   function render() {
     if (!root) return;
+    // #797：回填未完成时整体出加载占位（名册/发现卡片/理解变化/共同记录都在恢复数据里，
+    // 占位期也不该触发 ensureArc 之类的建档写入）；done 后由下方 mochiOnDataReady 补渲收敛
+    if (window.mochiDataPending && window.mochiDataPending()) {
+      root.innerHTML = window.mochiLoadingHtml('梦角档案');
+      return;
+    }
     syncCur();
     const r = roster();
     let h = '';
@@ -324,6 +330,8 @@
     h += (view === 'home') ? overviewHTML(arc, r) : sectionHTML(arc, r);
     root.innerHTML = h;
   }
+  // #797：回填完成补渲一次（render 纯重画幂等；pending 占位由这次收敛成真数据/真空态）
+  if (window.mochiOnDataReady) window.mochiOnDataReady(function () { try { render(); } catch (e) {} });
   function activeLovesOf(arc) { return arc.loves.filter(x => x.status !== 'retired'); }
   function filledN(m, keys) { return keys.filter(k => String(m[k] || '').trim()).length; }
 
@@ -718,12 +726,14 @@
     if (it && it.img) {
       window.openModal('这条已配图', '', function (v) {
         if (v === 'del') { delete it.img; saveArc(cur, arc); toast('已移除配图'); render(); }
-        else if (v === 'new') { imgTarget = { kind: kind, id: id }; ensureImgInput().click(); }
+        // FIX 2026-09-20 #920：激活腿改走全站统一三腿（showPicker→click；小米系对合成 click 静默不弹）
+        else if (v === 'new') { imgTarget = { kind: kind, id: id }; window.mochiFilePickFire(ensureImgInput()); }
       }, { noInput: true, pill: 'new', pills: [{ label: '换一张', value: 'new' }, { label: '移除配图', value: 'del' }] });
       return;
     }
     imgTarget = { kind: kind, id: id };
-    ensureImgInput().click();
+    // FIX 2026-09-20 #920：激活腿改走全站统一三腿（showPicker→click；小米系对合成 click 静默不弹）
+    window.mochiFilePickFire(ensureImgInput());
   }
   // FIX 2026-09-18 #755：原实现用 display:none（#717/#738 点名要消灭的写法，部分内核对不可见
   // input 拒绝激活）——改走统一入口的 sr-only clip 常驻 input（挂 body + accept 前置 + label 兜底）

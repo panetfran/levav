@@ -242,6 +242,32 @@
     const out = toks.slice(0, gi).join('') + sep + toks.slice(gi).join('');
     return out !== str ? out : null;
   }
+  // FIX 2026-09-21 #953 句尾标点收口：原各手法要么把句尾标点剥掉（recallCut/suffix/addtail/tailcut
+  // 都先 replace 掉尾标点，recall 截断后尾巴标点也没了），要么只在词间插逗号/空格（comma/space），
+  // 结果造出的句子清一色没有句尾标点（用户实报「梦角自由造句没有使用标点符号」）。在出句唯一
+  // 收口点统一补：句尾已有标点（中英文句读/波浪/省略/引号括号收尾）原样保留，否则按权重掷一个
+  // 句尾标点。
+  // FIX 2026-09-21 #953b 用户直派「使用标点符号也可以修改或关闭」——标点改由回复设置驱动：
+  //   mjf-punct = 0 → 完全不补（回到 #317 原味，出句保持截断后的裸文本）；
+  //   mjf-punct-pool（reply-mjf-punct-pool 原串，非数值键）非空 → 用它当候选池；空格/| 分隔，
+  //   没写分隔符时按字符拆（「。！？」＝三个候选）；空/解析不出 → 内置默认池。
+  const END_PUNCT_OK = /[。．！？!?~～…，、,.;；:：）)”’"]/;
+  const END_PUNCT_DEFAULT = ['。', '。', '。', '~', '！', '……'];
+  function endPunctPool(c) {
+    if (c && Number(c['mjf-punct']) === 0) return null; // 关＝不补标点
+    const raw = c && c['mjf-punct-pool'] != null ? String(c['mjf-punct-pool']).trim() : '';
+    if (!raw) return END_PUNCT_DEFAULT;
+    let arr = raw.split(/[\s|]+/).filter(Boolean);
+    if (arr.length < 2) arr = Array.from(raw.replace(/[\s|]+/g, ''));
+    arr = arr.filter(x => x.length <= 6).slice(0, 20);
+    return arr.length ? arr : END_PUNCT_DEFAULT;
+  }
+  function withEndPunct(txt, c) {
+    const pool = endPunctPool(c);
+    if (!pool || !txt || typeof txt !== 'string') return txt;
+    if (END_PUNCT_OK.test(txt.charAt(txt.length - 1))) return txt;
+    return txt + pool[Math.floor(Math.random() * pool.length)];
+  }
   // 抽句门：c = replyCfg()。命中返回 { text: 新句, src: 源卡 }；关闭/未命中/造不出返回 null。
   window.dreamFreePick = function (c) {
     try {
@@ -272,7 +298,7 @@
         } else {
           mode = pickOf(['cutfill', 'comma', 'space', 'suffix', 'tailcut']);
         }
-        const txt = rebuild(s, mode, material);
+        const txt = withEndPunct(rebuild(s, mode, material), c);
         if (txt && txt !== s) { lastSrc = s; return { text: txt, src: s }; }
       }
       return null;

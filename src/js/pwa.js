@@ -8,8 +8,49 @@
   // 的官方防线；iOS Safari 15.4+ 支持，获批失败静默忽略，不影响任何功能。
   try {
     if (navigator.storage && navigator.storage.persist) {
-      navigator.storage.persist().catch(function () {});
+      // v8.x #956：申请一次不够——Safari/Chromium 按「用户互动历史」授予持久化，冷启动首次
+      // 申请常直接返回 false 且此后不再有机会。这里首次用户手势（点/摸/按）后再补申请一次，
+      // 提高获批率；只在未持久化时才申请，非 iOS/桌面端行为不变（persist 是幂等空操作）。
+      const tryPersist = function () {
+        try {
+          if (navigator.storage.persisted) {
+            navigator.storage.persisted().then(function (p) {
+              if (!p) { try { navigator.storage.persist().catch(function () {}); } catch (e) {} }
+            }).catch(function () { try { navigator.storage.persist().catch(function () {}); } catch (e) {} });
+          } else {
+            navigator.storage.persist().catch(function () {});
+          }
+        } catch (e) { try { navigator.storage.persist().catch(function () {}); } catch (e2) {} }
+      };
+      tryPersist();
+      let _persistGestureDone = false;
+      const onFirstGesture = function () {
+        if (_persistGestureDone) return;
+        _persistGestureDone = true;
+        tryPersist();
+      };
+      ['touchend', 'pointerup', 'click', 'keydown'].forEach(function (t) {
+        try { document.addEventListener(t, onFirstGesture, { capture: true, passive: true }); } catch (e) {}
+      });
     }
+  } catch (e) {}
+
+  // v8.x #956：iOS 且当前不在「添加到主屏幕」的独立应用里 = ITP 7 天清空高危场景。
+  // 判据统一走 device.js 的 isIOS（唯一判定源，含 iPadOS 伪装 UA 分支），standalone 读
+  // navigator.standalone / display-mode（与 fullscreen.js、bg-keep.js 同款），零新增机型分支。
+  window.mochiIosTabRisk = function () {
+    try {
+      if (!(window.mochiDevice || {}).isIOS) return false;
+      if (navigator.standalone === true) return false;
+      if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return false;
+      return true;
+    } catch (e) { return false; }
+  };
+  // #959f：关于段「iPhone/iPad 7 天规则」提醒条只对 iOS 显示——非 iOS 隐藏。
+  // JS 未跑（脚本被截断等）＝保留不隐藏：宁可让安卓用户多读一句，也不误藏掉 iOS 用户的关键提醒。
+  try {
+    const _aboutIos = document.getElementById('about-ios-pwa-note');
+    if (_aboutIos && !(window.mochiDevice || {}).isIOS) _aboutIos.hidden = true;
   } catch (e) {}
 
   function toast(msg) {
@@ -39,32 +80,105 @@
     try { if (document.visibilityState === 'hidden') return true; } catch (e) {}
     return !_userActTs;
   }
-  // 无头验证专用探针（tools/verify-auto-upgrade-guard.mjs 使用，只读）
-  window.__pwaAutoUpgradeTest = { allowed: function () { return autoReloadAllowed(); } };
+  // #965 自动升级「不放弃、也不打断」——待换版登记：页面前台且用户已交互时不再退回更新条
+  // 收工（旧行为＝多数用户不会点更新条＝长期停在旧版、拿旧版 bug 反馈），改为先登记，等页面
+  // 下一次转入后台（切走/回桌面/锁屏）时 reload 落地。iOS 上隐藏期的 reload 常被系统冻结到
+  // 回前台才真正执行＝用户回到前台即新版、全程零打断。reload 会卸载页面，监听无需移除
+  //（若极端内核忽略了隐藏期 reload，监听仍在，下次转后台会再试，不会卡死）。
+  let _pendingAutoReload = false;
+  function armAutoReloadWhenHidden() {
+    if (_pendingAutoReload) return;
+    _pendingAutoReload = true;
+    const onHide = function () {
+      try { if (document.visibilityState !== 'hidden') return; } catch (e) { return; }
+      try { location.reload(); } catch (e) {}
+    };
+    try { document.addEventListener('visibilitychange', onHide); } catch (e) {}
+    // 登记这一刻若已不在前台（刚被切走/冻结），直接落地
+    try { if (document.visibilityState === 'hidden') onHide(); } catch (e) {}
+  }
+  // 无头验证专用探针（tools/verify-auto-upgrade-guard.mjs 使用，只读；#965 追加 pending/arm）
+  window.__pwaAutoUpgradeTest = {
+    allowed: function () { return autoReloadAllowed(); },
+    pending: function () { return _pendingAutoReload; },
+    arm: function () { armAutoReloadWhenHidden(); }
+  };
 
   // v3.10.x：点「刷新使用新版」——先让 SW 预取最新 index.html 写入当前缓存
   //（PRECACHE_NOW），收到回执后再 reload；弱网下 reload 的导航请求若直接走网络
-  // 优先仍可能超时回退旧缓存 → 永远卡旧版。SW 回执或 2.5s 兜底超时后刷新。
+  // 优先仍可能超时回退旧缓存 → 永远卡旧版。
+  // #944：SW 侧（#942）弱网会走不带超时的慢路径慢慢传完（实测 ~30KB/s 传 1.4~4MB 需
+  // 50~130s），PRECACHE_DONE 因此可能一两分钟后才来——本函数随之改三处：
+  // ① 手动通道全程有反馈：按钮变「正在下载…」、条文案写明「弱网可能需要一两分钟」，
+  //    不再让用户点了没反应、以为新版有 bug；
+  // ② 手动通道删掉 2.5s 无条件重载的旧兜底（它总在下载完成前把用户重载回旧缓存），
+  //    改等 PRECACHE_DONE（上限 VER_DL_WAIT）；超时仍没等到＝下载没完成，如实告知并给
+  //    「重试刷新」，不再骗用户重载回旧版；
+  // ③ ack（「本版本已确认」免打扰记录）从按钮 onclick 挪到下载确认成功后写入——下载失败
+  //    时本版本之后仍会再次提醒，不再出现「点了刷新没刷上、从此再无提示」的静默卡旧版。
   let _prMsg = null;
-  function refreshNow(auto, autoTs) {
-    // v3.26.x：ack 已在按钮 onclick 里写入（按版本 ts 免打扰），这里只管预取+刷新
+  let _prBusy = false; // 手动下载进行中（防重复点击叠监听/叠计时器）
+  const VER_DL_WAIT = 180000; // 手动通道等 PRECACHE_DONE 的上限（弱网慢路径实测 50~130s，取宽裕值）
+  function refreshNow(auto, autoTs, ackTs) {
     const doReload = function () {
-      // #279：自动升级（auto=true）的重载落地前最后一刻复核——预取期间用户开始操作时
-      // 放弃本次自动重载、退回常驻更新条由用户自选时机，绝不打断会话中途。
-      if (auto && !autoReloadAllowed()) { showVerBar(autoTs); return; }
+      // #279/#965：自动升级（auto=true）落地前复核——用户已操作且在前台时绝不打断会话，
+      // 但也不再「放弃」（旧行为＝只弹更新条，多数用户不点＝长期旧版）：改登记待换版，
+      // 页面下一次转后台时自动落地（切走/回桌面/锁屏），用户回来即新版。更新条照弹，
+      // 想立刻升级的用户仍可手动点。
+      if (auto && !autoReloadAllowed()) { armAutoReloadWhenHidden(); showVerBar(autoTs); return; }
       try { location.reload(); } catch (e) {}
+    };
+    // #944：手动通道的过程反馈（自动通道静默，行为与 #273 时代一致）
+    const barEl = document.getElementById('ver-update-bar');
+    const txtEl = barEl ? barEl.querySelector('.vub-txt') : null;
+    const actEl = document.getElementById('ver-update-refresh');
+    const setUi = function (txt, btn) {
+      if (auto) return;
+      if (txtEl && txt) txtEl.textContent = txt;
+      if (actEl && btn) actEl.textContent = btn;
     };
     try {
       if (navigator.serviceWorker && navigator.serviceWorker.controller) {
         let done = false;
         if (_prMsg) navigator.serviceWorker.removeEventListener('message', _prMsg);
         _prMsg = function (e) {
-          if (e.data && e.data.type === 'PRECACHE_DONE') { done = true; doReload(); }
+          if (e.data && e.data.type === 'PRECACHE_DONE') {
+            done = true; _prBusy = false;
+            try { window.__mochiVerDlBusy = false; } catch (x) {}
+            // #944：新版已确认落进缓存，此刻才写 ack（下载失败不写＝本版本还会再次提醒）
+            if (!auto && ackTs > 0) verMarkAck(ackTs);
+            doReload();
+          }
         };
         navigator.serviceWorker.addEventListener('message', _prMsg);
+        if (!auto) {
+          if (_prBusy) return; // 下载已在进行：忽略重复点击（监听器/计时器都只有一份）
+          _prBusy = true;
+          try { window.__mochiVerDlBusy = true; } catch (x) {}
+          setUi('正在下载新版…网络慢时可能需要一两分钟，请保持页面打开', '正在下载…');
+        }
         // PERF-PLAN 阶段 1：带上外置 js/ 清单——弱网点「刷新使用新版」时 ext 一并预取落新缓存，防旧 index 配新 ext 的混合版本（SW 侧零改动，urls 数组本就支持）
         navigator.serviceWorker.controller.postMessage({ type: 'PRECACHE_NOW', urls: ['./index.html', './version.json'].concat(window.__mochiExtFiles || []) });
-        setTimeout(function () { if (!done) doReload(); }, 2500); // 兜底：SW 预取异常也刷新
+        if (auto) {
+          setTimeout(function () { if (!done) doReload(); }, 2500); // 自动通道保持 2.5s 兜底（#273 时代行为）
+        } else {
+          // #944：手动通道等满 VER_DL_WAIT 仍无回执＝下载没完成——如实告知＋可重试，
+          // 不再重载（重载只会回到旧缓存），并回滚「弹过条」记录让本版本之后能再次提醒
+          //（否则 verSeen 把本版本记成已提醒，用户从此收不到任何提示＝静默卡旧版）。
+          setTimeout(function () {
+            if (done) return;
+            _prBusy = false;
+            try { window.__mochiVerDlBusy = false; } catch (x) {}
+            if (_prMsg) navigator.serviceWorker.removeEventListener('message', _prMsg);
+            try {
+              const last = localStorage.getItem('xy-home-v2:ver-update-notify');
+              const n = Number(String(last || '').split('|')[0]);
+              if (ackTs > 0 && n === ackTs) localStorage.removeItem('xy-home-v2:ver-update-notify');
+            } catch (x) {}
+            setUi('新版没下载完（网络太慢）。已取消本次刷新，网络好转后会再次提醒；也可点「重试刷新」再试', '重试刷新');
+            if (actEl) actEl.onclick = function () { refreshNow(false, 0, ackTs); };
+          }, VER_DL_WAIT);
+        }
       } else {
         doReload();
       }
@@ -143,7 +257,7 @@
     if (!barEl) { toast('已检测到新版本，刷新页面即可更新'); return; }
     barEl.hidden = false;
     const actEl = document.getElementById('ver-update-refresh');
-    if (actEl) actEl.onclick = function () { verMarkAck(onlineTs); refreshNow(); };
+    if (actEl) actEl.onclick = function () { refreshNow(false, 0, onlineTs); }; // #944：ack 挪到下载确认成功后写（refreshNow 内）
     // v3.5.134：可关闭（"稍后"）——不挡用户当前操作；关闭即记为已确认当前版本
     const closeBtn = document.getElementById('ver-update-close');
     if (closeBtn) closeBtn.onclick = function () { verMarkAck(onlineTs); barEl.hidden = true; };
@@ -197,7 +311,9 @@
           // v3.30.x FIX：每次成功拉取都撤销弱网误报（若曾显示）——网络恢复即自愈，
           // 不再让「网络异常，未能确认最新版本」常驻顶部；随后发现有新版才弹更新条。
           healNetHint();
-          if (ts > baseTs) showVerBar(ts);
+          // #965：前台轮询发现新版也走自动通道（不只弹条）——长开会话（用户几天不关）也能
+          // 后台预取，转后台即换版；tryAutoUpgrade 返回 false（无 controller／本版本已试过）才回更新条
+          if (ts > baseTs) { if (!tryAutoUpgrade(ts)) showVerBar(ts); }
         })
         .catch(function () { failCount++; maybeNetHint(); });
     }
@@ -214,6 +330,7 @@
     // 每次成功拉取调用 healNetHint() 复位文案/位（网络恢复即自愈，位回 false 可重新触发）。
     let netHealed = false;
     function healNetHint() {
+      if (window.__mochiVerDlBusy) return; // #944：手动下载进行中，勿把「正在下载…」进度文案复位
       if (!netHealed) return;
       netHealed = false;
       failCount = 0;
@@ -259,88 +376,140 @@
   // ================= v3.6.x：定期备份提醒（本地数据只存在浏览器，Safari 可能意外清空） =================
   // iOS Safari 会因存储压力/系统 bug（WebKit#266559）清掉整个源的 localStorage+IDB，
   // 用户表现为「每次重开数据全丢」。代码无法阻止系统级清空，唯一防线是定期导出备份文件
-  //（存到 iOS「文件」App，清空后能一键恢复）。距上次成功导出超 INTERVAL 且近 INTERVAL 未提醒过时，
+  //（存到 iOS「文件」App，清空后能一键恢复）。距上次成功导出超 1 天且今日未提醒过时，
   // 在顶部显示提醒条（复用 ver-update-bar 样式，更新提示优先显示时让位）。
   // v3.3x.x：应需求把冷却从 7 天 → 2 天 → 现为 1 天——用户反馈「现在什么时间都不会出现提醒」，
   // 期望每天在进桌面时弹一次（不是每次启动都弹的天天打扰、也不是 7 天才一次那么久）。
+  // v3.3x.x：开屏直接弹说明弹窗（用户需求）——把「为什么必须备份」讲清楚：
+  // ① 浏览器/设备可能自动清空本地数据，任何手机/浏览器（含网页套壳转 App）都无法规避；
+  // ② 若数据总也存不住（每次打开像没保存、一刷新就丢），多半是本机存储没能写进去（设备/浏览器异常）。
+  // 顶部提醒条保留作兜底：弹窗组件未就绪时退回原提醒条，保证提醒不丢。
   (function () {
     const bar = document.getElementById('backup-remind-bar');
     if (!bar) return;
     const G = 'xy-home-v2:';
     const DAY = 86400000;
-    const INTERVAL = DAY;
+    const startedAt = Date.now();
     function ts(key) { try { return Number(localStorage.getItem(G + key)) || 0; } catch (e) { return 0; } }
-    // v3.3x.x：开屏直接弹说明弹窗（用户需求）——把「为什么必须备份」讲清楚：
-    // ① 浏览器/设备可能自动清空本地数据，任何手机/浏览器（含网页套壳转 App）都无法规避；
-    // ② 若数据总也存不住（每次打开像没保存、一刷新就丢），多半是本机存储没能写进去（设备/浏览器异常）。
-    // 顶部提醒条保留作兜底：弹窗组件未就绪时退回原提醒条，保证提醒不丢。
-    // 返回值：'ok' 已弹；'busy' 已有其他弹窗占用（勿顶掉，稍后重试，且不写冷却）；'nofn' 弹窗组件不可用。
+    // 冷却按「自然日」判定而非「距今满 24 小时」：按 24h 计时时，每天比前一天早一秒打开
+    // 就永远凑不满 24 小时（提醒会无限往后漂＝用户所见「从来没弹过」）。
+    function dayKey(t) { const d = new Date(t); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); }
+    function markReminded() { try { localStorage.setItem(G + '__last-backup-remind', String(Date.now())); } catch (e) {} }
+    // 开屏是否已关闭（clock.js：点击进入 → 加 .hide → 400ms 后移除节点）。
+    // modal-mask 在 .phone 内（开屏期间 .phone 整棵 visibility:hidden）、提醒条 z-998 也低于
+    // splash z-999 ⇒ 开屏期间弹＝弹在看不见的地方，旧版却照样写冷却，于是当天再也不会第二次弹。
+    function splashGone() {
+      const s = document.getElementById('splash');
+      return !s || !s.isConnected || s.classList.contains('hide');
+    }
+    // 弹窗三态：'ok' 已弹 / 'busy' 别的弹窗占用（勿顶掉、也不写冷却，下轮再试）/ 'nofn' 组件不可用
+    // v8.x #956：iOS Safari 标签页（未添加到主屏幕）高危——WebKit ITP 会在「连续 7 个 Safari
+    // 使用日无第一方互动」后清空该源全部可写存储（localStorage/IndexedDB/Cache/SW），且
+    // persist() 在标签页里几乎不授予；唯一豁免就是「添加到主屏幕」（主屏应用独立存储桶、
+    // 不计入 7 天计时）。这正是「没装到桌面、数据总是丢」的根因。Android/桌面无此 7 天规则，
+    // 故只在 iOS 标签页分支展示，其他机型文案与流程一字不变（零机型回归面）。
+    function openIosInstallGuide() {
+      if (typeof window.openModal !== 'function') return;
+      // 刻意不挡「当前弹窗已开」——本引导由备份弹窗的 pill 回调打开，那一刻旧弹窗还在屏上
+      // （openModal 的 _openSeq 嵌套守卫会因本次开窗而跳过对旧弹窗的 close）。挡了就永远打不开。
+      window.openModal('装到桌面 · 让数据不被自动清空', '', function () {}, {
+        noInput: true, big: true,
+        staticText: '原因：在 Safari 标签页里，Apple 会在连续 7 天没打开本应用后自动清空本地数据（隐私策略，任何网站都躲不过）；添加到主屏幕后从桌面图标打开，就不受这条限制。\n\n'
+          + '步骤（顺序很重要）：\n'
+          + '① 先导出一份完整备份（点下方「先导出备份」，存到「文件」App 或微信收藏都行）——主屏幕应用和 Safari 是两套独立存储，不先导出，切过去会看到空数据。\n'
+          + '② 点 Safari 底部的「分享」按钮（方框加向上箭头）。\n'
+          + '③ 在弹出的菜单里选「添加到主屏幕」→ 右上角「添加」。\n'
+          + '④ 回到手机桌面，点新出现的 Mochi 图标打开。\n'
+          + '⑤ 在打开的桌面应用里：设置 → 导入数据，选第①步的备份文件恢复。\n\n'
+          + '此后平时都从桌面图标打开，Safari 清不清都不影响你的数据。',
+        copyBtn: { label: '先导出备份', fn: function (c) { try { if (window.runBackupExport) window.runBackupExport(); } catch (e) {} try { if (c && c.close) c.close(); } catch (e2) {} } }
+      });
+    }
     function openBackupModal(days, everBacked) {
       if (typeof window.openModal !== 'function') return 'nofn';
-      // 避让已有弹窗：openModal 全站唯一，若此刻首启引导/字卡锁提醒等弹窗已开，
-      // 直接再弹会把它顶掉（pwa.js 的 mochi-restore-done 监听注册在最后，最易覆盖别人）。
       const mask = document.getElementById('modal-mask');
       if (mask && !mask.hidden) return 'busy';
       const intro = everBacked
-        ? '距上次完整备份已 ' + days + ' 天。'
-        : '你还没做过完整的数据备份（「备份聊天」只含聊天记录，不算完整备份）。';
-      const TEXT =
-        intro + '聊天记录、字卡、照片、设置等全部数据只保存在本机浏览器里，不在云端。\n\n' +
-        '① 浏览器可能自动清空本地数据\n' +
-        '存储空间不足、无痕/隐私模式、系统清理后台等都可能触发。不管什么手机、什么浏览器，' +
-        '连网页套壳转 App 使用也一样，都无法规避——这是设备/平台的限制。\n' +
-        '对策：善用「导出备份」把数据存成文件，定期导出，别只依赖本地存储。\n\n' +
-        '② 若数据总也存不住，多半是本机存储异常\n' +
-        '如果每次打开都像没保存、一刷新就丢，大概率不是正常的定期清空，' +
-        '而是本机存储没能写进去（设备/浏览器异常），建议换个正常浏览器/设备使用。';
+        ? '距上次完整备份已经 ' + days + ' 天了。'
+        : '你到现在还没做过一次完整的数据备份（「备份聊天」只含聊天记录，不算完整备份）。';
+      const iosTab = !!(window.mochiIosTabRisk && window.mochiIosTabRisk());
+      let TEXT =
+        intro + '\n\n' +
+        '先说清楚一件事：你的聊天记录、字卡、照片、音乐、设置，全部只存在这台手机的这个浏览器里，云端一份都没有。\n\n' +
+        '① 数据会被自动清掉，躲不过\n' +
+        '不管用什么手机、什么浏览器（网页套壳转成 App 也一样），**系统和浏览器都会在它认为需要的时候自动清除网页存的数据**——存储空间不够、清理软件一键优化、无痕模式、很久没打开、系统升级，都可能触发。**这是设备本身的限制，网站没有办法替你保住数据。**\n' +
+        '一旦被清，所有东西全没，只能拿以前导出的备份文件恢复。**所以必须定期导出备份，没有别的办法。**\n\n' +
+        '② 怎么办\n' +
+        '点下面的「去备份」，把全部数据导出成一个文件，再存到浏览器以外的地方：微信收藏、文件夹、云盘、电脑都行，至少留一份。恢复时在 设置 → 通用 →「导入数据」选这个文件即可。\n\n' +
+        '③ 如果数据总也存不住\n' +
+        '每次打开都像没保存、一刷新就丢，多半不是正常的定期清空，而是本机存储没能写进去（设备/浏览器异常），建议换个正常浏览器/设备使用。';
+      if (iosTab) {
+        TEXT += '\n\n④ 你现在是用 Safari 打开的（没添加到主屏幕）\n'
+          + 'Safari 会在「连续 7 天没打开本应用」后自动清空本地数据——这是 Apple 的隐私策略，网站躲不过；添加到主屏幕后再从桌面图标打开，就不会被这样清。注意：主屏幕应用和 Safari 是两套独立存储，切过去之前必须先导出备份、再在桌面应用里导入。点下方「怎么装到桌面」看分步说明。';
+      }
       const pills = [
         { label: '去备份', value: 'go' },
-        { label: '备份聊天', value: 'chat' },
-        { label: '稍后', value: 'later' }
+        { label: '备份聊天', value: 'chat' }
       ];
-      window.openModal('数据备份提醒', '', function (v) {
+      if (iosTab) pills.push({ label: '怎么装到桌面', value: 'install' });
+      pills.push({ label: '稍后', value: 'later' });
+      window.openModal('数据会被自动清空 · 备份提醒', '', function (v) {
         if (v === 'go') { try { if (window.runBackupExport) window.runBackupExport(); } catch (e) {} }
         else if (v === 'chat') { try { if (window.runChatExport) window.runChatExport(); } catch (e) {} }
-      }, { noInput: true, big: true, pillSubmit: true, staticText: TEXT, pills: pills });
+        else if (v === 'install') { try { openIosInstallGuide(); } catch (e) {} }
+      }, { noInput: true, big: true, warn: true, staticEmph: true, pillSubmit: true, staticText: TEXT, pills: pills });
       return 'ok';
     }
-    function markReminded() { try { localStorage.setItem(G + '__last-backup-remind', String(Date.now())); } catch (e) {} }
-    function show(days, everBacked, tries) {
-      tries = tries || 0;
-      // 版本更新提示优先（避免同屏叠两个提醒）
-      const upd = document.getElementById('ver-update-bar');
-      if (upd && !upd.hidden) return;
-      const r = openBackupModal(days, everBacked);
-      if (r === 'ok') { markReminded(); return; }
-      // 已有弹窗占用：不顶掉对方、也不写冷却，1.5s 后重试（最多 6 次≈9s），期间对方关掉即可弹
-      if (r === 'busy' && tries < 6) { setTimeout(function () { show(days, everBacked, tries + 1); }, 1500); return; }
-      // 兜底（弹窗组件不可用或长时间被占用）：退回顶部提醒条，保证提醒不丢
+    // 兜底顶部提醒条（弹窗组件不可用、或被别的弹窗长期占用时）：渲染成功返回 true 才允许写冷却
+    function showBar(days, everBacked) {
       const txt = document.getElementById('backup-remind-txt');
       if (txt) {
         txt.textContent = everBacked
-          ? '距上次导出备份已 ' + days + ' 天，数据只存本机浏览器，建议导出备份'
-          : '数据只存在本机浏览器里，建议定期导出备份（防浏览器意外清除）';
+          ? '⚠ 手机和浏览器都会自动清空数据（设备限制，躲不掉）· 距上次备份已 ' + days + ' 天，快导出备份'
+          : '⚠ 手机和浏览器都会自动清空数据，一清就全没 · 你还没导出过完整备份';
       }
       bar.hidden = false;
-      markReminded();
+      return bar.getClientRects().length > 0;
+    }
+    // 是否到了该提醒的时候（今日未提醒 + 不是刚备份过 + 本地确有数据可备）
+    function due() {
+      try { if (!localStorage.getItem(G + 'contacts')) return false; } catch (e) { return false; }
+      const lastRemind = ts('__last-backup-remind');
+      if (lastRemind && dayKey(lastRemind) === dayKey(Date.now())) return false;
+      const lastBackup = ts('__last-backup');
+      if (lastBackup && Date.now() - lastBackup < DAY) return false;
+      return true;
     }
     function tryShow() {
-      if (window.__resetting) return;
+      if (window.__resetting || document.hidden) return;
+      // 数据就绪才判；IDB 整轮挂起的设备上 __mochiDataReady 永不置位，60s 后按已就绪处理
+      //（这里只读 localStorage 的小键，回填没完成也不会读到脏值）
+      if (!window.__mochiDataReady && Date.now() - startedAt < 60000) return;
+      if (!splashGone()) return;
+      if (!due()) return;
+      // 版本更新提示优先（避免同屏叠两个提醒）：本轮让路，下轮复查再弹
+      const upd = document.getElementById('ver-update-bar');
+      if (upd && !upd.hidden) return;
       const lastBackup = ts('__last-backup');
-      const lastRemind = ts('__last-backup-remind');
-      if (lastRemind && Date.now() - lastRemind < INTERVAL) return; // 近期已提醒过
-      if (lastBackup && Date.now() - lastBackup < INTERVAL) return; // 刚备份过
-      show(lastBackup ? Math.max(Math.floor((Date.now() - lastBackup) / DAY), INTERVAL / DAY) : 0, !!lastBackup);
+      const days = lastBackup ? Math.max(Math.floor((Date.now() - lastBackup) / DAY), 1) : 0;
+      const r = openBackupModal(days, !!lastBackup);
+      if (r === 'ok') { markReminded(); return; }
+      // 别的弹窗正占用全站唯一 #modal-mask：本轮让路（不顶掉对方、也不写冷却），复查时间线下轮再补
+      if (r === 'busy') return;
+      // 兜底（弹窗组件不可用）：退回顶部提醒条，保证提醒不丢
+      if (showBar(days, !!lastBackup)) markReminded();
     }
-    function gated() {
-      // 全新安装/数据被清空的空状态不提醒（没有可备份的数据，避免噪音）
-      try { if (!localStorage.getItem(G + 'contacts')) return; } catch (e) {}
-      tryShow();
-    }
-    document.addEventListener('mochi-restore-done', gated);
-    const poll = setInterval(function () {
-      if (window.__mochiDataReady) { clearInterval(poll); gated(); }
-    }, 300);
+    // 每日复查：开屏期间/别的弹窗占用时都不写冷却，靠这条时间线在用户真正进入后补上。
+    // 前 10 分钟每 2s 一次（覆盖「点进桌面」那一刻，尽快弹出）后自动收掉；
+    // 慢轮询每 60s 一次——应用常驻不刷新（PWA + 后台保活）跨天时，第二天照样提醒得到。
+    const fast = setInterval(function () {
+      try { tryShow(); } catch (e) {}
+      if (Date.now() - startedAt > 600000) clearInterval(fast);
+    }, 2000);
+    setInterval(function () { try { tryShow(); } catch (e) {} }, 60000);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') setTimeout(tryShow, 800);
+    });
     const go = document.getElementById('backup-remind-go');
     if (go) go.addEventListener('click', function () {
       bar.hidden = true;
@@ -399,14 +568,17 @@
   // 避免打断用户会话中途的操作（发消息/编辑中）。
   const AUTO_UPGRADE_KEY = 'xy-home-v2:auto-upgrade-session';
   function tryAutoUpgrade(autoTs) {
+    const _ts = Number(autoTs) || 0;
     try {
-      if (sessionStorage.getItem(AUTO_UPGRADE_KEY)) return false;
-      sessionStorage.setItem(AUTO_UPGRADE_KEY, String(Date.now()));
+      // #965：会话守卫从「每会话一次」改为「每个版本 ts 一次」——长开的会话撞上第二次
+      // 部署时仍能自动升级；同一版本不重复预取（防循环）。
+      const last = Number(sessionStorage.getItem(AUTO_UPGRADE_KEY)) || 0;
+      if (_ts > 0 && last >= _ts) return false;
+      sessionStorage.setItem(AUTO_UPGRADE_KEY, String(_ts || Date.now()));
     } catch (e) { return false; }
     if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-      // #279：用户已在本页面开始操作（且前台）→ 不发自动重载，返回 false 让调用方
-      // 走 showVerBar 常驻更新条；预取期间才开始操作的由 refreshNow 内部在重载前让路
-      if (!autoReloadAllowed()) return false;
+      // #279/#965：用户已交互不再直接放弃（旧行为＝退回更新条、多数用户不点＝长期旧版）；
+      // 照常后台预取，reload 由 refreshNow 的「待换版」闸挪到页面转后台时落地，不打断会话。
       refreshNow(true, autoTs);
       return true;
     }
@@ -573,9 +745,12 @@
           } catch (e) {}
         }, 120);
       };
+      const iosTab = !!(window.mochiIosTabRisk && window.mochiIosTabRisk());
       window.openModal('欢迎使用 Mochi', '', go, {
         noInput: true,
-        staticText: '检测到当前是全新环境，还没有任何数据。\n\n· 如果之前在浏览器标签页里设置过昵称/打卡：点「确定」会打开设置页的数据导入，选择之前导出的备份文件即可全部恢复。\n\n· 如果是第一次使用：点「取消」直接开始设置即可。'
+        staticText: '检测到当前是全新环境，还没有任何数据。\n\n· 如果之前在浏览器标签页里设置过昵称/打卡：点「确定」会打开设置页的数据导入，选择之前导出的备份文件即可全部恢复。'
+          + (iosTab ? '\n\n· 如果你之前明明在用、数据却突然不见了：多半是 Safari 清空了本地数据——没添加到主屏幕时，Safari 会在连续 7 天没打开后自动清空。以后请点「分享」→「添加到主屏幕」安装，并从桌面图标打开（安装前先导出备份；主屏幕应用与 Safari 是两套独立存储，需在桌面应用里导入）。' : '')
+          + '\n\n· 如果是第一次使用：点「取消」直接开始设置即可。'
       });
     });
   }
@@ -613,4 +788,80 @@
       }
     } catch (e) { /* 静默：看门狗绝不能成为错误源 */ }
   }, 5000);
+})();
+
+// ================= #802 外置功能包加载失败自愈（「更多功能」成片「加载失败」根治） =================
+// 用户实报（2026-09-19）：「更多功能里的小功能全部，打开显示加载失败」。外置化（PERF-PLAN 阶段 1）
+// 后 35 个功能文件走 <script defer src="js/*">，任一拉取失败（GitHub Pages 弱网/被墙窗口、旧 SW
+// 代际过渡期：缓存被 #157 后台刷新换成新 HTML 而 js 不在旧 PRECACHE 里）该功能即死：带守卫的入口
+// toast「xx加载失败」，没守卫的（Pong/钓鱼/四子棋…）点了没反应——页面零重试，只能整页刷新赌网络。
+// 本引擎在页面侧闭环（不等 SW 代际更新到位）：① build.mjs #802a 给外置标签挂 onerror，失败文件
+// 进 __mochiExtFail（error 是终态、原标签绝不会再执行 ⇒ 按这份清单重注入不会双执行；「没在
+// __mochiLoaded」的还可能只是仍在慢下载中，不重注入）；② load 后 1.5s/6s/15s 三波自动重注入
+// （s.src 保持裸路径，同 URL 才能命中 SW 预缓存/HTTP 缓存；同一文件两次尝试间隔 ≥4s，防对仍在
+// 途的上一发重复补枪）；③ 三波后仍有缺口 → 顶部恢复条（复用 ver-update-bar 样式），点＝立即再试，
+// 全部到位自动撤条，诊断环补一条（设备兼容诊断可见）便于远程排查。执行期异常（script onload 而
+// IIFE 抛错）不归这里管：那类在 __jsErrors 有记录，重注入同一份代码只会再抛一次，双绑定风险大于收益。
+(function () {
+  if (!window.__mochiExtFiles || !window.__mochiExtFiles.length) return;
+  let waves = 0, bar = null, barTxt = null, reported = false;
+  const lastTry = {};
+  function failList() {
+    const fail = window.__mochiExtFail || [], loaded = window.__mochiLoaded || [], out = [];
+    for (let i = 0; i < fail.length; i++) if (loaded.indexOf(fail[i]) < 0 && out.indexOf(fail[i]) < 0) out.push(fail[i]);
+    return out;
+  }
+  function reinject(list) {
+    const now = Date.now();
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (lastTry[f] && now - lastTry[f] < 4000) continue;
+      lastTry[f] = now;
+      const s = document.createElement('script');
+      s.src = 'js/' + f;
+      s.async = true;
+      s.onerror = function () { try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {} };
+      document.head.appendChild(s);
+    }
+  }
+  function syncBar(miss) {
+    if (!miss.length) { if (bar) bar.hidden = true; return; }
+    if (waves < 3) return; // 前三波静默自动重试，不打扰
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'ver-update-bar';
+      bar.id = 'ext-recovery-bar';
+      bar.style.cursor = 'pointer';
+      bar.innerHTML = '<span class="vub-txt"></span><b>点此重试</b>';
+      bar.addEventListener('click', function () {
+        const miss2 = failList();
+        if (miss2.length) reinject(miss2);
+        setTimeout(function () { syncBar(failList()); }, 4000);
+      });
+      document.body.appendChild(bar);
+      barTxt = bar.querySelector('.vub-txt');
+    }
+    barTxt.textContent = miss.length + ' 个功能包没加载成功（网络波动），功能可能不全——';
+    bar.hidden = false;
+  }
+  function pass() {
+    waves++;
+    const miss = failList();
+    if (miss.length) reinject(miss);
+    setTimeout(function () {
+      const left = failList();
+      if (left.length && waves >= 3 && !reported) {
+        reported = true;
+        try { window.__jsErrors = window.__jsErrors || []; window.__jsErrors.push('[ext-recovery] ' + left.length + ' 个外置功能包加载失败: ' + left.slice(0, 5).join(',')); } catch (x) {}
+      }
+      syncBar(left);
+    }, 4000);
+  }
+  function boot() {
+    setTimeout(pass, 1500);
+    setTimeout(pass, 6000);
+    setTimeout(pass, 15000);
+  }
+  if (document.readyState === 'complete') boot();
+  else window.addEventListener('load', boot);
 })();

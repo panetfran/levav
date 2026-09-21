@@ -148,6 +148,9 @@
     // v3.26.x #691：表情包面板「颜文字/emoji 点击直接发送」模式开关（chat-settings.js 注入行，
     // 聊天/群聊共用同一面板）同为全局根键——出生即进 EXCLUDE，不被 migrateLegacy 迁进 default 桌面。
     'chat-textcard-direct',
+    // v3.26.x #907：表情包面板/头像互动「打开面板前提前加载图片」开关（chat-settings.js 注入行，
+    // chat.js 空闲预热调度读）同为全局根键——出生即进 EXCLUDE，不被 migrateLegacy 迁进 default 桌面。
+    'chat-panel-prewarm',
     // #231：完整外观方案（personalize.js full-beauty-schemes，v3.27.x 桌面+聊天合并方案的
     // 方案列表）、美化撤销栈（personalize.js beauty-undo-stack）、更新条一版一弹记忆
     // （pwa.js ver-update-ack-ts / ver-update-notify，#225v2）都是全局根键——此前漏排除，
@@ -195,7 +198,20 @@
     // #231）。漏排除＝migrateLegacy 每次刷新把它当旧顶层业务键迁进 default 并删根键，标记写一次
     // 就没了 → 开屏永远只出「点此更新」、等 3~5 分钟/换流量的指引不再出现（实测：写入后 navigate
     // 2.2s 读回即 null）。
-    'ver-retry'];
+    // #935（2026-09-20）：电量/发烫自测的记录（energy-check.js）——battery-check-run 为
+    // 进行中的分段计时（刷新/杀进程重开要续测），battery-check-last / heat-check-last 为
+    // 「上次结果」回显与跑完时的挂起报告。都是全局根键、不随联系人隔离，漏排除会被
+    // migrateLegacy 每次刷新迁进 default 并删根键（长窗口自测跑到一半记录就没了）。
+    'battery-check-run', 'battery-check-last', 'heat-check-last',
+    // #946：闪屏自测（flash-check.js）只存「最后一次报告」一份，同是全局根键、不随联系人隔离；
+    // 漏排除＝每次刷新被 migrateLegacy 迁进 default 并删根键（报障时回看的那份报告没了）。
+    'flash-check-last',
+    'ver-retry',
+    // #937：功能大全统计键——fhub-freq（常用直达点击计数）与 fhub-seen（条目到达标记）都是
+    // 全局根键（feature-hub.js 用 xyStore(G) 语义直写根命名空间，目录与跳转目标全桌面共用）。
+    // fhub-freq 系补登：此前一直不在 EXCLUDE，每次刷新被 migrateLegacy 当旧顶层业务键迁进
+    // default 并删根键 → 非 default 桌面「常用」行常空（原注释「全局键不区分联系人」与实现不符）。
+    'fhub-freq', 'fhub-seen'];
   function isExcluded(k) {
     const r = k.slice(G.length + 1);
     // #233：__ 前缀＝系统键（idb.js 根命名空间专用：__wr-journal 写日志＝LS 回滚自愈
@@ -611,7 +627,9 @@
     ['pomo-cfg', 'pomo-today', 'pomo-total', 'pomo-msgs', 'pomo-send-chat', 'pomo-bell',
       'pomo-companion', 'pomo-companion-log', 'pomo-cmp-usecards',
       'beauty-schemes', 'chat-beauty-schemes', 'hide-ta-sticker', 'desk-freq-mode',
-      'full-beauty-schemes'].forEach(function (k) {
+      // #937：fhub-freq 此前一直漏排除，被每次刷新迁进 default——把滞留副本写回根键找回
+      // （fhub-seen 出生即排除，无存量可回收，列入只为口径一致）。
+      'full-beauty-schemes', 'fhub-freq', 'fhub-seen'].forEach(function (k) {
       // FIX 2026-09-15 #527：beauty-undo-stack 已自本回收列表移除（改 per-cid 存储）——
       // 若继续把 default 副本写回根键并删副本，会让新的按桌面隔离存储每次启动被搬空，
       // 撤销栈重新变回「跨桌面共用」（=本修复被这条逻辑反向回滚）。

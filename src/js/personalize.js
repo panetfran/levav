@@ -194,7 +194,8 @@
       // FIX 2026-09-18 #756：原 `if (fromLabel(e)) return;` 会在「label 存在但内核不转发」时
       // 连 JS 兜底一起跳过＝彻底没反应（国产内核实况）。改为：label 只作加速路径，
       // 由 mochiFilePickGuard 确认「确实没弹出」后补 JS click。
-      var _fallback = () => { try { avatarPickInput.click(); } catch (err) { avatarPickCb = null; toast('无法打开相册，请重试'); } };
+      // FIX 2026-09-20 #920：兜底腿改走全站统一三腿（showPicker→click；小米系对合成 click 静默不弹）
+      var _fallback = () => { window.mochiFilePickFire(avatarPickInput, { onFail: () => { avatarPickCb = null; toast('无法打开相册，请重试'); } }); };
       if (window.mochiFilePickGuard) window.mochiFilePickGuard(avatarPickInput, _fallback);
       else _fallback();
     });
@@ -478,6 +479,9 @@ try {
       // v3.25.x：opts.big——宽版弹窗（诊断信息等长文只读展示），配合 CSS
       // .modal.modal--big 加宽 + 放大输入框；每次开弹窗按 opts.big 重设类，天然复位。
       if (modalBox) modalBox.classList.toggle('modal--big', !!opts.big);
+      // v3.3x.x：opts.warn——警示形态（红描边/红标题/红底说明，样式见 base.css .modal--warn）。
+      // 备份提醒用它：「数据会被设备自动清空」这条必须一眼被看见。同 big 一样每次开弹窗重设类。
+      if (modalBox) modalBox.classList.toggle('modal--warn', !!opts.warn);
       // v3.20.x：每次打开弹窗重置底部确认按钮文案为默认「确定」——此前只在调用方显式
       // ctl.okText() 时才会写，若某次弹窗（如心意币「申请」）设过、下一个弹窗
       // （如跨桌面通话/查岗的 pill 弹窗）没设，按钮就残留显示上一个弹窗文案。
@@ -495,7 +499,21 @@ try {
       title.textContent = t;
       if (staticEl) {
         staticEl.hidden = !opts.staticText;
-        staticEl.textContent = opts.staticText || '';
+        // opts.staticEmph：文案里 **…** 圈出的重点单独上色（.modal-static-key），其余仍是普通说明色。
+        // 只走 createTextNode/createElement + textContent，调用方传的文本永不被当 HTML 解析。
+        if (opts.staticEmph) {
+          const segs = String(opts.staticText || '').split('**');
+          staticEl.textContent = '';
+          for (let i = 0; i < segs.length; i++) {
+            if (!segs[i]) continue;
+            if (i % 2) {
+              const key = document.createElement('b');
+              key.className = 'modal-static-key';
+              key.textContent = segs[i];
+              staticEl.appendChild(key);
+            } else staticEl.appendChild(document.createTextNode(segs[i]));
+          }
+        } else staticEl.textContent = opts.staticText || '';
       }
       input.hidden = noInput || !!opts.textarea;
       input.value = v || '';
@@ -2735,7 +2753,7 @@ try {
     // ① 取词剔除 settings-help.js 注入的「功能说明」.tag 胶囊（此前搜「功能/说明」几乎全行命中）；
     // ② 口语词→入口行别名表（此前搜「壁纸/通知/概率/夜间」等 0 命中）；
     // ③ 多词 AND（空格分隔，每词都须命中）；④ 空分组/空分区隐藏 + 零命中空态提示。
-    const SEC_NAME = { basic: '通用', chat: '聊天', system: '系统', tools: '工具', about: '关于' };
+    const SEC_NAME = { basic: '通用', chat: '聊天', system: '系统', tools: '工具', diag: '信息诊断', about: '关于' };
     const KW = {
       '联系人 / 桌面': '切换桌面 多桌面 独立 称呼',
       '开启群聊': '多人聊天 群',
@@ -4351,6 +4369,82 @@ try {
     show(tabs[0] ? tabs[0].dataset.tab : 'basic');
   })();
 
+  // ===== 设置页平台标记（v8.29）：iOS / 安卓专属项一眼看清 + 非本机平台给替代入口 =====
+  // 用户问「设置里好多 iOS / 安卓专属功能，要不要单独分一类」——结论是不分类：按平台切
+  // 会把两个系统都要用的行（全屏模式 / 后台保活 / 手机布局强制 / 屏幕适配）藏起来，而且
+  // 平台判定本身有 UA 伪装失手面（OPPO/Via 伪装 iPhone、iPad 伪装、桌面版网站模式整套
+  // 伪装成桌面）。改为行级标记：静态胶囊在 template（.plat-tag[data-plat]），这里只做
+  // 「明确判定为另一平台」时弱化 + 给替代入口。判定不明（桌面 / 伪装 / 失手）一律原样，
+  // 且只弱化标签、绝不 disabled 开关——否则识别失手的用户会被挡在唯一能修好自己问题的
+  // 开关外面（「手机布局（强制）」本身就是为这种失手准备的）。
+  (function initPlatTags() {
+    const page = document.getElementById('page-setting');
+    if (!page) return;
+    const tags = page.querySelectorAll('.plat-tag[data-plat]');
+    if (!tags.length) return;
+    const d = window.mochiDevice || {};
+    // 非本机平台的替代指引：key = 该行开关 input 的 id（无开关的行只弱化不给指引）
+    const ALT = {
+      'bg-notify': { text: '本机是 iPhone：网页拿不到系统通知，请改用应用内横幅「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' },
+      'psync-en': { text: '本机是 iPhone：离线消息提醒只有安卓 Chrome / Edge 可用，请改用「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' },
+      'safe-top-force': { text: '本机是安卓：本项只修 iPhone 顶部状态栏重叠；安卓要调顶部遮挡 / 底部裁切请用「屏幕适配微调」。', go: '#row-screen-adj', goText: '去调整' }
+    };
+    // 只有明确判定为「另一平台」才弱化：desktop / 伪装 / 判定失手一律不动
+    function offPlatform(plat) {
+      if (plat === 'android') return d.isIOS === true;
+      if (plat === 'ios') return d.isAndroid === true;
+      return false;
+    }
+    function jumpTo(sel) {
+      const target = document.querySelector(sel);
+      if (!target) return;
+      const row = (target.closest && target.closest('.set-row, .gs-row')) || target;
+      // 搜索态下目标行可能正被过滤隐藏：先清空搜索框（回到原分区），再切 tag + 滚到现场
+      const si = document.getElementById('set-search-input');
+      if (si && si.value) {
+        si.value = '';
+        try { si.dispatchEvent(new Event('input')); } catch (e) {}
+      }
+      const sec = row.closest ? row.closest('.them-sec') : null;
+      if (sec && sec.hidden) {
+        const tab = document.querySelector('#set-tabs .them-tab[data-tab="' + (sec.dataset.sec || '') + '"]');
+        if (tab) tab.click();
+      }
+      try { row.scrollIntoView({ block: 'center' }); } catch (e) {}
+      row.classList.add('plat-flash');
+      setTimeout(function () { row.classList.remove('plat-flash'); }, 1500);
+    }
+    Array.prototype.forEach.call(tags, function (tag) {
+      if (!offPlatform(tag.getAttribute('data-plat'))) return;
+      const row = tag.closest('.set-row, .gs-row');
+      if (!row) return;
+      row.classList.add('plat-off');
+      const inp = row.querySelector('input[type="checkbox"]');
+      const alt = ALT[(inp && inp.id) || ''];
+      if (!alt) return;
+      const hint = document.createElement('div');
+      hint.className = 'gs-sub plat-hint';
+      hint.textContent = alt.text;
+      if (alt.go) {
+        const go = document.createElement('span');
+        go.className = 'plat-go';
+        go.setAttribute('role', 'button');
+        go.setAttribute('tabindex', '0');
+        go.textContent = alt.goText || '去设置';
+        const fire = function (e) { if (e) { e.preventDefault(); e.stopPropagation(); } jumpTo(alt.go); };
+        go.addEventListener('click', fire);
+        go.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') fire(e); });
+        hint.appendChild(go);
+      }
+      // 插在该行自己的说明小字之后（先看说明、再看「你这台该怎么用」）；后面紧跟的是别的行
+      // （如「离线消息提醒」下面那条状态行）就贴在行下
+      let anchor = row;
+      while (anchor.nextElementSibling && anchor.nextElementSibling.classList &&
+             anchor.nextElementSibling.classList.contains('gs-sub')) anchor = anchor.nextElementSibling;
+      if (anchor.parentNode) anchor.parentNode.insertBefore(hint, anchor.nextSibling);
+    });
+  })();
+
   // ===== 设置 → 关于 → 帮助与支持：使用说明页导航 + 页内搜索（#row-guide → #page-guide；说明内容静态在 template.html） =====
   (function initGuideNav() {
     const page = document.getElementById('page-guide');
@@ -5103,11 +5197,23 @@ try {
   function refreshDeskVisuals() {
     try { window.applyAvatars(); } catch (e) {}
     try { applyAllCardBgs(); } catch (e) {}
-    try { applyAllWidgetTexts(); } catch (e) {}
-    try { applyAllWidgetOpacities(); } catch (e) {}
     try { applyPageBgs(); } catch (e) {}
-    try { renderDeskImages(); } catch (e) {}
-    try { syncBgUI(); } catch (e) {}
+    // FIX 2026-09-20 #943d：整块七项同步跑（无头实测 ≈150ms，真机 iOS 大 dataURL 解码更高）
+    // 恰压在「回到桌面/切桌面」的交互帧上＝桌面翻页/回桌面冻结（实测最慢 954ms）的来源。
+    // 拆帧：头像/卡片背景/页面背景三样最显眼的大图仍在本帧落位（不闪旧桌面，#695 语义不变），
+    // 其余四项（文本组件/透明度/图片组件/设置页背景 UI）逐帧让出，每帧之间主线程可响应触摸；
+    // 隐藏态无渲染竞争，一次跑完。
+    const rest = [applyAllWidgetTexts, applyAllWidgetOpacities, renderDeskImages, syncBgUI];
+    let rest943 = 0;
+    const step943 = function () {
+      while (rest943 < rest.length) {
+        try { rest[rest943](); } catch (e) {}
+        rest943++;
+        if (!document.hidden && rest943 < rest.length) { requestAnimationFrame(step943); return; }
+      }
+    };
+    if (document.hidden) step943();
+    else requestAnimationFrame(step943);
   }
   // ===== FIX 2026-09-17 #695 切桌面「直达聊天」时桌面视觉延后到主页真正显示前 =====
   // 症状（用户直派）：此间里点某位跨桌面梦角的【去找TA】直达聊天，点击后要卡一下。
@@ -7668,7 +7774,133 @@ try {
       { k: 'side', name: '左右安全边', min: 0, max: 12, hint: '曲面屏/瀑布屏内容贴到屏幕弧边=往正加（两侧同时内收）；0=默认' }
     ];
     let panel = null;
+    let elGrip = null, elHead = null, elBody = null, elMini = null; // 面板四块（收起态只留胶囊）
+    // #940（用户 2026-09-20：「不是和边看边调一样半透明的，而且不能拖动滑动，不能预览其他页面」）
+    // 对齐美化抽屉三件套：72% 半透明底（#562 口径）、竖向拖动（#760 bindDockDrag 口径）。
+    // 拖动落位只记会话内、不落盘（纯 UI 位置，不碰数据层）。
+    // #962（用户 2026-09-21：「现在只能在这个设置里面调、不能在桌面的页面调，需要区分在桌面页面
+    // 调和在聊天页面里调，现在是盲调什么也看不见」）——无头实测（390×844）根因：面板贴底
+    // bottom:0 时占距底 0~338px，而底部导航占距底 18~82px、聊天输入栏占距底 0~43px，
+    // 连「收起」态也还占 0~70px ⇒ 切页的唯一入口（底部导航）与说话的唯一入口（输入栏）
+    // 被整条盖死，用户在设置里开了面板就再也走不到桌面/聊天页，只能对着设置列表盲调。
+    // 修法三条，零机型分支：①面板与胶囊自动停在底部操作区之上（量出来再让开）；
+    // ②收起＝一枚小胶囊（不再横贯底边，点一下展开、拖走可让位），带着它就能切页看现场；
+    // ③面板顶部显示「正在调：桌面/聊天」并给「看桌面 / 看聊天」直达按钮，桌面与聊天各自有入口。
+    let adjMini = false;   // true＝收起态小胶囊
+    let adjBottom = null;  // null＝自动让开底部操作区；否则＝距视口底 px（用户拖过的位置）
     const toast = (msg) => { if (typeof window.toast === 'function') window.toast(msg); };
+
+    // 当前页面短名：胶囊与面板顶部都显示它＝用户一眼知道正在给哪一页调
+    function adjPageName() {
+      const vis = (id) => { const e = document.getElementById(id); return !!e && !e.hidden; };
+      if (vis('page-chat')) return '聊天';
+      if (vis('page-group-chat')) return '群聊';
+      if (vis('page-phone')) return '桌面';
+      if (vis('page-setting')) return '设置';
+      return '本页';
+    }
+    // 底部操作区留白：tab 页＝底部导航栏高度；聊天/群聊页＝输入栏高度。量不到退回 14px。
+    function bottomReserve() {
+      let gap = 14;
+      try {
+        const chat = document.getElementById('page-chat');
+        const gc = document.getElementById('page-group-chat');
+        const host = (chat && !chat.hidden) ? chat : ((gc && !gc.hidden) ? gc : null);
+        if (host) {
+          const row = host.querySelector('.chat-input-row, .gc-input-row');
+          const r = row && row.getBoundingClientRect();
+          if (r && r.height) return Math.max(gap, Math.round(window.innerHeight - r.top + 8));
+          return gap;
+        }
+        const tb = document.querySelector('.tabbar');
+        const t = tb && tb.getBoundingClientRect();
+        if (t && t.height && t.top > 0) gap = Math.max(gap, Math.round(window.innerHeight - t.top + 8));
+      } catch (e) {}
+      return gap;
+    }
+    function applyAdjPos() { if (panel) panel.style.bottom = (adjBottom == null ? bottomReserve() : adjBottom) + 'px'; }
+    function syncMiniLabel() {
+      if (!panel) return;
+      const nm = adjPageName();
+      const pg = panel.querySelector('[data-adj-page]');
+      if (pg) pg.textContent = nm;
+      const ctx = panel.querySelector('[data-adj-ctx]');
+      if (ctx) ctx.textContent = '正在调：' + nm;
+    }
+    // 收起/展开：只切四块的显隐与外壳形态（全内联，不依赖新增 CSS 文件）
+    function setMini(on) {
+      if (!panel) return;
+      adjMini = !!on;
+      panel.style.left = '0'; panel.style.right = '0';
+      if (adjMini) {
+        panel.style.width = 'max-content'; panel.style.maxWidth = '80vw'; panel.style.margin = '0 auto';
+        panel.style.borderRadius = '99px';
+        panel.style.padding = '8px 14px';
+        panel.style.overflow = 'visible';
+        panel.style.boxShadow = '0 6px 20px rgba(0,0,0,.22)';
+        panel.style.border = '1px solid var(--card-border,#ddd)';
+        // 胶囊就这么点大：半透明会让底层文字透上来糊成一片，这一态用实色（展开态回半透明）
+        panel.style.background = 'var(--card-bg,#fff)';
+        panel.style.display = 'block';
+      } else {
+        panel.style.width = ''; panel.style.maxWidth = ''; panel.style.margin = '';
+        panel.style.borderRadius = '16px 16px 0 0';
+        panel.style.padding = '0 14px calc(14px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)))';
+        panel.style.overflow = 'hidden auto';
+        panel.style.boxShadow = '0 -6px 24px rgba(0,0,0,.18)';
+        panel.style.border = 'none';
+        panel.style.background = 'var(--card-bg,#fff)';
+        panel.style.background = 'color-mix(in srgb, var(--card-bg,#fff) 72%, transparent)';
+        panel.style.display = 'flex';
+      }
+      if (elGrip) elGrip.style.display = adjMini ? 'none' : 'block';
+      if (elHead) elHead.style.display = adjMini ? 'none' : 'flex';
+      if (elBody) elBody.style.display = adjMini ? 'none' : 'flex';
+      if (elMini) elMini.style.display = adjMini ? 'flex' : 'none';
+      syncMiniLabel();
+      applyAdjPos();
+    }
+    // 切页后重算落位与页面名（只读观察 hidden 变化，不写页面状态＝不惊动 #336 的页面观察器）
+    let adjObs = null;
+    function watchAdjPages() {
+      if (adjObs || !('MutationObserver' in window)) return;
+      try {
+        adjObs = new MutationObserver(function () { applyAdjPos(); syncMiniLabel(); });
+        document.querySelectorAll('.page').forEach(function (p) { adjObs.observe(p, { attributes: true, attributeFilter: ['hidden'] }); });
+      } catch (e) { adjObs = null; }
+    }
+    function unwindAdjPages() { try { if (adjObs) adjObs.disconnect(); } catch (e) {} adjObs = null; }
+    // 拖动（面板把手与胶囊共用）：纵向改距底位置；胶囊态位移不足 6px 视为 tap＝展开
+    function bindAdjDrag(el, tapToOpen) {
+      el.style.touchAction = 'none';
+      let sy = 0, sb = 0, drag = false, moved = false;
+      el.addEventListener('pointerdown', (e) => {
+        if (!tapToOpen && adjMini) return; // 展开态把手：胶囊态下不参与
+        if (!tapToOpen && e.target.closest('button')) return; // header 里的按钮不参与拖动
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        drag = true; moved = false; sy = e.clientY;
+        sb = parseFloat(panel.style.bottom) || bottomReserve();
+        try { el.setPointerCapture(e.pointerId); } catch (er) {}
+        e.preventDefault();
+      });
+      el.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        if (Math.abs(e.clientY - sy) > 6) moved = true;
+        if (!moved) return;
+        adjBottom = Math.max(0, Math.min(Math.round(window.innerHeight * 0.7), Math.round(sb + sy - e.clientY)));
+        applyAdjPos();
+      });
+      const up = () => {
+        if (!drag) return;
+        drag = false;
+        if (tapToOpen && !moved) { setMini(false); return; } // 胶囊：点一下＝展开
+        if (adjBottom != null && adjBottom <= bottomReserve() + 6) adjBottom = null; // 拖回自动位＝吸附复位
+        applyAdjPos();
+      };
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', () => { drag = false; });
+      el.style.cursor = 'grab';
+    }
     function valElOf(k) { return panel ? panel.querySelector('[data-adj-val="' + k + '"]') : null; }
     function sliderOf(k) { return panel ? panel.querySelector('[data-adj-slider="' + k + '"]') : null; }
     function refreshVals() {
@@ -7689,13 +7921,17 @@ try {
     function buildPanel() {
       panel = document.createElement('div');
       panel.id = 'screen-adj-panel';
-      panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:96;max-height:62vh;background:var(--card-bg,#fff);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 14px calc(14px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:6px';
+      // #940：底色 72% 半透明（color-mix 不支持的老内核自动回落上一句纯色）＋高度 62vh→40vh，
+      // 与边看边调抽屉同口径；刻意不加 backdrop-filter——AGENTS 的 iOS 卡顿红线。
+      panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:96;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 14px calc(14px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:6px';
       const grip = document.createElement('div');
       grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 2px;flex:none';
       panel.appendChild(grip);
+      bindAdjDrag(grip, false);
+      elGrip = grip;
       const head = document.createElement('div');
       head.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none;padding:2px 0 4px';
-      head.innerHTML = '<b style="font-size:14px">屏幕适配微调</b><span style="font-size:11px;color:#888;flex:1">拖一下立即可见 · 本机永久保存（各设备各自调）</span>';
+      head.innerHTML = '<b style="font-size:14px">屏幕适配微调</b><span style="font-size:11px;color:#888;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">拖标题行可上移 · 本机永久保存</span>';
       const done = document.createElement('button');
       done.textContent = '完成';
       done.style.cssText = 'flex:none;border:none;background:#111;color:#fff;font-size:12px;font-weight:700;border-radius:99px;padding:6px 16px;cursor:pointer';
@@ -7723,11 +7959,49 @@ try {
       holdBtn.addEventListener('pointerdown', holdOn);
       ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { holdBtn.addEventListener(ev, holdOff); });
       head.insertBefore(holdBtn, done);
+      // #940：收起＝只剩 grip＋标题行，露出 tabbar 可切到桌面/聊天等页面看六轴现场（同抽屉口径）
+      const foldBtn = document.createElement('button');
+      foldBtn.textContent = '收起';
+      foldBtn.title = '收成一枚小胶囊（不挡底部导航/输入栏），切到桌面或聊天继续调';
+      foldBtn.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:12px;border-radius:99px;padding:6px 12px;cursor:pointer';
+      const adjBody = document.createElement('div');
+      adjBody.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:none';
+      elBody = adjBody;
+      // #962：收起＝整块收成小胶囊（原实现只折正文区，外壳仍横贯底边 70px 高、照样盖住底部导航）
+      foldBtn.addEventListener('click', () => { setMini(true); });
+      head.insertBefore(foldBtn, holdBtn);
       panel.appendChild(head);
+      elHead = head;
+      bindAdjDrag(head, false); // grip 只有 4px 高，标题行才是主拖拽把手
+      // #962：收起态胶囊——一枚小 chip（点一下展开、可拖走让位），头上带当前页面名
+      // ⇒ 用户带着它就能切到桌面/聊天看现场，一眼知道在给哪一页调
+      const mini = document.createElement('div');
+      mini.setAttribute('data-adj-mini', '');
+      mini.style.cssText = 'display:none;align-items:center;gap:8px;font-size:13px;font-weight:700;white-space:nowrap';
+      mini.innerHTML = '<span style="font-size:13px;font-weight:800">适配</span><span data-adj-page style="font-weight:600;color:#888">桌面</span><span style="font-weight:500;font-size:11px;color:#999">点开调 ›</span>';
+      bindAdjDrag(mini, true);
+      panel.appendChild(mini);
+      elMini = mini;
       const tip = document.createElement('div');
       tip.style.cssText = 'font-size:11px;color:#888;flex:none;line-height:1.5';
-      tip.textContent = '拖动滑杆边看边调（面板上方就是效果现场），双击滑杆回默认 0；配合「屏幕适配诊断」——先诊断差多少 px，再来拖对应轴。';
-      panel.appendChild(tip);
+      tip.textContent = '拖动滑杆边看边调，双击滑杆回默认 0；「收起」变成小胶囊、不挡底部导航与输入栏，点「看桌面 / 看聊天」切到现场接着调；配合「屏幕适配诊断」——先诊断差多少 px，再来拖对应轴。';
+      adjBody.appendChild(tip);
+      // #962：现场行——显示当前在给哪一页调，并可一键切到桌面/聊天（切完自动收成胶囊）
+      const ctx = document.createElement('div');
+      ctx.style.cssText = 'flex:none;display:flex;align-items:center;gap:8px;border:1px solid var(--card-border,#eee);border-radius:10px;padding:7px 10px;font-size:12px';
+      const ctxTxt = document.createElement('span');
+      ctxTxt.setAttribute('data-adj-ctx', '');
+      ctxTxt.style.cssText = 'flex:1;min-width:0;font-weight:600';
+      ctxTxt.textContent = '正在调：' + adjPageName();
+      ctx.appendChild(ctxTxt);
+      [['page-phone', '看桌面'], ['chat', '看聊天']].forEach(function (pair) {
+        const pb = document.createElement('button');
+        pb.textContent = pair[1];
+        pb.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:12px;font-weight:600;border-radius:99px;padding:5px 12px;cursor:pointer';
+        pb.addEventListener('click', function () { goPage(pair[0]); });
+        ctx.appendChild(pb);
+      });
+      adjBody.appendChild(ctx);
       // #794：诊断建议行——打开面板即现场探测一次（device.js 只读采集+判定同源），
       // 有可修项才显示；点「一键修正」直接写入对应轴，不用再跑诊断报告
       try {
@@ -7750,7 +8024,7 @@ try {
             if (srow.parentNode) srow.remove();
           });
           srow.appendChild(sbtn);
-          panel.appendChild(srow);
+          adjBody.appendChild(srow);
         }
       } catch (eSug) {}
       const cur0 = window.mochiScreenAdj ? window.mochiScreenAdj.all() : {};
@@ -7783,7 +8057,7 @@ try {
         });
         rng.addEventListener('dblclick', () => { applyAxis(ax, 0); });
         row.appendChild(rng);
-        panel.appendChild(row);
+        adjBody.appendChild(row);
       });
       const reset = document.createElement('button');
       reset.textContent = '全部恢复默认（各轴归零）';
@@ -7792,7 +8066,7 @@ try {
         AXES.forEach(ax => applyAxis(ax, 0, true));
         toast('屏幕适配微调已全部恢复默认');
       });
-      panel.appendChild(reset);
+      adjBody.appendChild(reset);
       // #794：适配码（换机/情侣互帮）——把当前各轴值打成一串 MCADJ1 码，对方在
       // 「屏幕适配微调→导入适配码」粘贴即套用（值域校验走 mochiScreenAdj.set，
       // 越界/残缺项自动忽略，不会把对方面板写坏）
@@ -7859,16 +8133,52 @@ try {
         });
       });
       codeRow.appendChild(impBtn);
-      panel.appendChild(codeRow);
+      adjBody.appendChild(codeRow);
+      panel.appendChild(adjBody);
       document.body.appendChild(panel);
+      setMini(false); // 每次新建都从展开态起步（落位自动摆到底部操作区之上）
+      watchAdjPages();
     }
-    function closePanel() { if (panel) { panel.remove(); panel = null; } }
-    const entry = document.getElementById('row-screen-adj');
-    if (entry) entry.addEventListener('click', () => {
-      if (!panel) buildPanel();
+    function closePanel() { if (panel) { panel.remove(); panel = null; unwindAdjPages(); } }
+    // #962：切到桌面/聊天现场（面板里的「看桌面 / 看聊天」用）——切完自动收成胶囊，一眼看到那一页
+    function goPage(which) {
+      try {
+        if (which === 'chat') { if (typeof window.enterChat === 'function') window.enterChat(); }
+        else { const t = document.querySelector('.tab[data-page="page-phone"]'); if (t) t.click(); }
+      } catch (e) {}
+      setMini(true);
+      applyAdjPos();
+      syncMiniLabel();
+    }
+    function openAdjPanel() {
+      // #962：节点若被外部摘掉（页面重建/测试脚本 remove）就重建——否则 openAdjPanel 会对着
+      // 游离节点置 hidden=false：命令都执行了、屏上什么都没有（实测踩过）
+      if (!panel || !panel.isConnected) { panel = null; buildPanel(); }
       else panel.hidden = false; // 安卓返回键走 tabs.js 只置 hidden，重开要显回来（防 zombie 面板）
+      applyAdjPos();
       refreshVals();
+      syncMiniLabel();
+    }
+    // #962：三处入口收敛到同一个开面板动作——设置页（原有）＋聊天页「更多 → 工具」＋桌面页「装修模式栏」，
+    // 用户不用先钻进设置：在桌面/聊天现场就能开面板调，调的位置看得见＝不再盲调。
+    window.mochiOpenScreenAdj = openAdjPanel;
+    const entry = document.getElementById('row-screen-adj');
+    if (entry) entry.addEventListener('click', openAdjPanel);
+    const chatEntry = document.getElementById('more-screen-adj');
+    if (chatEntry) chatEntry.addEventListener('click', () => {
+      const mp = document.getElementById('chat-more-panel');
+      if (mp) mp.hidden = true; // 与其它 more-item 同口径：点了先把更多面板收掉
+      openAdjPanel();
     });
+    const decorEntry = document.getElementById('decor-fit');
+    if (decorEntry) decorEntry.addEventListener('click', () => {
+      try { if (window.exitDecor) window.exitDecor(); } catch (e) {} // 先退出装修模式再开面板，避免两层叠着看不清
+      openAdjPanel();
+    });
+    try {
+      window.addEventListener('resize', () => { applyAdjPos(); });
+      if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if (panel) applyAdjPos(); });
+    } catch (e) {}
   })();
 
   // 今日情话：每天固定随机一条（按日期种子，当天不变，隔天换新）
@@ -8727,7 +9037,7 @@ try {
     });
     bind('row-contact', () => {
       open('联系作者 / 反馈',
-        '作者只有两个账号：小红书 @言序（1842523578）、抖音 @言序（58334080131）。\n\n作者不玩抖音、不回消息，账号仅用于发布本站链接。本站完全免费，任何收费均为诈骗。\n\n作者已决定月底停更：互助群月底解散，之后不再答疑、不再帮看 bug；网站仍开源免费，代码可自行下载修改。\n\n遇到问题建议先看「使用说明」，并用 工具 → 设备兼容诊断 一键复制本机环境信息再反馈。');
+        '作者只有两个账号：小红书 @言序（1842523578）、抖音 @言序（58334080131）。\n\n作者不玩抖音、不回消息，账号仅用于发布本站链接。本站完全免费，任何收费均为诈骗。\n\n作者已决定月底停更：互助群月底解散，之后不再答疑、不再帮看 bug；网站仍开源免费，代码可自行下载修改。\n\n遇到问题建议先看「使用说明」，并用 信息诊断 →「设备兼容诊断」一键复制本机环境信息再反馈。');
     });
     // #611：以下 5 条原在开屏（「其他说明与常见问题」/「四、关于全屏模式失效」/「八、关于系统预设字卡和功能设置」），
     // 按用户要求从开屏删除、移入设置 → 关于 → 常见问题（只读弹窗）。
@@ -8737,7 +9047,7 @@ try {
     });
     bind('row-faq-app2', () => {
       open('关于“自己转 App 使用”',
-        '类似“一个木函”那种链接转应用的方式，没有我的原代码，本质是浏览器套壳，不是真正的 App，反而可能出现非常多的适配问题。所以不如直接浏览器使用，体验更稳定。');
+        '类似“一个木函”那种链接转应用的方式，没有我的原代码，本质是浏览器套壳，不是真正的 App，反而可能出现非常多的适配问题。所以不如直接浏览器使用，体验更稳定。\n\n替代方案：「浏览器 → 安装快捷方式到手机桌面」是可以正常使用的（PWA 方式，还能开全屏，效果最接近真正的 App）。');
     });
     bind('row-faq-addcard', () => {
       open('怎么添加字卡',
@@ -8750,6 +9060,19 @@ try {
     bind('row-faq-preset', () => {
       open('系统预设字卡与功能设置',
         '建议打开使用。（我自己用是默认全开）\n\n初衷就是为了不限制梦角表达，如果关掉，反而限制了它，和基础传讯网站没什么差别——正是因为以前接触的字卡传讯类型太简单才做的。\n\n建议先全部打开使用，再根据个人适应情况调整。');
+    });
+    // #961（2026-09-21 用户直派）：常见问题新增三条——没有账号不同步 / 浏览器与桌面图标两套存储 / 收不到消息与通知
+    bind('row-faq-noacct', () => {
+      open('关于「没有账号、不会自动同步」',
+        '本站没有账号系统（不用注册、不用登录），也没有云端——你的数据只存在【这台手机 + 这个浏览器】的本地存储里。两个直接后果：\n① 两台手机（或两个浏览器）之间不会自动同步，A 上的聊天记录不会出现在 B 上；\n② 换机 / 换浏览器时数据不会自己跟过去，必须靠「导出数据」→ 在新设备「导入数据」搬运一次。\n\n想换设备：先在旧设备 设置 → 通用 →「导出数据」导出完整备份，再在新设备 设置 → 通用 →「导入数据」导入。\n\n同一台手机上，浏览器直接打开 和「添加到桌面」后的图标也各自独立（见「浏览器和桌面图标是两份数据」）。');
+    });
+    bind('row-faq-twostore', () => {
+      open('浏览器和桌面图标是两份数据',
+        '「浏览器直接打开本站」和「添加到主屏幕 / 桌面后从图标打开」是两份彼此独立的存储：在一个入口存的数据，另一个入口看不到——这不是数据丢了。\n\n常见表现：装到桌面后打开发现是空的 / 两个入口聊天记录对不上。\n\n原因：iPhone 的主屏幕应用与 Safari、部分安卓浏览器（如 Edge）与它的桌面应用，各用各自的存储空间，互不相通。\n\n怎么处理：\n① 固定用一个入口，不要换来换去；\n② 想换入口：先在旧入口 设置 → 通用 →「导出数据」导出，再到新入口 设置 → 通用 →「导入数据」导入；\n③ iPhone 推荐「添加到主屏幕」后用桌面图标（不受 Safari 7 天清空规则限制，见关于段顶部提示）。');
+    });
+    bind('row-faq-notify', () => {
+      open('锁屏 / 后台收不到消息、通知不弹？',
+        '本站是网页、不是原生 App，消息与通知受浏览器 / 系统限制，不是网站坏了。按下面查：\n\n① 页面完全关掉后，普通网页无法自己醒来——需要到 设置 → 系统 打开「后台保活」并开启「离线消息提醒」；仅部分安卓浏览器（Chromium 系，如 Chrome / Edge）支持「离线消息提醒」，且要允许「通知」权限。\n② iPhone：Safari / 网页拿不到系统通知，关掉页面后不会再弹——可改用应用内的「桌面消息弹窗」横幅（需页面开着）。\n③ 省电 / 电池优化 / 后台限制会冻结网页导致不弹：把浏览器加入电池优化白名单、允许后台运行。\n④ 通知权限被拒：到系统设置里给浏览器打开「通知」权限。\n\n结论：想尽量稳定收到——安卓用 Chrome / Edge 并打开「后台保活」＋「后台弹窗」；iPhone 别指望关掉页面还能收通知（系统限制）。完整排查步骤见 设置 → 系统 →「后台弹窗」行的「功能说明」，或点该行右侧「测试」一键体检。');
     });
     // #792（2026-09-18 用户直派）：数据与存储必读五条——小白用户对「数据为什么会没」的重复疑问，
     // 详版文案在此（行点击弹窗），短版功能说明在 settings-help.js，行与警示条在 template.html，三处同步。
@@ -8767,11 +9090,11 @@ try {
     });
     bind('row-faq-st-backup', () => {
       open('怎么备份与恢复（唯一防线）',
-        '备份＝把全部数据导出成一个文件，存到浏览器清不到的地方。这是防丢的唯一可靠防线，其它都没用（本机不保留任何自动备份副本）。\n\n【怎么做】设置 → 工具 →「导出数据」→ 选「完整备份」→ 把文件保存好。\n\n【存到哪】不要只留在浏览器的下载记录里——发送到微信收藏 / 文件夹 / 云盘 / 电脑，至少一份存在浏览器外面；文件不要改名弄丢后缀。\n\n【多久一次】建议每周一次；大量聊天 / 加了很多字卡之后；以及每次看到「有新版本」要刷新之前，都先导一次。\n\n【怎么恢复】换机或数据丢失后：装好本站 → 设置 → 工具 →「导入数据」→ 选备份文件 → 按完整备份覆盖恢复，等恢复完成提示后再操作。\n\n【换设备 / 换浏览器】数据不会自动跟过去（本站无云端不同步），全靠备份文件搬家：新设备导入一次即可。\n\n【两个入口不互通】浏览器直接打开 和 桌面快捷方式，是两份独立存储——固定用一个入口；非要换，先在旧入口导出、再到新入口导入。');
+        '备份＝把全部数据导出成一个文件，存到浏览器清不到的地方。这是防丢的唯一可靠防线，其它都没用（本机不保留任何自动备份副本）。\n\n【怎么做】设置 → 通用 →「导出数据」→ 选「完整备份」→ 把文件保存好。\n\n【存到哪】不要只留在浏览器的下载记录里——发送到微信收藏 / 文件夹 / 云盘 / 电脑，至少一份存在浏览器外面；文件不要改名弄丢后缀。\n\n【多久一次】建议每周一次；大量聊天 / 加了很多字卡之后；以及每次看到「有新版本」要刷新之前，都先导一次。\n\n【怎么恢复】换机或数据丢失后：装好本站 → 设置 → 通用 →「导入数据」→ 选备份文件 → 按完整备份覆盖恢复，等恢复完成提示后再操作。\n\n【换设备 / 换浏览器】数据不会自动跟过去（本站无云端不同步），全靠备份文件搬家：新设备导入一次即可。\n\n【两个入口不互通】浏览器直接打开 和 桌面快捷方式，是两份独立存储——固定用一个入口；非要换，先在旧入口导出、再到新入口导入。');
     });
     bind('row-faq-st-bug', () => {
       open('丢数据了，怎么判断是不是 bug',
-        '先自查再报修——数据丢失最常见的原因不是 bug，是设备限制（详见「数据为什么会自己没」）。按顺序自查：\n\n① 想一想最近有没有：清过浏览器数据 / 缓存、用过手机管家一键清理、开过无痕模式、卸载重装过浏览器、恢复出厂 / 系统大更新、换过手机或浏览器、把手机给别人动过；\n② 打开其它常用网站，看登录状态还在不在：其它网站也被退出 / 被清了＝浏览器数据被清过，不是本站 bug；\n③ 看丢的范围：全部没了多半是浏览器层被清；只有个别消息或个别功能不对，才更像程序问题；\n④ 换过入口吗：浏览器打开和桌面快捷方式数据不互通，另一个入口里可能还在。\n\n都排除了、且是高频反复丢，才按疑似 bug 处理。报修格式：【手机型号 + 浏览器 + 具体现象】，外加 设置 → 工具 →「设备兼容诊断」复制的信息，并说明丢了什么、什么时候发现、之前做过上面哪些操作。');
+        '先自查再报修——数据丢失最常见的原因不是 bug，是设备限制（详见「数据为什么会自己没」）。按顺序自查：\n\n① 想一想最近有没有：清过浏览器数据 / 缓存、用过手机管家一键清理、开过无痕模式、卸载重装过浏览器、恢复出厂 / 系统大更新、换过手机或浏览器、把手机给别人动过；\n② 打开其它常用网站，看登录状态还在不在：其它网站也被退出 / 被清了＝浏览器数据被清过，不是本站 bug；\n③ 看丢的范围：全部没了多半是浏览器层被清；只有个别消息或个别功能不对，才更像程序问题；\n④ 换过入口吗：浏览器打开和桌面快捷方式数据不互通，另一个入口里可能还在。\n\n都排除了、且是高频反复丢，才按疑似 bug 处理。报修格式：【手机型号 + 浏览器 + 具体现象】，外加 设置 → 信息诊断 →「设备兼容诊断」复制的信息，并说明丢了什么、什么时候发现、之前做过上面哪些操作。');
     });
   })();
 
@@ -9563,7 +9886,11 @@ try {
         if (!bar) {
           bar = document.createElement('div');
           bar.id = 'perf-check-bar';
-          bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:max(16px,env(safe-area-inset-bottom,0px));z-index:99999;background:rgba(18,18,28,.94);color:#fff;padding:12px 14px;border-radius:10px;font-size:13px;line-height:1.5;text-align:center;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.35);';
+          // #905：进度浮条从「底部横条」改「顶部居中小胶囊」——底部条把 tabbar/聊天输入栏/
+          // 返回按钮这些用户实测时要点的按钮盖住了（用户实报「位置太靠下不居中，挡住按钮」；
+          // pointer-events:none 本就点了穿透，问题在视觉遮挡）。顶部胶囊避开全部底部操作区，
+          // 只占页面标题上方窄条；宽度按内容自适应（max-width 防长文案溢出）。
+          bar.style.cssText = 'position:fixed;top:max(14px,env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);max-width:88%;z-index:99999;background:rgba(18,18,28,.94);color:#fff;padding:8px 14px;border-radius:999px;font-size:12px;line-height:1.45;text-align:center;pointer-events:none;box-shadow:0 2px 12px rgba(0,0,0,.35);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
           document.body.appendChild(bar);
         }
         bar.textContent = txt;
@@ -9572,17 +9899,66 @@ try {
     function hideBar() { try { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); } catch (e) {} bar = null; }
     row.addEventListener('click', function () {
       if (!window.openModal || window.mochiPerfCheck.running()) return;
-      window.openModal('卡顿自检（渲染层实测）', '', function () {
-        // 点确定＝开始：弹窗即关，用户去任意页面正常操作 10 秒，底部浮条实时倒数，结束自动弹报告
-        window.mochiPerfCheck.start(10000, function (p) {
-          showBar('卡顿实测中…剩 ' + p.left + ' 秒｜已采 ' + p.frames + ' 帧，掉帧 ' + p.janky + '（可正常使用手机，去卡的地方操作）');
+      // #905：时长可选（用户实报「为什么只能测十秒，不合理」）——纯 pills 弹窗确定时 cb(pillVal)，
+      // 默认 30 秒（原 10 秒样本太少：60fps 下才 ~600 帧，偶发巨帧很容易整窗漏采），10/60 可换。
+      // #906：抽 runTest——报告弹窗「确定」＝用同样时长马上再测一轮（okText 定制按钮文案），
+      // 闭环不用重进设置；「取消」仅关闭。running() 守卫天然防双开。
+      function runTest(durMs) {
+        // 点确定＝开始：弹窗即关，用户去任意页面正常操作所选时长，顶部浮条实时倒数，结束自动弹报告
+        window.mochiPerfCheck.start(durMs, function (p) {
+          // #906：浮条带当前页名（采样在跟着走，用户放心）＋后台占比过高时提示「不算数」
+          var hidRatio = (p.frames + p.hid) > 0 ? p.hid / (p.frames + p.hid) : 0;
+          showBar('卡顿实测中…剩 ' + p.left + ' 秒｜' + (p.pg && p.pg !== '?' ? p.pg + '｜' : '') + '已采 ' + p.frames + ' 帧 · 掉帧 ' + p.janky + (hidRatio > 0.3 ? '（锁屏/切后台的时间不算数）' : ''));
         }).then(function (r) {
           hideBar();
           if (!r) return;
           echoLast();
-          window.openModal('卡顿自检报告', r.text, null, { noInput: true, textarea: true, textareaRows: 16, big: true });
+          // #884：报告弹窗补【复制】+【导出docx】（同 device.js 诊断弹窗的 copyBtn/exportBtn 机制）——
+          // 之前只有可手选的 textarea，手机上长篇手选复制极易漏段；导出走 device.js 暴露的
+          // window.mochiDiagExportDocx（三级降级：分享面板→保存框→确认下载，Word/WPS 直开不乱码），
+          // shareTitle 用「mochi 卡顿自检报告」；无该全局（旧产物）时提示改用复制。
+          var ctlR = window.openModal('卡顿自检报告', r.text, function () { runTest(durMs); }, {
+            noInput: true, textarea: true, textareaRows: 16, big: true,
+            staticText: '点「再测一次」＝用同样时长马上再来一轮（对照测）；「取消」仅关闭本报告。',
+            copyBtn: {
+              label: '复制',
+              fn: function (c) {
+                var txt = c ? c.text() : r.text;
+                var hint = function (s) { if (c && c.hint) c.hint(s); };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  navigator.clipboard.writeText(txt).then(function () { hint('已复制到剪贴板，直接粘贴发给开发者即可'); }, function () { hint('复制失败，请长按选字手动复制'); });
+                } else {
+                  hint('当前内核不支持一键复制，请长按文本手动复制（或用【导出docx】）');
+                }
+              }
+            },
+            exportBtn: {
+              label: '导出docx',
+              fn: function (c) {
+                var txt = c ? c.text() : r.text;
+                if (typeof window.mochiDiagExportDocx === 'function') {
+                  window.mochiDiagExportDocx(txt, 'mochi-perfcheck-', null, null, 'mochi 卡顿自检报告');
+                } else {
+                  if (c && c.hint) c.hint('导出组件未就绪，请用【复制】或长按手选复制');
+                }
+              }
+            }
+          });
+          try { if (ctlR && ctlR.okText) ctlR.okText('再测一次'); } catch (e5) {}
         });
-      }, { staticText: '点「确定」开始 10 秒实测：期间正常使用手机（去感觉卡的地方滚动/操作），结束后自动弹出报告。采样只在本机进行、不上传数据。', noInput: true });
+      }
+      window.openModal('卡顿自检（渲染层实测）', '', function (v) {
+        var durMs = { 10: 10000, 30: 30000, 60: 60000, 120: 120000, 300: 300000 }[String(v)] || 30000;
+        runTest(durMs);
+      }, {
+        // #908：红字警示——用户在弹窗打开这一刻就要看见「短时长没用」（#900b 的 staticEmph+warn 重点标红机制）
+        staticText: '**⚠ 时长太短没用！**10 秒 / 30 秒只能看「此刻顺不顺」，抓卡顿请用 **2 分钟档（已设为默认）**，卡得少就用 **5 分钟**——切页面卡、用一会儿才卡、玩一阵才掉帧这类，时间越长越撞得上。\n\n点「确定」开始后（弹窗会关）正常用手机：去感觉卡的地方打字、滑动、切页、从后台切回来；顶部浮条实时倒数和显示当前页，结束自动弹报告，可【复制】或【导出docx】发给开发者。采样只在本机、不上传；锁屏/切后台的时间自动剔除不算数。',
+        noInput: true,
+        warn: true,
+        staticEmph: true,
+        pills: [{ label: '10 秒', value: '10' }, { label: '30 秒', value: '30' }, { label: '60 秒', value: '60' }, { label: '2 分钟', value: '120' }, { label: '5 分钟', value: '300' }],
+        pill: '120'
+      });
     });
   })();
 

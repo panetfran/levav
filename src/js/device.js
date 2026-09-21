@@ -312,11 +312,49 @@
     // （data-backup.js altSaveFile）也不许再碰 navigator.share，否则用户点一下崩一次。
     // 与 brokenFileShare 分开登记：夸克/华为在真手势下分享面板可用（#758 唯一可靠通道），不回退。
     shareSheetCrash: /heytapbrowser/i.test(_envUa),
+    // FIX 2026-09-19 #815：blob: 下载可能被静默丢弃、需要在「确定后下载」之后追问
+    // 「文件保存成功了吗」的环境（追问弹窗/换路按钮在 data-backup.js afterDownloadAttempt）。
+    // #758 只点名夸克/华为，#603 同期已实证小米 MIUI 同样静默丢——按内核点名追问永远
+    // 追不完（用户原话「其他设备型号也有」），改三类并集的结构性判定：
+    // ①壳家族 UA（自带下载管理器会丢 blob: 的壳；三星 Chrome 系下载可靠不在列＝免添噪音）；
+    // ②安卓能力缺口兜底（不能 navigator.share 文件、也没有系统保存框＝裸 blob: 下载是
+    //   唯一路＝壳浏览器长尾，未来新壳不改本名单自动覆盖；Firefox 下载可靠显式排除）；
+    // ③iOS 主屏独立容器（无下载管理器，a[download] 静默无反应——#172 结论）。
+    // 只影响下载后的追问一步，不改三级降级链任何顺序；桌面端恒 false（下载可靠零噪音）。
+    downloadAsk: (function () {
+      try {
+        if (/huaweibrowser|quark|miuibrowser|vivobrowser|heytapbrowser|opbrowser|mqqbrowser|qqbrowser|ucbrowser|baiduboxapp|baidubrowser|sogoumobilebrowser|micromessenger|microapp|obabrowser|dingtalk/i.test(_envUa)) return true;
+        if (isIOS) return !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+        if (!isAndroid) return false;
+        if (/firefox/i.test(_envUa)) return false;
+        if (window.showSaveFilePicker) return false;
+        return !(navigator.canShare && navigator.canShare({ files: [new File(['x'], 'x.txt', { type: 'text/plain' })] }));
+      } catch (e) { return false; }
+    })(),
     // 音乐 API 被壳拦截、可提示用户换 Safari 的环境（QQ 浏览器/夸克，文案提示共用）
     apiBlockedHint: /QQBrowser|Quark/i.test(_envUa),
     // 系统级通知可能拦截（API 不报错但通知不显示）的安卓环境（红米/小米等 MIUI 系）
     notifyQuirk: /miui|xiaomi|redmi|hyperos/i.test(_envUa) || /android/i.test(_envUa)
   };
+
+  // ===== #907 冻结归因探针 =====
+  // 背景：iPhone 17PM 实报「设置页不动也每 1.7 秒卡一次、最长卡死 3.42 秒」（300 秒自检：
+  // 平均 13.3fps／掉帧 96%／前台冻结 175 次），而 iOS WebKit 没有 longtask 观测，「长任务：无」
+  // 完全不可信——只能靠相位标记把「冻结前最后在做什么」记下来。各重活入口（大键写 IDB、
+  // 小键写日志、聊天落盘、表情包落盘…）调 window.__mochiPhase('tag')，卡顿自检在 >250ms
+  // 前台冻结时回查冻结起点前的最近标记并在报告点名。环形 30 条、字符串极短、零常驻开销。
+  try {
+    if (!window.__mochiPhase) {
+      window.__mochiPhaseLog = window.__mochiPhaseLog || [];
+      window.__mochiPhase = function (tag) {
+        try {
+          var l = window.__mochiPhaseLog;
+          if (l.length >= 30) l.shift();
+          l.push({ t: Date.now(), tag: String(tag) });
+        } catch (e) {}
+      };
+    }
+  } catch (e) {}
 
   window.mochiDevice = {
     isMobile: !!isMobile,
@@ -583,6 +621,45 @@
       try { cb(o); } catch (e) {}
     }).catch(function () { try { cb([]); } catch (e) {} });
   }
+  // FIX 2026-09-20 #917：外置功能包「首拉失败」聚合——PERF-PLAN 阶段 1b 后 35+ 个功能
+  // 文件走 <script defer src="js/*">，弱网 / GitHub Pages 波动 / SW 代际过渡时可能同秒
+  // 成片 onerror，随后 #802 自愈引擎（pwa.js）按波重注入多半又全部到位。此前每条都照常
+  // pushErr，一次波动 18 条塞满 20 条错误环、把真错误整批顶出（vivo X200S+Edge 实报：
+  // 同一秒 18 条「资源加载失败 <script> …/js/xxx.js」，健康检查 82/82 全到位＝已自愈）。
+  // 现改为：首拉失败只登记不记环，20s 静默窗（#802 三波 1.5/6/15s + 4s 落定）后汇总
+  // 一条——全自愈 → 一条「已自愈」如实留痕；仍有缺口 → 一条「真失败」点名文件
+  //（#802 自身同时把 [ext-recovery] 写进 __jsErrors，报障双向可查）。判定口径与
+  // #802 failList() 逐字一致：在 __mochiExtFail 且不在 __mochiLoaded 才算真没到位，
+  // 名单外的「慢下载中」不算失败。零机型/零浏览器分支。
+  function extFailNote(name) {
+    try {
+      var a = window.__mochiExtFailAgg;
+      if (!a) a = window.__mochiExtFailAgg = { names: [], timer: 0, seen: {} };
+      if (a.names.indexOf(name) < 0) a.names.push(name);
+      if (!a.timer) a.timer = setTimeout(extFailFlush, 20000);
+    } catch (e) {}
+  }
+  function extFailFlush() {
+    try {
+      var a = window.__mochiExtFailAgg;
+      if (!a) return;
+      a.timer = 0;
+      var names = a.names.slice(0);
+      a.names.length = 0;
+      if (!names.length) return;
+      var fail = window.__mochiExtFail || [], loaded = window.__mochiLoaded || [];
+      var still = names.filter(function (f) { return fail.indexOf(f) >= 0 && loaded.indexOf(f) < 0; });
+      // 同批文件（自愈重注入）再失败＝#802 还在重试循环里，已汇总过的不重复刷（防每 20s 一条）
+      var fresh = still.filter(function (f) { return !a.seen[f]; });
+      if (still.length && !fresh.length) return;
+      if (still.length) {
+        still.forEach(function (f) { a.seen[f] = 1; });
+        pushErr('[外置包·真失败] ' + still.length + ' 个功能包未加载成功: ' + still.slice(0, 6).join('、') + (still.length > 6 ? ' 等' : '') + '（网络持续异常，#802 自愈重试三波仍未到位；可刷新页面或稍后重进）');
+      } else {
+        pushErr('[外置包·已自愈] ' + names.length + ' 个功能包首拉失败（网络波动），自愈重试后已全部到位，功能不受影响');
+      }
+    } catch (e) {}
+  }
   // v3.25.x：改捕获阶段监听——资源加载失败（script/css/图片 404，白屏元凶）的
   // error 事件不冒泡，只有 capture 才抓得到；JS 异常在 window 上派发，capture
   // 同样收到，一个监听覆盖两类。JS 异常带 e.error.stack 定位到文件+行号。
@@ -609,6 +686,12 @@
           var imTok = '';
           try { imTok = String((e.target.getAttribute && e.target.getAttribute('src')) || ''); } catch (e4) {}
           if (tag === 'img' && window.mochiMediaIsToken && window.mochiMediaIsToken(imTok)) return;
+          // FIX 2026-09-20 #917：外置功能包首拉失败走聚合（extFailNote），不逐条记环——
+          // 这类失败多为弱网瞬态、#802 自愈多半到位；真失败 20s 后汇总一条点名（口径见上）
+          if (tag === 'script') {
+            var mJs = /\/js\/([^\/?#]+\.js)(?:[?#]|$)/.exec(url);
+            if (mJs && window.__mochiExtFiles && window.__mochiExtFiles.indexOf(mJs[1]) >= 0) { extFailNote(mJs[1]); return; }
+          }
           m = '资源加载失败 <' + tag + '> ' + url.slice(0, 120);
         }
       } catch (e2) {}
@@ -671,6 +754,11 @@
   // version.json 会连续失败，不去重会刷屏。AbortError（调用方主动超时）不算失败。
   function fetchFail(url, status) {
     try {
+      // FIX 2026-09-20 #917：浏览器自报离线（飞行模式/断网/锁屏息网）时 status=0 的失败
+      // 不记——pwa.js 每 15s 轮询 ./version.json 期间必然连续网络失败，逐条记「网络失败」
+      // 只制造噪音（vivo X200S+Edge 诊断 6 条 ./version.json 全落在离线段）。有响应码的
+      // 失败（404/500）照记；onLine 为真但实际不通时同样照记，不放走真网络故障。
+      if (!status && navigator.onLine === false) return;
       var ent = { t: Date.now(), u: String(url || '').slice(0, 90), s: status || 0 };
       var last = null;
       try {
@@ -1212,6 +1300,11 @@
         // 后台终止=上个会话没能活着回来（标签被系统丢弃/杀掉，回来自动重载）
         if (kp.ev && (kp.ev.stall > 0 || kp.ev.died > 0)) {
           kpParts.push('历史取证：断流' + kp.ev.stall + '次/后台终止' + kp.ev.died + '次（>0＝保活曾被冻结或页面曾被系统回收）');
+          // #960：终止次数高＝iOS 内存压力反复回收本页（回前台白一下/重新加载的实锤），
+          // 数字升级成可行动建议——三条都不是「坏了」，是数据量/保活/标签多叠加出来的
+          if (kp.ev.died >= 5) {
+            kpParts.push('⚠ 本页被系统回收过 ' + kp.ev.died + ' 次（内存压力）：建议①不用时关掉后台保活（更省内存）②按 设置→查看存储 清掉最占地方的一项 ③别同开太多标签页/网页应用');
+          }
         }
         if (kp.hb) {
           const tr = kp.hb.trail || [];
@@ -1236,7 +1329,10 @@
     try { L.push('实测帧率：采样中…'); fpsIdx = L.length - 1; } catch (e) {}
     jobs.push(fpsProbe().then(function (fps) {
       if (fpsIdx < 0) return;
-      L[fpsIdx] = fps > 0 ? '实测帧率≈' + fps + ' fps（500ms 现场采样，高刷屏>60 正常）' : '实测帧率：rAF 未触发（页面在后台被节流）';
+      // #884：实测落在 ≈30fps 档（15~40 且 >0）＝八成是 iOS 低电量 / 安卓省电模式把整机
+      // 帧率锁半（系统行为，非应用卡），点名提示关闭复测——多台 iPhone「怎么用都卡」实报都查到是它。
+      const lpHint = (fps > 0 && fps >= 15 && fps <= 40) ? '；≈30fps 档＝八成开了低电量/省电模式（系统锁半帧率），关掉再测' : '';
+      L[fpsIdx] = fps > 0 ? '实测帧率≈' + fps + ' fps（500ms 现场采样，高刷屏>60 正常' + lpHint + '）' : '实测帧率：rAF 未触发（页面在后台被节流）';
     }));
     // #690：桌面翻页帧耗时（用户上一次翻页时由 desktop-slider.js 现场采样）。
     // 上面那行「实测帧率」是打开诊断这一刻**静态页**的读数，翻页卡顿在它上面看不出来
@@ -1253,6 +1349,21 @@
           + (dp.mean > 100 ? '（严重卡顿）' : dp.mean > 33 ? '（掉帧）' : '（流畅）'));
       } else {
         L.push('桌面翻页帧耗时：尚无记录（去桌面左右滑一次再回来即可采到）');
+      }
+    } catch (e) {}
+    // #884：切回桌面帧耗时（从聊天/其他页返回手机桌面那一刻，由 desktop-slider.js 在
+    // page-phone 取消隐藏时现场采 30 帧）——用户主诉「聊天返回主页面卡、主页面切换卡」，
+    // 静态帧率看不出切页现场；这行与上面的翻页采样合起来才能把「切页类卡顿」定责。
+    try {
+      const sp = JSON.parse(localStorage.getItem('xy-home-v2:__diag-swperf') || 'null');
+      if (sp && sp.n) {
+        const when = sp.t ? new Date(sp.t).toLocaleString() : '?';
+        L.push('切回桌面帧耗时（' + sp.n + ' 帧现场采样 · ' + when + '）：'
+          + '平均 ' + sp.mean + 'ms / p90 ' + sp.p90 + 'ms / 最慢 ' + sp.worst + 'ms'
+          + (sp.hid ? '（已剔除后台帧 ' + sp.hid + '）' : '')
+          + (sp.mean > 100 ? '（严重卡顿）' : sp.mean > 33 ? '（掉帧）' : '（流畅）'));
+      } else {
+        L.push('切回桌面帧耗时：尚无记录（从聊天页点返回到桌面一次即可采到）');
       }
     } catch (e) {}
     let memTxt = '不支持（仅 Chrome 系）';
@@ -1713,11 +1824,15 @@
       const mc = window.mochiModuleCheck ? window.mochiModuleCheck() : null;
       if (!mc) L.push('模块加载体检：采集未启用（旧产物或初始化未接入）');
       else if (mc.missing.length) {
-        // PERF-PLAN 阶段 1：全部缺的都在 ext 排队里＝弱网首访瞬态（defer 数秒内自愈），措辞降级不吓人
+        // PERF-PLAN 阶段 1：全部缺的都在 ext 排队里＝弱网首访瞬态（defer 数秒内自愈），措辞降级不吓人。
+        // #860（阶段 1b）：全部功能件都走 defer 外置后，「ext 排队」覆盖面扩大到 79 件——
+        // 瞬态豁免只认启动后 15s 内（__mochiBootAt 由 boot 内联段注入）；过窗仍缺＝真没加载
+        // （语法错/404/整段未执行），照旧按硬故障报，防诊断把死模块说成弱网。
         const pend = mc.extPending || [];
-        const hard = mc.missing.filter(function (n) { return pend.indexOf(n) < 0; });
+        const transient = (Date.now() - (window.__mochiBootAt || 0)) < 15000;
+        const hard = transient ? mc.missing.filter(function (n) { return pend.indexOf(n) < 0; }) : mc.missing.slice();
         if (!hard.length) L.push('模块加载体检 ' + mc.loaded.length + '/' + mc.expected.length + '：外置模块加载中 ' + pend.join(', ') + '（弱网首访瞬态，外置 js/ 数秒内自动就绪，非故障）');
-        else L.push('模块加载体检 ' + mc.loaded.length + '/' + mc.expected.length + '：未加载 ' + mc.missing.join(', ') + '（该文件整段未执行＝语法错/启动抛错/漏接 jsFiles，对应功能可能整块失效）');
+        else L.push('模块加载体检 ' + mc.loaded.length + '/' + mc.expected.length + '：未加载 ' + mc.missing.join(', ') + '（' + (transient ? '非外置文件整段未执行' : '已过启动瞬态窗仍缺') + '＝语法错/启动抛错/404/漏接 jsFiles，对应功能可能整块失效）');
       }
       else L.push('模块加载体检：' + mc.expected.length + '/' + mc.expected.length + ' 全部加载完成');
     } catch (e) {}
@@ -2072,11 +2187,25 @@
       a.download = (basePrefix || 'mochi-diag-') + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.docx';
       document.body.appendChild(a);
       a.click();
+      // #887：blob URL 长命化（照搬 data-backup.js anchorDownload v3.28.x 的同族修法）——
+      // 原实现 800ms 就 revokeObjectURL：慢速 iOS / 旧版下载管理器还没把文件写完，
+      // 落盘的就是 0 字节空白 docx（「导出的文件是空白」实报）。改为 pagehide 释放 +
+      // 300s 兜底，anchor 5s 再移除；与备份导出同一口径，零机型分支。
       try {
         setTimeout(function () {
-          try { document.body.removeChild(a); } catch (e2) {}
+          try { if (a.parentNode) a.removeChild(a); } catch (e2) {}
+        }, 5000);
+      } catch (e2) {}
+      try {
+        window.addEventListener('pagehide', function h() {
+          window.removeEventListener('pagehide', h);
           try { URL.revokeObjectURL(url); } catch (e2) {}
-        }, 800);
+        });
+      } catch (e2) {}
+      try {
+        setTimeout(function () {
+          try { URL.revokeObjectURL(url); } catch (e2) {}
+        }, 300000);
       } catch (e2) {}
       return true;
     } catch (e) { return false; }
@@ -2093,6 +2222,13 @@
   function diagExportDocx(text, basePrefix, failMsg, toastFn, shareTitle) {
     const fname = (basePrefix || 'mochi-diag-') + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.docx';
     const tf = (typeof toastFn === 'function') ? toastFn : diagToast;
+    // #887：空白内容守卫——报告还没生成完（采样中/异步采集未落）时 text 为空，
+    // 照旧导出会产出一个「打开全空白」的 docx＝用户看到的「导出的文件是空白」另一半成因。
+    // 拦下来给可行动提示，而不是让用户拿到空文件。
+    if (!text || !String(text).replace(/\s/g, '')) {
+      tf('报告还没生成好（内容是空的），等几秒或重新打开一次再导');
+      return;
+    }
     const legacy = function () {
       const okDl = exportDocx(text, basePrefix);
       tf(okDl
@@ -2102,13 +2238,27 @@
     if (typeof window.mochiExportBlob !== 'function') { legacy(); return; }
     let blob = null;
     try { blob = buildDocxBlob(text); } catch (e) { blob = null; }
-    if (!blob) { legacy(); return; }
+    // #887：zip 结构自检——正常单页报告 docx 至少数 KB；小于 64B 说明打包已坏，
+    // 走 legacy 前把异常记进导出存根（__diag-export），报障时能对号是哪条路、什么内核。
+    if (!blob || blob.size < 64) {
+      try { localStorage.setItem('xy-home-v2:__diag-export', JSON.stringify({ t: Date.now(), path: 'blob-broken', size: blob ? blob.size : -1, ua: String(navigator.userAgent).slice(0, 60) })); } catch (e) {}
+      legacy();
+      return;
+    }
+    // #887：导出存根——记录本次走的通道与文件大小（成功也记）。空白文件类报障凭这一条
+    // 就能定责：path=share 却 size 正常＝分享面板落盘问题；path=download＝下载管理器问题，
+    // 避免再靠猜内核名单（#854/#758 同族教训：证据进名单，不预判）。
+    try { localStorage.setItem('xy-home-v2:__diag-export', JSON.stringify({ t: Date.now(), path: 'chain', size: blob.size, ua: String(navigator.userAgent).slice(0, 60) })); } catch (e) {}
     // #746（2026-09-18）：第 5 参 shareTitle 把分享面板/保存框标题参数化——
     // 「字卡使用状态自检」导出复用本入口，标题显示「字卡使用状态自检报告」；
     // 不传保持旧值「mochi 诊断报告」，既有诊断调用方零感知。
     window.mochiExportBlob(blob, fname, shareTitle || 'mochi 诊断报告', [
       { description: 'Word 文档', accept: { 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'] } }
-    ]).then(function (res) { if (res === 'fail') legacy(); });
+    ]).then(function (res) {
+      // #887：结果也记进存根（ok/cancel/fail），legacy 兜底时补一条
+      try { localStorage.setItem('xy-home-v2:__diag-export', JSON.stringify({ t: Date.now(), path: 'chain:' + res, size: blob.size, ua: String(navigator.userAgent).slice(0, 60) })); } catch (e) {}
+      if (res === 'fail') legacy();
+    });
   }
   // #382：跨闭包导出——本 IIFE 与「屏幕适配诊断」IIFE（#209/#176 域）是两个独立闭包，
   // 那边直接写 diagExportDocx 会 ReferenceError（点【导出docx】被 openModal 按钮的
@@ -2622,6 +2772,21 @@ window.mochiViewportForm = function (sig) {
     const varTop = inp.varTop || 0;
     const diff = inp.diff || 0;
     const Fm = window.mochiViewportForm({ standalone: !!inp.standalone, envTop: envTop, innerH: inp.innerH || 0, screenH: inp.screenH || 0, innerW: inp.innerW || 0, screenW: inp.screenW || 0, iosMajor: inp.iosMajor || 0, safMajor: inp.safMajor || 0, andr: !!inp.andr, safeTopForce: !!inp.force });
+    // FIX 2026-09-20 #917：本机手调轴（设置·屏幕位置设置）——用户手动微调过的轴，
+    // 几何本就【刻意】偏离自动期望，判定器必须同口径处理，否则每 5s 采集把「用户
+    // 亲手调的值」当布局缺陷刷错误环（vivo X200S+Edge 实报：未调设备无此类条目，
+    // 4 条 phone底=714/766 = inner∓26 恰为轴值，观感正常却报少填/超出/导航栏被裁）：
+    // · shift（整体位移轴，.phone 相对 top 纯平移）→ 折算进底边期望；
+    // · h（页面高度轴）→ 底边两项与全屏 ios-h 项跳过（各形态 CSS 的 min 钳制方向不同，
+    //   正向可被钳成无效、负向才是实改高度，硬折算必有一头错）；
+    // · top（顶部避让轴，其用途就是给用户加顶部留白）→ 不判「顶部双倍避让」。
+    // 轴全 0（绝大多数用户，含所有真故障现场）时下述判式与修前逐字一致＝零回归。
+    // 手调值与跳过原因都写进报告/快照/错误环（见 sdAdjStr），让下份报障能一眼分清
+    // 「用户手调」与「真布局错」，不再靠反推。
+    const adj = inp.adj || {};
+    const adjShift = +adj.shift || 0;
+    const adjH = +adj.h || 0;
+    const adjTop = +adj.top || 0;
     let mode;
     if (Fm.forceCover) mode = '覆盖形态（用户已在设置声明：顶部避让修正开启，#186）';
     else if (Fm.resStand) mode = '系统保留形态（iOS 18.x standalone：系统已把网页起点放在状态栏下方，env 仍报真实高度；页面不再避让、高度贴 inner，#200）';
@@ -2647,7 +2812,10 @@ window.mochiViewportForm = function (sig) {
       // 恒报 ✗顶部重叠（修好也红），故与浏览器壳一并取有效顶位；#719 e2e 同理
       // （mochi-cover-top 类已挂、避让在状态栏自身 padding）。
       const sbEffTop = (Fm.coverBrowser || Fm.iosCover || Fm.e2eBrowser) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;
-      if (sbEffTop > expect + 60) add(false, '顶部双倍避让', '✗ 状态栏实测顶位 ' + sbEffTop + 'px，明显超过安全区顶部 ' + expect + 'px（#148 修复的双倍白带形态复发，连本条反馈）');
+      // #917：顶部避让轴非 0＝用户手动加过顶部留白（该轴唯一用途），有效顶位偏大是
+      // 用户所求，不再判「双倍避让」；顶部重叠（顶位偏小）与手调方向相反，照常判。
+      if (adjTop && sbEffTop > expect + 60) add(true, '顶部避让·已手动微调 top=' + adjTop + 'px', '跳过「顶部双倍避让」判定（该轴即用于手动加顶部留白；实测有效顶位 ' + sbEffTop + 'px / 自动期望 ' + expect + 'px，如需恢复自动判定请在 屏幕位置设置 里把「顶部避让」归零）');
+      else if (sbEffTop > expect + 60) add(false, '顶部双倍避让', '✗ 状态栏实测顶位 ' + sbEffTop + 'px，明显超过安全区顶部 ' + expect + 'px（#148 修复的双倍白带形态复发，连本条反馈）');
       // v3.26.x #208：加 diff ≥ envTop−8 守卫——顶部重叠只在「覆盖形态」信号
       // （inner=screen−envTop）下才有意义；iPhone17 等保留形态设备在切后台回来
       // 瞬间 innerHeight 会被短暂报成整屏（diff=0），此瞬态 sbTop=12<57 会误报
@@ -2683,25 +2851,38 @@ window.mochiViewportForm = function (sig) {
     // 严格等 false（undefined 的旧调用/桩不受影响）；真机 mobile.isMobile 恒 true 不豁免。
     if (_kbDocking) add(true, '键盘停靠期，跳过底部判定（vv 缩 ' + _kbShrink + 'px，#282）');
     else if (inp.isMobileDev === false) add(true, '桌面模拟器外壳：.phone 居中手机壳（body 上下留白 24px 属设计），跳过底部贴合判定');
+    // #917：页面高度轴非 0＝用户手动改过 .phone 高度（该轴唯一用途），底边本就随之
+    // 平移；各形态 CSS 的 min(…,视口高) 钳制方向不同（安卓 ios-vv-fit 正向被钳成
+    // 无效、iOS 独立应用正向实缩，iOS -26 走 min 钳不掉手调值），硬折算必有一头错，
+    // 故跳过并把实测/期望/轴值一起如实写出，交由人工核对。
+    else if (adjH) add(true, '底部·已手动微调 h=' + adjH + 'px，跳过贴合判定', '手调页面高度轴改变了 .phone 高（实测底 ' + inp.phoneBottom + 'px / 自动期望 ' + Math.round(expBase + adjShift) + 'px，差 ' + Math.round((inp.phoneBottom || 0) - expBase - adjShift) + 'px）；如需恢复自动判定请在 屏幕位置设置 里把「页面高度」归零');
     else if (inp.phoneBottom != null && inp.innerH) {
-      const expB = expBase;
+      const expB = expBase + adjShift;
       const under = Math.round(expB - inp.phoneBottom);
       const over = Math.round(inp.phoneBottom - expB);
-      if (over > 2) add(false, '底部超出 ' + over + 'px', '✗ .phone 底边超出期望屏底（高度公式异常）');
-      else if (under > 2) add(false, '底部少填 ' + under + 'px 白带', '✗ ' + (Fm.coverBrowser ? '浏览器覆盖形态（#199/#236：避让由状态栏抬升与内容收缩承担，.phone 应铺到可视区底 ' + expB + 'px' : '覆盖形态（env-top=' + inp.envTop + '）下 .phone 应铺到 ' + expB + 'px（#179：高度须含顶部安全区 envTop+inner）') + '，实测只到 ' + inp.phoneBottom + 'px');
-      else add(true, '底部贴合（.phone 底=' + Math.round(inp.phoneBottom) + ' / 期望 ' + expB + '）');
+      if (over > 2) add(false, '底部超出 ' + over + 'px', '✗ .phone 底边超出期望屏底（高度公式异常）' + (adjShift ? '（期望已按手动整体位移 shift=' + adjShift + 'px 折算）' : ''));
+      else if (under > 2) add(false, '底部少填 ' + under + 'px 白带', '✗ ' + (Fm.coverBrowser ? '浏览器覆盖形态（#199/#236：避让由状态栏抬升与内容收缩承担，.phone 应铺到可视区底 ' + expB + 'px' : '覆盖形态（env-top=' + inp.envTop + '）下 .phone 应铺到 ' + expB + 'px（#179：高度须含顶部安全区 envTop+inner）') + '，实测只到 ' + inp.phoneBottom + 'px' + (adjShift ? '（期望已按手动整体位移 shift=' + adjShift + 'px 折算）' : ''));
+      else add(true, '底部贴合（.phone 底=' + Math.round(inp.phoneBottom) + ' / 期望 ' + expB + (adjShift ? '，含手动 shift=' + adjShift + 'px' : '') + '）');
     }
     // ⑤ --mochi-ios-h 与可视高一致性（全屏态）
-    if (inp.fsActive) {
+    if (inp.fsActive && adjH) {
+      // #917：手调页面高度轴后该属性本就【刻意】偏离自动期望（属性值=基准+手调偏移），
+      // 照旧判必报「与期望屏高不符」假错误——跳过并如实写出轴值与实测差。
+      add(true, '--mochi-ios-h·已手动微调 h=' + adjH + 'px，跳过一致性判定', '手调页面高度轴会改变全屏页高度（实测 ios-h=' + (inp.iosH || '(未设)') + 'px / 自动期望 ' + Fm.expBase + 'px）；如需恢复自动判定请在 屏幕位置设置 里把「页面高度」归零');
+    } else if (inp.fsActive) {
       const expH = Fm.expBase;
       if (inp.iosH && Math.abs(inp.iosH - expH) > 2) add(false, '--mochi-ios-h 与期望屏高不符', '⚠ ios-h=' + inp.iosH + 'px ≠ envTop+inner=' + expH + 'px（#179 公式：覆盖形态=整屏/已避让=inner）');
       else add(true, '--mochi-ios-h=' + (inp.iosH || '(未设→回落)') + ' 与期望屏高一致');
     }
     // ⑤b 底部导航栏裁切：tabbar 底边超出可视区（#282：键盘停靠期同 ④ 豁免；#528 桌面外壳同豁免）
-    if (!_kbDocking && inp.isMobileDev !== false && inp.tabBottom != null && inp.innerH) {
-      const expTB = expBase - (inp.envBottom || 0); // 期望底边=屏底−Home横条避让（#199：浏览器覆盖形态=可视区底）
+    if (!_kbDocking && inp.isMobileDev !== false && adjH) {
+      // #917：手调页面高度轴整块改变了 .phone 高，tabbar 随之整体抬升/压低——
+      // 同 ④ 的取舍：跳过判定并写出轴值与实测（悬空/被裁由用户手调值决定）。
+      add(true, '底部导航栏·已手动微调 h=' + adjH + 'px，跳过判定', '手调页面高度轴会整体抬升/压低 tabbar（实测底边 ' + inp.tabBottom + 'px / 自动期望 ' + Math.round(expBase - (inp.envBottom || 0) + adjShift) + 'px）');
+    } else if (!_kbDocking && inp.isMobileDev !== false && inp.tabBottom != null && inp.innerH) {
+      const expTB = expBase - (inp.envBottom || 0) + adjShift; // 期望底边=屏底−Home横条避让（#199：浏览器覆盖形态=可视区底）；#917：手调整体位移轴为纯平移，同口径折算
       const overB = Math.round(inp.tabBottom - expTB);
-      if (overB > 2) add(false, '底部导航栏被裁 ' + overB + 'px', '✗ tabbar 底边 ' + inp.tabBottom + 'px 超出期望 ' + expTB + 'px（#148 同族）');
+      if (overB > 2) add(false, '底部导航栏被裁 ' + overB + 'px', '✗ tabbar 底边 ' + inp.tabBottom + 'px 超出期望 ' + expTB + 'px（#148 同族）' + (adjShift ? '（期望已按手动整体位移 shift=' + adjShift + 'px 折算）' : ''));
       else if (overB < -60) add(false, '底部导航栏悬空 ' + (-overB) + 'px', '⚠ tabbar 底边比期望高 ' + (-overB) + 'px（底部空白过大）');
       else add(true, '底部导航栏完整（底边 ' + inp.tabBottom + ' / 期望 ' + expTB + '）');
     }
@@ -2873,6 +3054,19 @@ window.mochiViewportForm = function (sig) {
     // #209：用户「顶部避让修正」声明（#186：声明=覆盖形态）——此前漏传，判定器
     // force 分支在真实采集路径永不命中
     inp.force = (function () { try { return localStorage.getItem('xy-home-v2:__safe-top-force') === '1'; } catch (e) { return false; } })();
+    // FIX 2026-09-20 #917：本机手调轴实测（设置·屏幕位置设置，mobile-adapt.js
+    // mochiScreenAdj）——七轴都是「用户亲手把几何调离自动期望」的量，判定器必须
+    // 同口径折算/豁免，否则每 5s 自动采集把用户自己调的值当布局缺陷刷错误环
+    //（vivo X200S+Edge 实报 4 条：phone底=714/766 = inner∓26 恰为手调值）。
+    // 只读探测，mochiScreenAdj 缺位（旧产物/未接入）全 0＝判定器行为与修前逐字一致。
+    inp.adj = (function () {
+      try {
+        const a = window.mochiScreenAdj && window.mochiScreenAdj.all();
+        if (!a) return null;
+        return { top: +a.top || 0, bottom: +a.bottom || 0, h: +a.h || 0, desk: +a.desk || 0,
+          shift: +a.shift || 0, text: +a.text || 0, side: +a.side || 0 };
+      } catch (e) { return null; }
+    })();
 
     // #215：历史对比键别名（快照存 ori/fs，采集器字段是 orientation/fsActive）
     inp.ori = inp.orientation;
@@ -2902,6 +3096,10 @@ window.mochiViewportForm = function (sig) {
     L.push('html类：' + inp.htmlClass);
     L.push('系统=' + (inp.osLine || '未知') + '（形态判定依赖系统版本，#184/#200）');
     L.push('env(safe-area-inset-bottom)=' + inp.envBottom + 'px  视口平移=offTop:' + (inp.vvOffTop || 0) + '/offLeft:' + (inp.vvOffLeft || 0));
+    // FIX 2026-09-20 #917：本机手调轴（屏幕位置设置）如实写出——判定器对非 0 轴折算/跳过，
+    // 报告必须自证「哪条判定为何跳过、跳过的量与手调值什么关系」，否则下一份报障又得反推
+    //（本次 vivo 报障就是吃了这个亏：phone底=inner∓26 到底是手调还是真故障，无从判断）。
+    L.push('本机手调（屏幕位置设置）：' + (sdAdjStr(inp.adj) || '无（七轴全 0，判定器全自动口径）'));
     L.push('键盘残留=' + (inp.kb ? ('kbActive=' + !!inp.kb.kbActive + ' 锁=' + !!inp.kb.docLocked + ' 基线 inner/vv=' + inp.kb.fullInner + '/' + inp.kb.fullVv) : 'n/a')
       + '  --mochi-safe-bottom=' + (function () { try { var _v = getComputedStyle(document.documentElement).getPropertyValue('--mochi-safe-bottom').trim(); return _v ? _v + 'px' : '(未设/回落 ' + inp.envBottom + 'px)'; } catch (e) { return '?'; } })());
     L.push('');
@@ -3106,10 +3304,18 @@ window.mochiViewportForm = function (sig) {
       localStorage.setItem(SD_HIST_KEY, JSON.stringify(bads.concat(goods).sort(function (a, b) { return a.t - b.t; })));
     } catch (e) {}
   }
+  // #917：手调轴串（快照/错误环/报告共用）——轴全 0 返回空串，调用处据此不显示
+  function sdAdjStr(a) {
+    if (!a) return '';
+    const ks = ['top', 'bottom', 'h', 'desk', 'shift', 'text', 'side'], out = [];
+    for (let i = 0; i < ks.length; i++) { const v = +a[ks[i]] || 0; if (v) out.push(ks[i] + (v > 0 ? '+' : '') + v); }
+    return out.join(' ');
+  }
   function sdSnapOf(r, trig) {
     const i = r.inp;
     return { t: Date.now(), trig: trig,
       bad: r.findings.filter(function (f) { return !f.ok; }).map(function (f) { return f.name.split(' ')[0]; }),
+      adj: sdAdjStr(i.adj),
       scale: i.scale, envTop: i.envTop, varTop: i.varTop, diff: i.diff,
       screenH: i.screenH, vvH: i.vvH, standalone: !!i.standalone, force: !!i.force,
       innerW: i.innerW, innerH: i.innerH, phoneH: i.phoneH, phonePadTop: i.phonePadTop,
@@ -3131,6 +3337,8 @@ window.mochiViewportForm = function (sig) {
       const a = prev[p[0]], b = cur[p[1]];
       if (String(a) !== String(b)) ch.push(p[0] + ': ' + a + ' → ' + b);
     });
+    // #917：手调轴变化单列（快照存串、采集存对象，不走 PAIRS 的 String 直比）
+    if (sdAdjStr(cur.adj) !== String(prev.adj || '')) ch.push('手调轴: ' + (prev.adj || '无') + ' → ' + (sdAdjStr(cur.adj) || '无'));
     const when = new Date(prev.t).toLocaleString();
     return ch.length ? ('与上次（' + when + ' ' + prev.trig + '）对比，变化项：' + ch.join('；')) : ('与上次（' + when + ' ' + prev.trig + '）各项一致');
   }
@@ -3141,15 +3349,34 @@ window.mochiViewportForm = function (sig) {
       try { var old = localStorage.getItem(SD_ERR_KEY); if (old) { var o = JSON.parse(old); if (Array.isArray(o)) arr = o; } } catch (e0) {}
       // #209：错误环条目带事发现场数值——「最近错误」里直接能看出是哪种形态，
       // 不用再翻 screen-diag-hist 对照
+      // FIX 2026-09-20 #916b：同签名 24h 去重——[屏幕适配] 条目按会话自动采集，同一台
+      // 设备同一形态（如 Edge 工具条显隐族「底部少填 26px」）几乎每个会话都重现一次，
+      // 原实现每次 push 新条目：环形缓冲被同文填满、信息诊断红点数随每次刷新只增不减
+      // （用户报障「设备兼容诊断处每次刷新红点数量会增加」，多机型同现）。改为倒查 24h
+      // 内有无同「[屏幕适配] <形态名>」前缀条目，有则 c+1 并更新时间戳（出现次数与最新
+      // 时间仍保留＝线索不丢），不再新增条目——红点数稳定为「出现过几种形态」而非
+      // 「重现场几次」。签名取 '｜' 之前段（几何数值段每会话可能不同，不参与比较）。
+      var _sdSig = '[屏幕适配] ' + String(names).split('｜')[0];
+      var _sdDup = -1;
+      for (var iSd2 = arr.length - 1; iSd2 >= 0; iSd2--) {
+        if (arr[iSd2] && typeof arr[iSd2].msg === 'string'
+            && String(arr[iSd2].msg).split('｜')[0] === _sdSig
+            && Date.now() - (arr[iSd2].t || 0) < 86400000) { _sdDup = iSd2; break; }
+      }
+      if (_sdDup >= 0) {
+        arr[_sdDup].t = Date.now();
+        arr[_sdDup].c = (arr[_sdDup].c || 1) + 1;
+      } else {
       arr.push({ t: Date.now(), msg: '[屏幕适配] ' + String(names).slice(0, 120)
         + '｜env=' + (snap ? snap.envTop : '?') + ' var=' + (snap ? snap.varTop : '?')
         + ' diff=' + (snap ? snap.diff : '?') + ' inner=' + (snap ? snap.innerH : '?')
         + ' phone底=' + (snap ? snap.phoneBottom : '?') + ' sb=' + (snap ? snap.sbTop : '?')
-        + ' scale=' + (snap ? snap.scale : '?') + (snap && snap.fs ? ' 全屏' : '')
+        + ' scale=' + (snap ? snap.scale : '?') + (snap && snap.adj ? ' 手调' + snap.adj : '') + (snap && snap.fs ? ' 全屏' : '')
         + '（' + (snap && snap.trig === 'manual' ? '手动' : '自动') + '采集）',
         ua: (navigator.userAgent || '').slice(0, 160),
         dev: (function () { var dd = window.mochiDevice || {}; return 'M' + (dd.isMobile?1:0) + ' T' + (dd.isTablet?1:0) + ' I' + (dd.isIOS?1:0) + ' A' + (dd.isAndroid?1:0) + ' V' + (dd.isVia?1:0); })(),
         page: 'page-phone' });
+      } // #916b else（同签名 24h 内已入环：c+1 复用原条目，不新增）
       // v3.27.x：上限 20→30，满时先逐出最旧的 [屏幕适配] 条目——本类条目与 JS
       // onerror 同队列，此前纯 FIFO 会让屏幕适配爆发把真 JS 错误顶出环外。信息诊断
       // pushErr 侧仍 slice(-20)：JS 错误到达时环自然收到 20，属正常 FIFO 不受影响。
@@ -3207,7 +3434,16 @@ window.mochiViewportForm = function (sig) {
   try { window.addEventListener('resize', sdEdge); } catch (e3) {}
   try { if (window.visualViewport) window.visualViewport.addEventListener('resize', sdEdge); } catch (e4) {}
   try { window.addEventListener('orientationchange', sdEdge); } catch (e5) {}
-  try { document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') sdEdge(); else window.__mochiLeaveSnap('hide'); }); } catch (e6) {}
+  // FIX 2026-09-20 #917：切后台即断二次确认配对——_sdLastBad/_sdPend 跨后台存活时，
+  // 回前台首个 tick 会拿「后台前那次坏签名」直接确认入环，入的是过期快照数值（长时间
+  // 后台后尤其失真）。清零后回前台需两次连续 tick（≥5s、均为回前台后的真实几何）才
+  // 入环——真故障只晚报 5s，跨后台拼出来的假确认不再出现。
+  function sdPendBreak() { _sdLastBad = ''; _sdPend = null; }
+  try { document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') { sdEdge(); return; }
+    sdPendBreak();
+    window.__mochiLeaveSnap('hide');
+  }); } catch (e6) {}
   try { window.addEventListener('pagehide', function () { window.__mochiLeaveSnap('hide'); }); } catch (e7) {}
   // v3.27.x：离开抢拍——#209 K70 实锤「停靠残留只存在于切页前最后一帧」（切页
   // syncChrome blur 即自愈），5s 轮询与事件沿都采不到。tabs.js 在把页面 hidden 之前、
@@ -3258,7 +3494,7 @@ window.mochiViewportForm = function (sig) {
         + '  env=' + h.envTop + ' var=' + h.varTop + ' diff=' + h.diff + ' inner=' + h.innerH
         + ' phone=' + h.phoneH + '(底' + h.phoneBottom + ' 宽' + (h.phoneW == null ? '?' : h.phoneW) + ')'
         + ((h.inlineH || h.aself) ? ' ⚠内联残留' : '') + ' sb=' + h.sbTop + ' tab=' + h.tabBottom
-        + ' scale=' + h.scale + (h.fs ? ' 全屏' : ''));
+        + ' scale=' + h.scale + (h.adj ? ' 手调' + h.adj : '') + (h.fs ? ' 全屏' : ''));
     }
     return T.join('\n');
   }
@@ -3557,6 +3793,31 @@ window.mochiFilePickLabel = function (btn, input) {
   } catch (e) { /* 兼容助手绝不能成为错误源 */ }
 };
 
+// ===== 激活腿统一实现（FIX 2026-09-20 #920 第八波）——showPicker → click → 可反馈提示 =====
+// 用户（小米14 自带浏览器 MiuiBrowser 20.27 / Android16 / Chrome135 内核实报「照片、壁纸上传不了，
+// 所有上传图片的地方上传无反应」，明说其他机型也有；#677→#717→#738→#753→#755→#756→#813→#877 同族
+// 第八波）：第七波 #877 只把聊天设置两行头像的兜底腿升级成三条，其余入口（41 处统一入口调用 ＋
+// 9 处 guard/手写兜底，其中多数入口压根没接 label）仍是「label 转发 ＋ 裸 click()」两条腿；而 #738
+// 已实锤小米系对 JS 合成 click 静默不弹（不报错、不弹窗、不抛异常）⇒ 在「label 不转发或没接 label」
+// 的内核上整族无声＝用户报的「所有上传图片的地方都没反应」。本波不逐入口手抄（本族历史已证手抄必
+// 漏＝反复复发的结构性原因），把第三条腿收进本函数单点实现、全站入口统一调用。
+// showPicker()（标准 API：Chromium/Edge 99+、Safari 16.3+）在用户手势窗口内直接弹系统选择器，
+// 既不依赖 label 转发、也不走 legacy click 的合成事件路径。与 #877 同口径：
+// ①showPicker 与 click **顺序都走**（规范里两条路汇入同一「show the picker」算法，选择器已开即
+//   空操作＝不双开），也避开「showPicker 成功但内核不给可观测信号」形态把 click 短路掉；
+// ②只有两条腿都抛异常才触发 onFail（给三条腿全失效的内核一个可反馈现场，不再无声）。
+// 零机型分支：所有内核同一顺序尝试三条腿，判据全是可观测事实（无机型/UA 判断）。
+window.mochiFilePickFire = function (input, opts) {
+  var o = opts || {};
+  var fired = false;
+  if (input && typeof input.showPicker === 'function') {
+    try { input.showPicker(); fired = true; } catch (e) {}
+  }
+  try { input.click(); fired = true; } catch (e) {}
+  if (!fired) { if (typeof o.onFail === 'function') { try { o.onFail(); } catch (e) {} } }
+  return fired;
+};
+
 // ===== 统一文件选择入口（FIX 2026-09-18 #755）——同族第五波根治 =====
 // 用户（vivo X200s + 百度浏览器，SP-engine/T7 内核）实报「任何图片，上传无反应；上传头像点了相册
 // 点了图片，但是没有任何反应」，明说其他机型也有、要求不要覆盖式修补。第五波复盘：#677（input 要
@@ -3603,7 +3864,11 @@ window.mochiFilePick = function (opts) {
   if (o.btn && window.mochiFilePickLabel) window.mochiFilePickLabel(o.btn, input);
   // ★ 激活：不再「有 label 就跳过 JS click」（那是 #738~#755 整族复发的根源，见上方 #756 说明）。
   // 统一走 mochiFilePickGuard —— 先给原生转发一个窗口期，只有确认「没弹出选择器」才补 JS click。
-  var activate = function () { try { input.click(); } catch (e) { if (o.onError) { try { o.onError(e); } catch (x) {} } } };
+  // FIX 2026-09-20 #920：兜底腿由「裸 click()」换成全站统一的 mochiFilePickFire（showPicker→click
+  // →提示 三腿，见上方定义）——本入口是 41 处调用的公共路径，改这一处即全体升级。
+  var activate = function () {
+    window.mochiFilePickFire(input, { onFail: function () { if (o.onError) { try { o.onError(); } catch (x) {} } } });
+  };
   if (!o.noClick) {
     if (o.btn && window.mochiFilePickGuard) window.mochiFilePickGuard(input, activate);
     else activate();
