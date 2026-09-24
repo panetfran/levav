@@ -12,6 +12,11 @@
 //   B 组（#773c 存量错标签自愈）：脏历史直推独立测试桌内存 → 切走收口落包 → 切回权威读库跑归一化自愈。
 //   绿根＝B1/B3/B4 摘标、B2/B5 真两张不误摘、B3b 其它 chip 保留；红根（纯 HEAD 无自愈）恰红 B1/B3/B4，
 //   B2/B3b/B5 两侧皆绿＝对照组（旧码不动 mood，标签原样留着）。
+// #1051 增：C1b＝末尾颜文字前必有 <br>（连接符由空格改硬换行，根治「最末不换行＝显示不全」）；
+//   D3＝'\n' 相接两卡气泡 chip 不被误摘（切分集恒含硬换行）。纯基线（空格相接/切分集无 \n）应恰红 C1b/D3。
+// #1203 改：C 组改「成对」断言＝py-en 关时颜文字/连接词/经期温柔三处都不拼第二张卡、无 chip（C1/C2/C5），
+//   开时照旧拼两张并挂标（C1+/C2+/C5+）。只断言「关＝不拼」会漏掉「干脆删掉这三种卡」这种假修好。
+//   红根（#1203 之前的纯 HEAD）应恰红 C1/C2/C5 三条＝实测 21 通过/3 失败。
 // 冻结 Math.random=0.3 做确定性对照：hit(100) 命中、randInt(2,2)=2、randInt(1,1)=1、hit(0) 不中。
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -115,10 +120,13 @@ try {
     'window.getDefaultCards=function(){return ' + (over && over.__defs ? JSON.stringify(over.__defs) : 'null') + ';};' +
     'window.getReplyCard=function(){return ' + JSON.stringify((over && over.replyWord) || '') + ';};' +
     (over && over.__noSys ? 'window.getDefaultCardGroups=function(){return [];};' : '') +
-    'window.quoteSpellPick=function(){return null;};window.dreamFreePick=function(){return null;};' +
+    // #851 词典拼字桩：传 __spell＝{segs,one}，不传＝不参与（原样 null）
+    (over && over.__spell !== undefined ? 'window.quoteSpellPick=function(){return ' + JSON.stringify(over.__spell) + ';};' : 'window.quoteSpellPick=function(){return null;};') +
+    'window.dreamFreePick=function(){return null;};' +
     'window.tryTaMoodShare=function(){return null;};window.maybeMusicRequest=null;window.callMaybeTrigger=null;' +
     'window.maybeAutoGift=null;window.periodCheckCare=null;window.triggerEmotionChain=function(){return null;};' +
-    'window.periodWarmText=null;' +
+    // #851 经期温柔语态桩：传 __warm＝前缀串（空格相接一张独立字卡），不传＝不参与
+    (over && over.__warm ? 'window.periodWarmText=function(t){return ' + JSON.stringify(over.__warm) + ' + " " + t;};' : 'window.periodWarmText=null;') +
     'return true;})()');
   const freeze = () => evalJs('(function(){window.__realRandom=Math.random;Math.random=function(){return 0.3;};return true;})()');
   const unfreeze = () => evalJs('(function(){if(window.__realRandom){Math.random=window.__realRandom;window.__realRandom=null;}return true;})()');
@@ -169,6 +177,50 @@ try {
   await sendOnce('A5 空白池空文兜底换一张 → 不挂 tag', [' ', '  ', '   '], { 'csp-cust': 100, __noSys: true },
     { tag: false, has: '好～' });
 
+  // ===== C 组 #851 + #1203「一条气泡 ≥2 张文字字卡才挂来源 tag，且只有总开关开着才拼多张」=====
+  // 四种拼卡链路（C1 颜文字追加 / C2 连接词追加 / C5 经期温柔前缀 / C3 词典拼字单气泡）＋ C4 逐卡连发对照。
+  // #1203 口径（用户实报「多字卡回复关掉了、词典拼字也全关，联系人发的消息还是有多字卡」）：
+  //   py-en 关闭时前三处一律不拼第二张字卡、自然无 chip；py-en 开着（用 py-prob=0 关掉抽卡分支，
+  //   只留各自追加链路）时照旧拼两张并挂 chip。词典拼字与梦角自由造句继续认自己的开关（#1203 不动）。
+  // C4＝对照：逐卡连发每条气泡只装一张卡，两枚 chip 都不该有「多字卡回复」（#726/#738 口径）。
+  const OPEN = { 'py-prob': 0 }; // 总开关开、抽卡分支不命中＝只测「追加链路」这一条路
+  await sendOnce('C1 总开关关 → 颜文字卡不追加、不挂「多字卡回复」', ['C1文字一张卡', '(◕‿◕)'],
+    { 'py-en': 0, 'kaomoji-prob': 100, 'csp-cust': 100 },
+    { tag: false, has: 'C1文字一张卡', notHas: '◕‿◕' });
+  await sendOnce('C1+ 总开关开 → 颜文字卡追加成两张并挂「多字卡回复」', ['C1p文字一张卡', '(◕‿◕)'],
+    { 'py-en': 1, 'kaomoji-prob': 100, 'csp-cust': 100, ...OPEN },
+    { tag: true, has: 'C1p文字一张卡' });
+  // #1051 末尾颜文字换行形态：连接符必须是硬换行（\n→<br>）——多台真机实报「颜文字在最末没有
+  // 换行＝显示不全」，软换行点部分内核不拆行；纯基线（空格相接、无 <br>）此处应红。
+  // #1203 后这一形态只在总开关开着时出现，故量在上一条（C1+）落地的那口气泡上。
+  {
+    const br = await evalJs("(function(){var sp=document.querySelectorAll('#chat-body .msg-in .msg-bubble span');" +
+      "for(var i=sp.length-1;i>=0;i--){var h=sp[i].innerHTML;if(h.indexOf('C1p文字一张卡')>=0){" +
+      "var bi=h.indexOf('<br>');return JSON.stringify({br:bi,ka:h.indexOf('◕‿◕')});}}" +
+      "return null;})()");
+    const r = br ? JSON.parse(br) : null;
+    t('C1b 末尾颜文字前必有 <br>（颜文字落在次行，非软换行点）',
+      !!r && r.br >= 0 && r.ka > r.br, 'br=' + (r ? r.br : 'null') + ' ka=' + (r ? r.ka : 'null'));
+  }
+  await sendOnce('C2 总开关关 → 连接词卡不追加、不挂「多字卡回复」', ['C2文字一张卡'],
+    { 'py-en': 0, 'cf-prob': 100, 'csp-cust': 100 },
+    { tag: false, has: 'C2文字一张卡' });
+  await sendOnce('C2+ 总开关开 → 连接词卡追加成两张并挂「多字卡回复」', ['C2p文字一张卡'],
+    { 'py-en': 1, 'cf-prob': 100, 'csp-cust': 100, ...OPEN },
+    { tag: true, has: 'C2p文字一张卡' });
+  await sendOnce('C5 总开关关 → 经期温柔卡不拼、不挂「多字卡回复」', ['C5文字一张卡'],
+    { 'py-en': 0, 'csp-cust': 100, __warm: '抱抱' },
+    { tag: false, has: 'C5文字一张卡', notHas: '抱抱' });
+  await sendOnce('C5+ 总开关开 → 经期温柔卡拼成两张并挂「多字卡回复」', ['C5p文字一张卡'],
+    { 'py-en': 1, 'csp-cust': 100, ...OPEN, __warm: '抱抱' },
+    { tag: true, has: 'C5p文字一张卡' });
+  await sendOnce('C3 词典拼字单气泡（两张卡一条气泡）→ 并列挂「多字卡回复」', ['C3文字一张卡'],
+    { 'py-en': 0, 'csp-cust': 100, __spell: { segs: ['语录一号卡', '语录二号卡'], one: true } },
+    { tag: true, has: '语录一号卡' });
+  await sendOnce('C4 词典逐卡连发（每气泡一张卡）→ 不挂「多字卡回复」（#726 对照）', ['C4文字一张卡'],
+    { 'py-en': 0, 'csp-cust': 100, __spell: { segs: ['语录甲号卡', '语录乙号卡'], one: false } },
+    { tag: false, has: '语录甲号卡' });
+
   await unfreeze();
 
   // ===== B 组 #773c 存量错标签自愈 =====
@@ -209,6 +261,9 @@ try {
   t('B0 脏记录注入到测试桌内存（直推活数组）', pushed === 'ok' && !!bCid, 'push=' + pushed + ' cid=' + bCid);
   await goDesk('default'); await sleep(1500); // 切走收口：#127 整包落基准包
   await goDesk(bCid); await sleep(4500); // 切回：权威读库 → 延迟分批归一化跑自愈
+  // 分批归一化在首轮回读常来不及（纯 HEAD 与修复版同值漏检＝环境时序，非产品差异），
+  // 按 B4/B5 实测补一轮切换周期再断言（第二周期库中必已是自愈后的形态）
+  await goDesk('default'); await sleep(1200); await goDesk(bCid); await sleep(4500);
   bCheck('B1 历史单卡带错标 → 切回后自愈摘标', await waitChip(B1, true, 12000), false, '期望无 tag');
   bCheck('B2 历史真两张 → 标签不误摘', await waitChip(B2, false, 12000), true, '期望保留 tag');
   {
@@ -219,6 +274,30 @@ try {
   await goDesk('default'); await sleep(1200); await goDesk(bCid); await sleep(4500); // 二次周期：读库读到的就该是摘标后的库
   bCheck('B4 二次装载不复活（B1）', await chipOf(B1), false, '期望仍无 tag');
   bCheck('B5 二次装载不误伤（B2）', await chipOf(B2), true, '期望仍挂 tag');
+
+  // ===== D 组 #851d 自愈切分集恒含空格（纯 HEAD 应恰红 D1）=====
+  // 颜文字卡/连接词卡/经期温柔卡固定用「空格」相接，不走「拼接随机标点」池。若用户把池里的空格
+  // 取消（只留句号等），#773c 按现池切分只会切出一段＝判成一张卡，把刚挂上的合法 chip 摘掉。
+  // D1＝空格相接的两张卡（chip 必须在），D2＝真一张卡（chip 必须照摘＝#773c 不回归）。
+  const D1 = '甲号文字卡 (◕‿◕)', D2 = '独苗历史一张卡';
+  // #1051 D3＝硬换行相接的两张卡（genReplyText 末尾颜文字卡的新形态）：切分集若不恒含 '\n'，
+  // 只按空格/标点池切会切成一段＝合法 chip 被自愈误摘（纯基线无 '\n' 分支，此处应红 D3）。
+  const D3 = '甲号文字卡\n(◕‿◕)';
+  const dCid = await mkDesk();
+  await sleep(1800);
+  await evalJs('(function(){window.saveReplyCfg("py-punct-en",1);window.saveReplyCfg("py-punct-space",0);' +
+    'var ms=window.getChatMsgs();var now=Date.now();' +
+    'ms.push({side:"in",text:' + JSON.stringify(D1) + ',ts:now+1,mood:[{tag:"多字卡回复",label:""}]});' +
+    'ms.push({side:"in",text:' + JSON.stringify(D2) + ',ts:now+2,mood:[{tag:"多字卡回复",label:""}]});' +
+    'ms.push({side:"in",text:' + JSON.stringify(D3) + ',ts:now+3,mood:[{tag:"多字卡回复",label:""}]});' +
+    'return true;})()');
+  await goDesk('default'); await sleep(1500); // 切走收口落包
+  await goDesk(dCid); await sleep(4500); // 切回跑归一化自愈
+  await goDesk('default'); await sleep(1200); await goDesk(dCid); await sleep(4500); // 同 B 组补一轮周期
+  bCheck('D1 空格相接的两张卡 → 合法 chip 不被自愈摘掉', await waitChip(D1, false, 12000), true, '期望保留 tag');
+  bCheck('D2 一张卡仍照常摘标（#773c 不回归）', await waitChip(D2, true, 12000), false, '期望摘掉 tag');
+  bCheck('D3 硬换行相接的两张卡（#1051 新形态）→ 合法 chip 不被自愈摘掉', await waitChip(D3, false, 12000), true, '期望保留 tag');
+
   console.log(pass + ' 通过 / ' + fail + ' 失败');
 } finally {
   try { chrome.kill(); } catch (e) {}

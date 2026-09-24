@@ -86,12 +86,12 @@ const A = await ev(`(function(){
   var chips=[].map.call(box.querySelectorAll('.ppy-chip[data-k]'),function(c){return c.dataset.k+':'+(c.classList.contains('sel')?'1':'0');});
   var cfg=window.replyCfg?window.replyCfg():{};
   return JSON.stringify({ n:box.querySelectorAll('.ppy-chip[data-k]').length, chips:chips.join(','),
-    def:['py-punct-space','py-punct-dou','py-punct-per','py-punct-ex','py-punct-q','py-punct-el','py-punct-dash'].map(function(k){return cfg[k];}).join(','),
+    def:['py-punct-space','py-punct-dou','py-punct-per','py-punct-ex','py-punct-q','py-punct-el','py-punct-dash','py-punct-nl'].map(function(k){return cfg[k];}).join(','),
     en:cfg['py-punct-en'] });
 })()`);
 const oA = JSON.parse(String(A));
-chk('A1 七枚符号 chip 顺序为 空格/，/。/！/？/....../——', oA.n === 7 && oA.chips === 'py-punct-space:1,py-punct-dou:1,py-punct-per:1,py-punct-ex:1,py-punct-q:1,py-punct-el:1,py-punct-dash:1', A);
-chk('A2 默认配置七键全为 1（含句号 py-punct-per、「——」py-punct-dash）', oA.def === '1,1,1,1,1,1,1', A);
+chk('A1 八枚符号 chip 顺序为 空格/，/。/！/？/....../——/换行（#1198 末枚默认关）', oA.n === 8 && oA.chips === 'py-punct-space:1,py-punct-dou:1,py-punct-per:1,py-punct-ex:1,py-punct-q:1,py-punct-el:1,py-punct-dash:1,py-punct-nl:0', A);
+chk('A2 默认配置：七键全为 1（含句号 py-punct-per、「——」py-punct-dash）＋#1198「换行」默认 0', oA.def === '1,1,1,1,1,1,1,0', A);
 chk('A3 拼接随机标点总开关默认开', oA.en === 1, A);
 
 // ---- C1. 真实悬停：选中态不被 hover 压掉 ----
@@ -208,7 +208,9 @@ chk('J4 与内置同值（，）被拒、提示走开关、列表不变', J4.n =
 // ---- K. #712 join 行为：——入池、自定义 on=1 入池 / on=0 不入、池空回退空格 ----
 const K = JSON.parse(String(await ev(`(function(){
   function trial(cfg){ var out=[]; for(var i=0;i<40;i++) out.push(window.pyJoinCards(['甲','乙'],cfg)); return out; }
-  var base={'py-punct-en':1,'py-punct-space':0,'py-punct-dou':0,'py-punct-per':0,'py-punct-ex':0,'py-punct-q':0,'py-punct-el':0};
+  // #956 起「多字卡回复」（py-en）也是拼卡上游闸门：本段构造的 cfg 必须显式带 py-en:1，
+  // 否则等于总开关关闭（关＝只回退空格），K 段「只开——」「自定义入池」等判据会全部失配
+  var base={'py-en':1,'py-punct-en':1,'py-punct-space':0,'py-punct-dou':0,'py-punct-per':0,'py-punct-ex':0,'py-punct-q':0,'py-punct-el':0};
   var d=Object.assign({},base,{'py-punct-dash':1,'py-punct-custom':'[]'});
   var onlyDash=d?trial(d):[];
   var badDash=onlyDash.filter(function(r){return r!=='甲——乙';}).length;
