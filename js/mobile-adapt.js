@@ -8,10 +8,12 @@ if (d) { isMobile = !!d.isMobile; isTablet = !!d.isTablet; isIOS = !!d.isIOS; }
 if (!isTablet) { try { if (document.documentElement.classList.contains('tablet')) isTablet = true; } catch (e) {} }
 if (!isMobile && !isTablet) return;
 const FLOAT_PANEL_SELECTORS = ['#chat-more-panel', '#chat-decision-panel', '#chat-gdecision-panel', '#chat-divine-panel', '#chat-ask-panel', '#poke-card', '#gc-poke-card', '#emoji-panel', '#chat-rp-panel', '#chat-rps-panel', '#chat-pong-panel', '#chat-snake-panel', '#chat-brick-panel', '#chat-c4-panel', '#chat-ms-panel', '#chat-fish-panel', '#chat-memory-panel', '#chat-gift-panel', '#chat-gomoku-panel', '#chat-linkup-panel', '#chat-match3-panel', '#chat-auction-panel', '#chat-arcade-panel', '#ck-panel', '#chat-search', '#gc-more-panel', '#voice-panel'];
+var IOS_VP_A = 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content';
+var IOS_VP_B = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content';
 if (isIOS) {
 try {
 document.querySelectorAll('meta[name="viewport"]').forEach(function (m) {
-m.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content');
+m.setAttribute('content', IOS_VP_A);
 });
 } catch (e) {}
 }
@@ -76,6 +78,8 @@ if (!inp || inp.dataset.ceDone || inp.readOnly) return;
 var t = inp.type;
 if (t === 'checkbox' || t === 'range' || t === 'file' || t === 'color' || t === 'hidden' ||
 t === 'date' || t === 'time' || t === 'datetime-local' || t === 'month' || t === 'week') return;
+var preVal = inp.getAttribute('value');
+if (preVal === null && inp.value !== undefined) preVal = inp.value;
 inp.dataset.ceDone = '1';
 var origClass = inp.className || '';
 inp.classList.add('ce-ghost');
@@ -278,9 +282,7 @@ ceChangeVal = null;
 });
 box.addEventListener('focus', function () { try { inp.dispatchEvent(new Event('focus', { bubbles: true })); } catch (e) {} });
 box.addEventListener('blur', function () { try { inp.dispatchEvent(new Event('blur', { bubbles: true })); } catch (e) {} });
-var initV = inp.getAttribute('value');
-if (initV === null && inp.value !== undefined) initV = inp.value;
-if (initV) box.textContent = initV;
+if (preVal) box.textContent = preVal;
 }
 try { if (!isIOS) initCeAll(); } catch (e) {}
 try {
@@ -659,6 +661,7 @@ _iProvDock();
 }
 var _vvFitOn = false;
 var _envTopCache = -1; // #148：env(safe-area-inset-top) 探针缓存（-1=未测）；旋转/#277 矛盾自愈时失效
+var _envBottomCache = -1; // #1048：env(safe-area-inset-bottom) 探针缓存（与 top 同一探针同建同失效）
 var _envTopCacheAt = 0; // #277：缓存写入时刻（矛盾重探 5s 节流，防 1s 自愈循环频繁建探针 DOM）
 var _zoomFixCnt = 0, _zoomFixAt = 0; // #174：缩放异常自愈计数（每会话 ≤3 次，间隔 4s）
 function syncVvFit() {
@@ -670,6 +673,7 @@ var _vh2 = _vv ? Math.round(_vv.height * ((_vv.scale && _vv.scale > 0.5) ? _vv.s
 var _sig0 = {
 standalone: d.classList.contains('ios-pwa-standalone'),
 envTop: _envTopCache >= 0 ? _envTopCache : 0,
+envBottom: _envBottomCache >= 0 ? _envBottomCache : 0,
 innerH: _ih2, screenH: _sh2, iosMajor: 0, safeTopForce: false
 };
 try {
@@ -684,20 +688,22 @@ var _diff0 = _sh2 - _ih2;
 if (_sig0.standalone && _diff0 >= 20 && _envTopCache >= 0
 && (_envTopCache === 0 || Math.abs(_envTopCache - _diff0) > 8)
 && Date.now() - _envTopCacheAt > 5000) {
-_envTopCache = -1; _envTopCacheAt = Date.now();
+_envTopCache = -1; _envBottomCache = -1; _envTopCacheAt = Date.now();
 }
 } catch (eE5) {}
 var _f0 = window.mochiViewportForm(_sig0);
 if (_f0.needEnvProbe && _envTopCache < 0 && _sh2 > 0 && _vh2 > 0) {
 try {
 var _probe = document.createElement('div');
-_probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;padding-top:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none;';
+_probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);visibility:hidden;pointer-events:none;';
 document.body.appendChild(_probe);
 _envTopCache = parseFloat(getComputedStyle(_probe).paddingTop) || 0;
+_envBottomCache = parseFloat(getComputedStyle(_probe).paddingBottom) || 0;
 document.body.removeChild(_probe);
-} catch (e4) { _envTopCache = 0; }
+} catch (e4) { _envTopCache = 0; _envBottomCache = 0; }
 _envTopCacheAt = Date.now(); // #277：探回值连同时刻一起入账（重探节流基准）
 _sig0.envTop = _envTopCache;
+_sig0.envBottom = _envBottomCache;
 }
 var _f = window.mochiViewportForm(_sig0);
 var _safeTop = _f.safeTop;
@@ -787,12 +793,21 @@ try {
 var d = document.documentElement; // FIX 2026-09-05 #189
 syncVvFit();
 syncSafeBottom();
-if (d.classList.contains('ios-pwa-standalone') && _vv && _vv.scale && _vv.scale < 0.95) {
+var _zoomKbNow = false;
+try {
+if (_kbActive || _kbNowLike()) _zoomKbNow = true;
+else {
+var _aeZ = document.activeElement;
+if (_aeZ && (_aeZ.tagName === 'INPUT' || _aeZ.tagName === 'TEXTAREA' || _aeZ.isContentEditable)) _zoomKbNow = true;
+}
+} catch (eZ) {}
+if (_vv && _vv.scale && _vv.scale < 0.95 && !_zoomKbNow) {
 var _now = Date.now();
 if (_zoomFixCnt < 3 && _now - _zoomFixAt > 4000) {
 _zoomFixCnt++; _zoomFixAt = _now;
+var _zMeta = (_zoomFixCnt % 2) ? IOS_VP_B : IOS_VP_A;
 document.querySelectorAll('meta[name="viewport"]').forEach(function (m) {
-m.setAttribute('content', 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content');
+m.setAttribute('content', _zMeta);
 });
 }
 }
@@ -859,7 +874,7 @@ _vv.addEventListener('resize', onIosVvEvent);
 }
 window.addEventListener('resize', onIosVvEvent);
 window.addEventListener('orientationchange', onIosVvEvent);
-window.addEventListener('orientationchange', function () { try { _envTopCache = -1; } catch (e) {} });
+window.addEventListener('orientationchange', function () { try { _envTopCache = -1; _envBottomCache = -1; } catch (e) {} });
 var _vvLog = [];
 function vvLogPush() {
 try {
@@ -886,8 +901,17 @@ return hm + ' inner:' + e.iw + '×' + e.ih + ' vv:' + e.vh + ' sc:' + e.sc + ' k
 };
 window.addEventListener('pageshow', onIosVvEvent);
 document.addEventListener('visibilitychange', onIosVvEvent);
+let _vvFp = '', _vvTick = 0;
 setInterval(function () {
 if (document.visibilityState !== 'visible') return;
+try {
+_vvTick++;
+const _v = window.visualViewport;
+const fp = [window.innerWidth, window.innerHeight, _v ? Math.round(_v.height) : 0,
+_v ? +(+_v.scale).toFixed(2) : 1, _v ? Math.round(_v.offsetTop || 0) : 0].join('|');
+if (fp === _vvFp && (_vvTick % 10) !== 0) return; // 未变且非深查拍 → 本秒不重校
+_vvFp = fp;
+} catch (e0) {}
 onIosVvEvent();
 }, 1000);
 try { syncVvFit(); syncSafeBottom(); } catch (e) {}
@@ -1591,7 +1615,7 @@ window.addEventListener('orientationchange', function () { _aCoverEnvCache = -1;
 }
 const FLOAT_SELECTORS = ['#tc-mask', '#cc-export-mask', '#cc-scope-mask', '#call-mask', '#feed-notice-panel', '#feed-comment-panel', '#poke-card', '#gc-poke-card', '#emoji-panel', '#chat-ask-panel', '#qa-mask', '#chat-more-panel', '#gc-more-panel', '#chat-search', '#chat-decision-panel', '#chat-gdecision-panel', '#chat-divine-panel', '#chat-rps-panel', '#chat-call-panel', '#chat-pong-panel', '#chat-snake-panel', '#chat-brick-panel', '#chat-c4-panel', '#chat-ms-panel', '#chat-fish-panel', '#chat-memory-panel', '#chat-gift-panel', '#chat-gomoku-panel', '#chat-linkup-panel', '#chat-match3-panel', '#chat-auction-panel', '#chat-arcade-panel', '#avlib-card', '#ck-panel', '#loc-panel', '.mg-mask', '#modal-mask', '#dl-picker-mask', '#msg-actions', '#gc-msg-actions', '#desk-image-viewer', '.desk-lib', '#gc-members-panel', '#gc-at-panel', '#gc-settings-panel', '#img-view-mask', '#chat-rp-panel', '#batch-panel', '#eat-switch-overlay', '#voice-panel', '#applock-mask', '#cs-bg-panel', '#phone-bg-gallery-panel', '#feed-sticker-card',
 '#pc-sheet-mask',
-'#cs-input-order-panel',
+'#io-order-drawer',
 '#screen-adj-panel',
 '#chat-beauty-drawer',
 '#beauty-drawer', '#icon-fit-panel'];
@@ -1868,8 +1892,10 @@ var origGet = st.getPropertyValue.bind(st);
 function lsSet(k, v) { try { if (v) localStorage.setItem(PFX + KEYS[k], String(v)); else localStorage.removeItem(PFX + KEYS[k]); } catch (e) {} }
 function applyBottom() {
 try {
-if (adj.bottom) origSet('--mochi-safe-bottom', 'calc(env(safe-area-inset-bottom, 0px) + ' + adj.bottom + 'px)');
-else if (origGet('--mochi-safe-bottom').indexOf('calc(env(') === 0) origRemove('--mochi-safe-bottom');
+const want = adj.bottom ? ('calc(env(safe-area-inset-bottom, 0px) + ' + adj.bottom + 'px)') : '';
+const cur = origGet('--mochi-safe-bottom') || '';
+if (want) { if (cur !== want) origSet('--mochi-safe-bottom', want); }
+else if (cur.indexOf('calc(env(') === 0) origRemove('--mochi-safe-bottom');
 } catch (e) {}
 }
 function applyDesk() {

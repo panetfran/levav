@@ -612,29 +612,35 @@ if (cancelled) return;
 if (!remaining.length) hint.textContent = '牌库已空';
 else hint.textContent = '左右滑动牌面 · 点击牌背抽取 · 剩 ' + remaining.length + ' 张 · 已抽 ' + results.length + ' / ' + count + ' 张';
 };
+let pileEls = [];   // #1044：与 remaining 平行的牌背元素表（增量移除用）
 const renderGrid = function () {
 row1.innerHTML = ''; row2.innerHTML = '';
+pileEls = [];
 const total = remaining.length;
 if (!total) { updateHint(); return; }
 const half = Math.ceil(total / 2);
 for (let i = 0; i < total; i++) {
 const el = document.createElement('div');
 el.className = 'div-pile-card';
-el.addEventListener('click', function () { pick(i); });
+el.addEventListener('click', function () { pick(el); });
 (i < half ? row1 : row2).appendChild(el);
+pileEls.push(el);
 }
 updateHint();
 };
-const pick = function (idx) {
+const pick = function (el) {
 if (cancelled) return;
+const idx = pileEls.indexOf(el);
 if (idx < 0 || idx >= remaining.length) return;
 if (results.length >= count) return;
 const c = remaining[idx];
-remaining = remaining.slice(0, idx).concat(remaining.slice(idx + 1));
+remaining.splice(idx, 1);
 let rev = false, meaning = c.meaning;
 if (isTarot) { rev = Math.random() > 0.5; meaning = rev ? c.neg : c.pos; }
 results.push({ name: c.name, icon: c.icon, rev: rev, meaning: meaning, detail: c.detail || '' });
-renderGrid();
+pileEls.splice(idx, 1);
+if (el.parentNode) el.parentNode.removeChild(el);
+updateHint();
 const dc = document.createElement('div');
 dc.className = 'div-drawn-card';
 dc.innerHTML =
@@ -762,32 +768,68 @@ const d = new Date(ts);
 const p = (n) => (n < 10 ? '0' + n : '' + n);
 return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + p(d.getHours()) + ':' + p(d.getMinutes());
 }
-function renderHistory() {
-const el = document.getElementById('div-history');
-if (!el) return;
-const list = histLoad();
-el.innerHTML = list.length
-? '<div class="div-label">占卜记录</div>' + list.map((h, i) =>
-'<div class="div-h-item" data-hi="' + i + '">' +
+const HIST_PAGE = 30;
+let histShown = HIST_PAGE;
+function histRowHtml(h, i) {
+return '<div class="div-h-item" data-hi="' + i + '">' +
 '<div class="div-h-main"><div class="div-h-title">' + (h.mode === 'tarot' ? '塔罗' : '雷诺曼') + ' · ' + h.count + ' 张' +
 (h.question ? ' · 问：' + String(h.question).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') : '') + '</div>' +
 '<div class="div-h-sub">' + fmtDT(h.ts) + ' · ' + (Array.isArray(h.cards) ? h.cards.map(c => ((c && c.name) || '') + (c && c.rev ? '(逆)' : '')).join('、') : '') + '</div></div>' +
 '<button class="div-h-view" data-hi="' + i + '">查看</button>' +
 '<button class="div-h-del" data-hi="' + i + '">✕</button>' +
-'</div>').join('')
-: '';
+'</div>';
+}
+function histMoreRest(list) { return list.length - histShown; }
+function renderHistory() {
+const el = document.getElementById('div-history');
+if (!el) return;
+const list = histLoad();
 const hcard = el.closest ? el.closest('.div-card') : null;
 if (hcard) hcard.hidden = !list.length;
-el.querySelectorAll('.div-h-view').forEach(b => b.addEventListener('click', () => {
-const h = histLoad()[parseInt(b.dataset.hi, 10)];
-if (h && Array.isArray(h.cards)) renderDrawResult(h.cards, h.mode, h.question, h.summary);
-}));
-el.querySelectorAll('.div-h-del').forEach(b => b.addEventListener('click', () => {
-const list = histLoad();
-list.splice(parseInt(b.dataset.hi, 10), 1);
-histSave(list);
+histShown = Math.min(histShown, HIST_PAGE);   // 重渲（开页/新抽牌/删除）回到第一页，新记录在最上
+if (!list.length) { el.innerHTML = ''; return; }
+let html = '<div class="div-label">占卜记录</div>';
+for (let i = 0; i < histShown; i++) html += histRowHtml(list[i], i);
+if (histMoreRest(list) > 0) html += '<button type="button" class="div-h-more" id="div-h-more">显示更早的记录（还有 ' + histMoreRest(list) + ' 条）</button>';
+el.innerHTML = html;
+if (!el.dataset.histBound) {
+el.dataset.histBound = '1';
+el.addEventListener('click', function (e) {
+const more = e.target.closest && e.target.closest('.div-h-more');
+if (more) { histLoadMore(); return; }
+const del = e.target.closest && e.target.closest('.div-h-del');
+if (del) {
+const list2 = histLoad();
+list2.splice(parseInt(del.dataset.hi, 10), 1);
+histSave(list2);
 renderHistory();
-}));
+return;
+}
+const view = e.target.closest && e.target.closest('.div-h-view');
+if (view) {
+const h = histLoad()[parseInt(view.dataset.hi, 10)];
+if (h && Array.isArray(h.cards)) renderDrawResult(h.cards, h.mode, h.question, h.summary);
+}
+});
+}
+}
+function histLoadMore() {
+const el = document.getElementById('div-history');
+if (!el) return;
+const list = histLoad();
+const start = histShown, end = Math.min(histShown + HIST_PAGE, list.length);
+if (end <= start) return;
+let frag = '';
+for (let i = start; i < end; i++) frag += histRowHtml(list[i], i);
+const moreBtn = document.getElementById('div-h-more');
+if (moreBtn) moreBtn.insertAdjacentHTML('beforebegin', frag);
+else el.insertAdjacentHTML('beforeend', frag);
+histShown = end;
+const btn2 = document.getElementById('div-h-more');
+if (btn2) {
+if (histMoreRest(list) > 0) btn2.textContent = '显示更早的记录（还有 ' + histMoreRest(list) + ' 条）';
+else btn2.remove();
+}
 }
 function renderDrawResult(cards, m, question, summary) {
 const r = document.getElementById('div-result');
@@ -888,6 +930,19 @@ const deck = snapMode === 'tarot' ? TAROT : lenoDeck();
 if (!deck.length) { r.innerHTML = '<div class="div-result-empty">占卜牌库加载中…</div>'; return; }
 const labels = (MODE_LABELS[snapMode] && MODE_LABELS[snapMode][snapCount]) || [];
 drawBtn.textContent = '抽牌中…';
+try {
+const pdp = document.getElementById('page-divine');
+if (pdp && !pdp.__divDrawWatch) {
+pdp.__divDrawWatch = true;
+new MutationObserver(function () {
+if (pdp.hidden && window.__divActiveDraw) {
+let vis = '';
+document.querySelectorAll('.page').forEach(function (p) { if (!p.hidden) vis = p.id || ''; });
+console.error('[div-draw] 抽牌进行中页面被切走：当前可见页=' + (vis || '无') + '（若非你主动按返回，此行即「抽牌退出页面」现场）');
+}
+}).observe(pdp, { attributes: true, attributeFilter: ['hidden'] });
+}
+} catch (e) {}
 window.__divActiveDraw = startDivineDraw(r, {
 deck: deck,
 count: snapCount,
@@ -977,6 +1032,7 @@ return '' +
 '· 前缀序号：<b>07-战车.png</b><br>' +
 '· 纯编号：塔罗 <b>00–77</b>、雷诺曼 <b>1–36/40</b>（同名跨体系按当前页签；塔罗编号从 0 起，如你的素材从 1 开始请开下方「编号从 1 起」）<br>' +
 '未识别的文件会列出来，其余照常导入。</div>' +
+'<div class="divf-hint" id="divf-batch-hint">选不了多张或点了没反应，是浏览器 / 所在 App 的限制：换 Chrome / Edge 再试（详见 使用说明第 13 节）</div>' +
 '</div>' +
 '<div class="divf-scroll">' +
 '<div data-fpanel-body="manage">' +

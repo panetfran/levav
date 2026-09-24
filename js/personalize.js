@@ -20,21 +20,24 @@ resolve(null);
 return;
 }
 const img = new Image();
+let settled = false;
+const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); resolve(v); };
+const watchdog = setTimeout(() => once(null), 20000);
 img.onload = () => {
 try {
-if (img.width * img.height > 26000000) { resolve(null); return; }
+if (img.width * img.height > 26000000) { once(null); return; }
 const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
 const w = Math.max(1, Math.round(img.width * scale));
 const h = Math.max(1, Math.round(img.height * scale));
 const c = document.createElement('canvas');
 c.width = w; c.height = h;
 c.getContext('2d').drawImage(img, 0, 0, w, h);
-resolve(c.toDataURL('image/jpeg', 0.85));
+once(c.toDataURL('image/jpeg', 0.85));
 } catch (e) {
-resolve(null);
+once(null);
 }
 };
-img.onerror = () => resolve(null);
+img.onerror = () => once(null);
 img.src = dataUrl;
 });
 }
@@ -89,28 +92,31 @@ avatarPickInput.type = 'file'; avatarPickInput.accept = 'image/*';
 avatarPickInput.id = 'mochi-avatar-pick';
 avatarPickInput.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:1;margin:0;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;';
 document.body.appendChild(avatarPickInput);
+function avatarPickFile(f, cb) {
+if (!f) return;
+const reader = new FileReader();
+reader.onload = () => {
+compressImage(reader.result, 256).then(data => {
+if (!data) { toast('图片过大、格式不支持或读取超时，请换一张小图'); return; }
+if (cb) cb(data);
+});
+};
+reader.onerror = () => toast('图片读取失败，请重试');
+reader.readAsDataURL(f);
+}
 avatarPickInput.onchange = () => {
 const f = avatarPickInput.files && avatarPickInput.files[0];
 avatarPickInput.value = ''; // 允许重选同一文件
 if (!f) return;
 const cb = avatarPickCb; avatarPickCb = null;
-const reader = new FileReader();
-reader.onload = () => {
-compressImage(reader.result, 256).then(data => {
-if (!data) { toast('图片过大或格式不支持，请换一张小图'); return; }
-if (cb) cb(data);
-});
-};
-reader.readAsDataURL(f);
+avatarPickFile(f, cb);
 };
 function bindAvatar(id, key) {
 const box = document.getElementById(id);
 if (!box) return;
 applyAvatar(id, key);
 if (window.mochiFilePickLabel) window.mochiFilePickLabel(box, avatarPickInput);
-box.addEventListener('click', (e) => {
-e.stopPropagation();
-avatarPickCb = (data) => {
+const applyData = (data) => {
 const ring = box.querySelector('.ring');
 if (ring) {
 ring.innerHTML = '';
@@ -121,6 +127,16 @@ ring.appendChild(img);
 }
 store.set(key, data);
 };
+if (window.mochiFilePickSurface) {
+window.mochiFilePickSurface(box, {
+id: 'mochi-avatar-tap-' + id,
+accept: 'image/*',
+onFiles: (files) => { avatarPickFile(files && files[0], applyData); }
+});
+}
+box.addEventListener('click', (e) => {
+e.stopPropagation();
+avatarPickCb = applyData;
 var _fallback = () => { window.mochiFilePickFire(avatarPickInput, { onFail: () => { avatarPickCb = null; toast('无法打开相册，请重试'); } }); };
 if (window.mochiFilePickGuard) window.mochiFilePickGuard(avatarPickInput, _fallback);
 else _fallback();
@@ -453,6 +469,20 @@ if (sliderCfg.onChange) { try { sliderCfg.onChange(val); } catch (e) {} }
 }
 cb = fn;
 mask.hidden = false;
+if (window.mochiModalPickOkClear) { try { window.mochiModalPickOkClear(); } catch (eP) {} }
+if (opts.pickOk && okBtn && window.mochiModalPickOk) {
+try {
+window.mochiModalPickOk({
+okBtn: okBtn,
+accept: opts.pickOk.accept || '',
+multiple: !!opts.pickOk.multiple,
+entry: opts.pickOk.entry || '',
+mode: function () { return pillVal; },
+skipWhen: opts.pickOk.skipWhen,
+onFiles: opts.pickOk.onFiles
+});
+} catch (eP2) {}
+}
 setTimeout(() => {
 if (noInput) return;
 const target = (opts.textarea && textarea) ? textarea : input;
@@ -564,6 +594,7 @@ try { _ae.blur(); } catch (eB) {}
 if (window.mochiKbDismiss) { try { window.mochiKbDismiss(); } catch (eD) {} }
 } catch (eC0) {}
 mask.hidden = true; cb = null;
+if (window.mochiModalPickOkClear) { try { window.mochiModalPickOkClear(); } catch (eP3) {} }
 }
 function fire() {
 if (!cb) return;
@@ -690,6 +721,65 @@ b.style.backgroundAttachment = '';
 } catch (e) {}
 };
 const bgPosOf = () => ({ x: store.get('phone-bg-pos-x') || '50', y: store.get('phone-bg-pos-y') || '50', s: store.get('phone-bg-size') || 'cover' });
+let deskBlurPx = 0;           // 当前模糊半径（0~20，bg-blur 键原值）
+let deskWallSrc = null;       // 壁纸原图 dataURL（null＝渐变/纯色预设/无壁纸 → 旧滤镜路径）
+let deskLayerMode = 'none';   // 图层当前内容形态：'img' 原图壁纸 / 'css' 预设 / 'none'
+let deskBlurBaked = null;     // 最近一次烘焙结果（已模糊小图 dataURL）
+let deskBlurBakedFor = null;  // 烘焙结果对应的原图（=== 当前 deskWallSrc 才可用）
+let deskBlurFallback = false; // true＝当前壁纸烘焙失败 → 维持旧 CSS filter（.desk-blur-on）
+let deskBlurBakeSeq = 0;      // 烘焙序号：滑杆连改/换图时迟到的旧结果一律丢弃
+let deskBlurTimer = null;
+const setDeskBlurClass = (on) => {
+const ph = document.querySelector('.phone');
+if (ph) ph.classList.toggle('desk-blur-on', !!on);
+};
+const deskBlurReady = () => deskBlurPx > 0 && deskLayerMode === 'img' && !deskBlurFallback && !!deskBlurBaked && deskBlurBakedFor === deskWallSrc;
+const deskBlurRender = () => {
+if (deskLayerMode !== 'img') { setDeskBlurClass(deskBlurPx > 0); return; } // 预设/空：旧滤镜路径
+setDeskBlurClass(deskBlurPx > 0 && !deskBlurReady()); // 未烘好前原图＋旧滤镜＝始终有糊，不闪清晰裸图
+paintBgLayerImage(deskBlurReady() ? deskBlurBaked : deskWallSrc);
+};
+const deskBlurSchedule = () => {
+if (deskBlurTimer) { clearTimeout(deskBlurTimer); deskBlurTimer = null; }
+deskBlurRender();
+if (deskBlurPx > 0 && deskLayerMode === 'img' && deskWallSrc && deskBlurBakedFor !== deskWallSrc) {
+deskBlurTimer = setTimeout(() => { deskBlurTimer = null; deskBlurBake(deskWallSrc, deskBlurPx); }, 120); // 滑杆防抖：逐步触发合并烘焙
+}
+};
+const deskBlurBake = (src, px) => {
+const seq = ++deskBlurBakeSeq;
+let done = false;
+const once = (out) => {
+if (done) return; done = true;
+if (seq !== deskBlurBakeSeq) return; // 更新的一次改动已发出，本结果作废（由新一轮处理）
+if (out && src === deskWallSrc) { deskBlurBaked = out; deskBlurBakedFor = src; deskBlurFallback = false; }
+else { deskBlurBaked = null; deskBlurBakedFor = null; deskBlurFallback = true; }
+deskBlurRender();
+};
+try {
+const img = new Image();
+img.onload = () => { try { once(deskBlurCanvas(img, px)); } catch (e) { once(null); } };
+img.onerror = () => once(null);
+setTimeout(() => once(null), 5000); // 解码挂起（异常内核/巨型 dataURL）→ 判烘焙不可用，回旧路径
+img.src = src;
+} catch (e) { once(null); }
+};
+const deskBlurCanvas = (img, px) => {
+const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+if (!iw || !ih || !(px > 0)) return null;
+const cw = Math.max(6, Math.min(iw, Math.round(950 / px)));
+const ch = Math.max(4, Math.round(ih * cw / iw));
+const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+const g = c.getContext('2d'); if (!g) return null;
+g.fillStyle = '#ffffff'; g.fillRect(0, 0, cw, ch); // jpeg 输出：透明 PNG 壁纸白底（全屏背景语义不变）
+const m = Math.min(0.12, (px * 1.2) / 380);
+g.imageSmoothingEnabled = true;
+try { g.imageSmoothingQuality = 'high'; } catch (e) {}
+try { if ('filter' in g) g.filter = 'blur(' + (190 / cw).toFixed(2) + 'px)'; } catch (e) {} // 小尺度再轻抹一道去马赛克感（老内核无 ctx.filter 则仅靠降采样，仍成立）
+g.drawImage(img, iw * m, ih * m, iw * (1 - 2 * m), ih * (1 - 2 * m), 0, 0, cw, ch);
+const out = c.toDataURL('image/jpeg', 0.85);
+return out && out.indexOf('data:image') === 0 ? out : null;
+};
 let bgLayer = null;
 const ensureBgLayer = () => {
 if (bgLayer || !phoneEl) return bgLayer;
@@ -699,7 +789,7 @@ bgLayer.style.cssText = 'position:absolute;inset:0;top:0;right:0;bottom:0;left:0
 phoneEl.insertBefore(bgLayer, phoneEl.firstChild);
 return bgLayer;
 };
-const setBgLayerImage = (data) => {
+const paintBgLayerImage = (data) => {
 const l = ensureBgLayer(); if (!l) return;
 const want = data ? 'url("' + data + '")' : '';
 if (l.style.backgroundImage !== want) l.style.backgroundImage = want;
@@ -710,13 +800,22 @@ const psWanted = pos.x + '% ' + pos.y + '%';
 if (l.style.backgroundSize !== szWanted) l.style.backgroundSize = szWanted;
 if (l.style.backgroundPosition !== psWanted) l.style.backgroundPosition = psWanted;
 };
+const setBgLayerImage = (data) => {
+deskWallSrc = data || null;
+deskLayerMode = data ? 'img' : 'none';
+deskBlurSchedule();
+};
 const setBgLayerPreset = (css) => {
+deskWallSrc = null;
+deskLayerMode = 'css';
+if (deskBlurTimer) { clearTimeout(deskBlurTimer); deskBlurTimer = null; }
 const l = ensureBgLayer(); if (!l) return;
 if (l.style.backgroundImage !== css) {
 l.style.backgroundImage = css;
 l.style.backgroundSize = 'cover';
 l.style.backgroundPosition = 'center';
 }
+setDeskBlurClass(deskBlurPx > 0);
 };
 const setBgLayerVisible = (on) => {
 const l = ensureBgLayer(); if (!l) return;
@@ -922,7 +1021,7 @@ if (full) compressImage(full, 240).then((th) => { if (th) { store.set('phone-bg-
 cell.appendChild(im);
 cell.addEventListener('click', () => {
 const full = store.get('phone-bg-item-' + id);
-if (!full) return;
+if (!full) { toast('这张壁纸原图已丢失（可能被浏览器清理），请重新上传'); return; }
 applyPhoneBg(full);
 store.set('phone-bg', full);
 store.set(PBG_ACTIVE, id);
@@ -987,30 +1086,37 @@ wrap.appendChild(strip);
 const upBtn = document.createElement('button');
 upBtn.textContent = '＋ 上传新图（可多选）';
 upBtn.style.cssText = 'width:100%;padding:11px;border:none;border-radius:10px;background:var(--ink,#111);color:var(--bg-b,#fff);font-size:14px;font-weight:600;margin-bottom:8px';
+if (window.mochiFilePickSurface) window.mochiFilePickSurface(upBtn, { id: 'phone-bg-up-tap', accept: 'image/*', multiple: true, owner: 'mochi-phonebg-gallery-pick' });
 upBtn.addEventListener('click', () => {
 window.mochiFilePick({
 id: 'mochi-phonebg-gallery-pick', accept: 'image/*', multiple: true, btn: upBtn,
 onFiles: (fs) => {
 if (!fs.length) { toast('没有取到图片，请再选一次'); return; }
-let ok = 0;
+let ok = 0, fail = 0;
 toast('正在处理 ' + fs.length + ' 张图片…');
 let chain = Promise.resolve();
 fs.forEach((f) => {
 chain = chain.then(() => new Promise((res) => {
 const reader = new FileReader();
-reader.onload = () => { pbgAdd(reader.result).then((id) => { if (id) ok++; res(); }); };
-reader.onerror = () => res();
+reader.onload = () => { pbgAdd(reader.result).then((id) => { if (id) ok++; else fail++; res(); }); };
+reader.onerror = () => { fail++; res(); };
 reader.readAsDataURL(f);
 }));
 });
 chain.then(() => {
-if (ok) toast('已加入 ' + ok + ' 张壁纸');
+if (ok) toast('已加入 ' + ok + ' 张壁纸' + (fail ? '，' + fail + ' 张失败（太大/格式不支持/读取超时）' : ''));
+else if (fail) toast('图片太大、格式不支持或读取超时，没能加入，请换一张重试');
 if (document.getElementById('phone-bg-gallery-panel') && document.getElementById('phone-bg-gallery-panel').style.display === 'flex') openPhoneBgPanel();
 });
 }
 });
 });
 wrap.appendChild(upBtn);
+const bgHint = document.createElement('div');
+bgHint.id = 'phonebg-upload-hint';
+bgHint.style.cssText = 'font-size:11px;line-height:1.6;color:var(--muted);margin:2px 0 8px';
+bgHint.textContent = '选不了多张或点了没反应，是浏览器 / 所在 App 的限制：换 Chrome / Edge 再试（详见 使用说明第 13 节）';
+wrap.appendChild(bgHint);
 if (cur) {
 const rmBtn = document.createElement('button');
 rmBtn.textContent = '清除当前壁纸（图库保留）';
@@ -1800,7 +1906,28 @@ bind('dq-bg', 'row-bg-preset');
 bind('dq-radius', 'row-desk-card-radius');
 bind('dq-tabbar', 'row-tabbar-beauty'); // #769：底部栏直达
 })();
-let beautyDockTop = null;
+let beautyDockBot = null;
+function beautyDrawerReserve() {
+try {
+const tb = document.querySelector('.tabbar');
+const t = tb && tb.getBoundingClientRect();
+if (t && t.height && t.top > 0) return Math.max(14, Math.round(window.innerHeight - t.top + 8));
+} catch (e) {}
+return 14;
+}
+function beautyDrawerApplyBottom() {
+const d = document.getElementById('beauty-drawer');
+if (!d) return;
+d.style.bottom = (beautyDockBot == null ? beautyDrawerReserve() : beautyDockBot) + 'px';
+}
+let beautyDockObs = null;
+function watchBeautyDockPages() {
+if (beautyDockObs || !('MutationObserver' in window)) return;
+try {
+beautyDockObs = new MutationObserver(function () { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
+document.querySelectorAll('.page').forEach(function (p) { beautyDockObs.observe(p, { attributes: true, attributeFilter: ['hidden'] }); });
+} catch (e) { beautyDockObs = null; }
+}
 const openBeautyDrawer = (secKey) => {
 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
 const phoneTab = document.querySelector('.tab[data-page="page-phone"]');
@@ -1814,7 +1941,7 @@ d = document.createElement('div');
 d.id = 'beauty-drawer';
 document.body.appendChild(d);
 }
-d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
+d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;transition:bottom .16s ease;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
 d.innerHTML = '';
 const grip = document.createElement('div');
 grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 0;flex:none';
@@ -1830,7 +1957,10 @@ const hd = document.createElement('div');
 hd.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none';
 const hdTxt = document.createElement('span');
 hdTxt.textContent = '边看边调（即时生效）';
-hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:none';
+const hdHint = document.createElement('span');
+hdHint.textContent = '按住标题行上下拖 · 让开看桌面';
+hdHint.style.cssText = 'font-size:11px;color:var(--muted,#888);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
 const panelBody = document.createElement('div');
 panelBody.style.cssText = 'display:flex;flex-direction:column;gap:8px;flex:none';
 const body = document.createElement('div');
@@ -1841,8 +1971,39 @@ panelBody.style.display = willFold ? 'none' : 'flex';
 foldBtn.textContent = willFold ? '展开' : '收起';
 });
 const closeBtn = mkMini('\u2715', () => { d.style.display = 'none'; showThemePage(); }, ';padding:4px 8px');
-hd.appendChild(hdTxt); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
+hd.appendChild(hdTxt); hd.appendChild(hdHint); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
 d.appendChild(hd);
+const bindDrawerDrag = (el) => {
+el.style.touchAction = 'none';
+el.style.cursor = 'grab';
+let sy = 0, sb = 0, drag = false;
+el.addEventListener('pointerdown', (e) => {
+if (e.target.closest('button')) return;
+if (e.pointerType === 'mouse' && e.button !== 0) return;
+drag = true; sy = e.clientY;
+sb = beautyDockBot == null ? beautyDrawerReserve() : beautyDockBot;
+d.style.transition = 'none';
+try { el.setPointerCapture(e.pointerId); } catch (er) {}
+e.preventDefault();
+});
+el.addEventListener('pointermove', (e) => {
+if (!drag) return;
+beautyDockBot = Math.max(0, Math.min(Math.round(window.innerHeight * 0.6), Math.round(sb + sy - e.clientY)));
+beautyDrawerApplyBottom();
+e.preventDefault();
+});
+const up = () => {
+if (!drag) return;
+drag = false;
+d.style.transition = 'bottom .16s ease';
+if ((beautyDockBot || 0) <= beautyDrawerReserve() + 6) beautyDockBot = null; // 拖回自动位＝吸附复位
+beautyDrawerApplyBottom();
+};
+el.addEventListener('pointerup', up);
+el.addEventListener('pointercancel', up);
+};
+bindDrawerDrag(grip);
+bindDrawerDrag(hd); // grip 只有 4px 高，标题行才是主拖拽把手
 const chipsRow = document.createElement('div');
 chipsRow.style.cssText = 'display:flex;gap:6px;flex:none';
 panelBody.appendChild(chipsRow);
@@ -2109,14 +2270,20 @@ return wrap;
 } }
 ];
 let activeSec = 'color';
-const renderSec = (key) => {
-activeSec = key;
+const paintChips = (key) => {
 Array.prototype.forEach.call(chipsRow.children, c => {
 const on = c.dataset.sec === key;
-c.style.background = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
-c.style.color = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
-c.style.borderColor = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+const bg = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
+if (c.style.background !== bg) c.style.background = bg;
+const fg = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
+if (c.style.color !== fg) c.style.color = fg;
+const bd = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+if (c.style.borderColor !== bd) c.style.borderColor = bd;
 });
+};
+const renderSec = (key) => {
+activeSec = key;
+paintChips(key);
 body.innerHTML = '';
 paletteHost = null;
 colorItems = [];
@@ -2133,8 +2300,15 @@ chipsRow.appendChild(c);
 });
 renderSec(activeSec);
 if (secKey) renderSec(secKey);
+beautyDrawerApplyBottom();
 d.style.display = 'flex';
+watchBeautyDockPages();
+if (window.requestAnimationFrame) requestAnimationFrame(() => { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
 };
+try {
+window.addEventListener('resize', () => { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
+if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
+} catch (e) {}
 const showThemePage = () => {
 try {
 document.querySelectorAll('.page').forEach(pg => pg.hidden = true);
@@ -2220,13 +2394,13 @@ const KW = {
 '应用锁': '密码 锁 隐私',
 '开屏问答门': '问答 暗号 验证 提问',
 '手机布局': '布局 适配 模式',
-'离线消息提醒': '通知 推送 通知提醒 新消息',
+'离线消息提醒': '通知 推送 通知提醒 新消息 安卓 电脑 主屏幕 iPhone Chrome Edge',
 '使用说明': '教程 帮助 常见问题 安装',
 '导出数据': '备份 保存 导出',
 '导入数据': '恢复 还原 迁移 换机',
 '修改摸鱼天数': '恢复 找回 补回 归零 重来 已摸鱼',
 '设备兼容诊断': '诊断 兼容 报错 环境',
-'顶部避让修正': '安全区 白带 重叠 刘海',
+'顶部避让修正': '安全区 白带 重叠 刘海 添加到主屏幕 独立应用 电脑',
 '屏幕适配诊断': '适配 屏幕 空白 裁切',
 '屏幕适配微调': '微调 字号 文字大小 放大 变小 偏移 遮挡 裁切 留白 白带 状态栏 手势条 屏幕错位 位置',
 '功能诊断': '检测 测试',
@@ -2725,14 +2899,11 @@ pills: [
 const bgBlurRow = document.getElementById('row-bg-blur');
 const bgBlurVal = document.getElementById('bg-blur-val');
 const getBgBlur = () => { const v = store.get('bg-blur'); if (v) { const n = parseInt(v, 10); if (!isNaN(n)) return Math.max(0, Math.min(20, n)); } return 0; };
-const setBgBlurClass = (px) => {
-const ph = document.querySelector('.phone');
-if (ph) ph.classList.toggle('desk-blur-on', px > 0);
-};
 const applyBgBlur = (px) => {
+deskBlurPx = px;
 document.documentElement.style.setProperty('--desk-bg-blur', px + 'px');
-setBgBlurClass(px);
 if (bgBlurVal) bgBlurVal.textContent = px === 0 ? '关闭' : px + 'px';
+deskBlurSchedule();
 };
 applyBgBlur(getBgBlur());
 if (bgBlurRow) {
@@ -3631,22 +3802,32 @@ tabs.forEach(t => { t.classList.toggle('active', t.dataset.tab === name); });
 tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.tab)));
 show(tabs[0] ? tabs[0].dataset.tab : 'basic');
 })();
-(function initPlatTags() {
+(function initUseMark() {
 const page = document.getElementById('page-setting');
 if (!page) return;
-const tags = page.querySelectorAll('.plat-tag[data-plat]');
-if (!tags.length) return;
 const d = window.mochiDevice || {};
-const ALT = {
-'bg-notify': { text: '本机是 iPhone：网页拿不到系统通知，请改用应用内横幅「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' },
-'psync-en': { text: '本机是 iPhone：离线消息提醒只有安卓 Chrome / Edge 可用，请改用「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' },
-'safe-top-force': { text: '本机是安卓：本项只修 iPhone 顶部状态栏重叠；安卓要调顶部遮挡 / 底部裁切请用「屏幕适配微调」。', go: '#row-screen-adj', goText: '去调整' }
+const isIOS = function () { return d.isIOS === true; };
+const hasNotify = function () { try { return 'Notification' in window; } catch (e) { return false; } };
+const isIosStandalone = function () {
+if (!isIOS()) return false;
+if (document.documentElement.classList.contains('ios-pwa-standalone')) return true;
+try {
+return navigator.standalone === true ||
+!!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+} catch (e) { return false; }
 };
-function offPlatform(plat) {
-if (plat === 'android') return d.isIOS === true;
-if (plat === 'ios') return d.isAndroid === true;
-return false;
-}
+const RULES = [
+{ input: 'bg-notify', off: function () {
+if (isIOS()) return { text: '本机是 iPhone / iPad：网页拿不到系统通知（添加到主屏幕也不保证），请改用应用内横幅「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' };
+if (!hasNotify()) return { text: '本机浏览器没有通知能力（小米 / vivo / OPPO 等自带浏览器、UC、夸克常见如此）：请改用 Chrome / Edge 打开本站，安卓或电脑都行。' };
+return null;
+} },
+{ input: 'safe-top-force', off: function () {
+if (isIosStandalone()) return null; // 本机就是它要修的形态
+if (isIOS()) return { text: '本项只在「添加到主屏幕」后打开（独立应用形态）才生效：浏览器里直接打开时开关无效果，顶部遮挡 / 底部裁切请用「屏幕适配微调」。', go: '#row-screen-adj', goText: '去调整' };
+return { text: '本项只修 iPhone / iPad 独立应用形态的顶部避让（安卓没有这个形态）：安卓要调顶部遮挡 / 底部裁切请用「屏幕适配微调」。', go: '#row-screen-adj', goText: '去调整' };
+} }
+];
 function jumpTo(sel) {
 const target = document.querySelector(sel);
 if (!target) return;
@@ -3665,14 +3846,15 @@ try { row.scrollIntoView({ block: 'center' }); } catch (e) {}
 row.classList.add('plat-flash');
 setTimeout(function () { row.classList.remove('plat-flash'); }, 1500);
 }
-Array.prototype.forEach.call(tags, function (tag) {
-if (!offPlatform(tag.getAttribute('data-plat'))) return;
-const row = tag.closest('.set-row, .gs-row');
+RULES.forEach(function (rule) {
+const inp = document.getElementById(rule.input);
+if (!inp) return;
+const row = inp.closest('.set-row, .gs-row');
 if (!row) return;
-row.classList.add('plat-off');
-const inp = row.querySelector('input[type="checkbox"]');
-const alt = ALT[(inp && inp.id) || ''];
+let alt = null;
+try { alt = rule.off(); } catch (e) { alt = null; }
 if (!alt) return;
+row.classList.add('plat-off');
 const hint = document.createElement('div');
 hint.className = 'gs-sub plat-hint';
 hint.textContent = alt.text;
@@ -3687,10 +3869,7 @@ go.addEventListener('click', fire);
 go.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') fire(e); });
 hint.appendChild(go);
 }
-let anchor = row;
-while (anchor.nextElementSibling && anchor.nextElementSibling.classList &&
-anchor.nextElementSibling.classList.contains('gs-sub')) anchor = anchor.nextElementSibling;
-if (anchor.parentNode) anchor.parentNode.insertBefore(hint, anchor.nextSibling);
+if (row.parentNode) row.parentNode.insertBefore(hint, row.nextSibling);
 });
 })();
 (function initGuideNav() {
@@ -4585,6 +4764,7 @@ if (phonePageEl) {
 phonePageEl.addEventListener('click', (e) => {
 if (!phonePageEl.classList.contains('decor-on')) return;
 if (e.target.closest('.desk-lib') || e.target.closest('.decor-bar') || e.target.closest('.desk-page-add')) return;
+if (e.target.closest('.deco-avatar')) return;
 const card = e.target.closest('[data-card-bg]');
 if (!card) return;
 e.preventDefault();
@@ -4791,6 +4971,7 @@ val.textContent = bg ? '已设置' : '';
 };
 syncRowUI();
 row.appendChild(ico); row.appendChild(txt); row.appendChild(val);
+if (window.mochiFilePickSurface) window.mochiFilePickSurface(row, { id: 'page-bg-tap-' + i, accept: 'image/*', owner: 'mochi-page-bg-pick' });
 row.addEventListener('click', () => {
 const bg = store.get('page-bg-' + i);
 const pickPageBg = () => {
@@ -6391,14 +6572,25 @@ staticText: HINT
 })();
 (function () {
 const AXES = [
-{ k: 'top', name: '顶部', min: -80, max: 80, hint: '顶部内容被状态栏遮挡=往正拖；离得太远=往负拖' },
-{ k: 'bottom', name: '底部', min: -80, max: 80, hint: '底部被手势条裁掉=往正拖；悬空离底太远=往负拖' },
-{ k: 'h', name: '页面高度', min: -80, max: 80, hint: '页面底部留白=往正撑满；内容超出屏幕被裁=往负收短' },
-{ k: 'desk', name: '桌面图标区', min: -60, max: 60, hint: '全屏时桌面图标/按钮整体偏上=往正拉回' },
-{ k: 'shift', name: '整体位移', min: -60, max: 60, hint: '整页位置偏了：正=整页下移、负=上移' },
-{ k: 'text', name: '文字大小', min: 0, max: 12, hint: '聊天气泡/输入框/设置列表等正文文字整体加大（只放大文字组，非整页缩放）；0=默认' },
-{ k: 'side', name: '左右安全边', min: 0, max: 12, hint: '曲面屏/瀑布屏内容贴到屏幕弧边=往正加（两侧同时内收）；0=默认' }
+{ k: 'top', name: '顶部', min: -80, max: 80, group: 'pos', hint: '顶部内容被状态栏遮挡=往正拖；离得太远=往负拖' },
+{ k: 'bottom', name: '底部', min: -80, max: 80, group: 'pos', hint: '底部被手势条裁掉=往正拖；悬空离底太远=往负拖' },
+{ k: 'h', name: '页面高度', min: -80, max: 80, group: 'pos', hint: '页面底部留白=往正撑满；内容超出屏幕被裁=往负收短' },
+{ k: 'shift', name: '整体位移', min: -60, max: 60, group: 'pos', hint: '整页位置偏了：正=整页下移、负=上移' },
+{ k: 'side', name: '左右安全边', min: 0, max: 12, group: 'pos', hint: '曲面屏/瀑布屏内容贴到屏幕弧边=往正加（两侧同时内收）；0=默认' },
+{ k: 'desk', name: '桌面图标区', min: -60, max: 60, group: 'desk', hint: '全屏时桌面图标/按钮整体偏上=往正拉回（只影响桌面页）' },
+{ k: 'text', name: '文字大小', min: 0, max: 12, group: 'text', hint: '聊天气泡/输入框/设置列表等正文文字整体加大（只放大文字组，非整页缩放）；0=默认' }
 ];
+const AXIS_GROUPS = {
+pos: '通用位置轴（桌面 / 聊天 / 设置都生效）',
+desk: '只影响「桌面页」',
+text: '只影响「聊天页」正文文字（气泡 / 输入框）'
+};
+function groupIsCurrent(g) {
+const nm = adjPageName();
+if (g === 'desk') return nm === '桌面';
+if (g === 'text') return nm === '聊天' || nm === '群聊';
+return false;
+}
 let panel = null;
 let elGrip = null, elHead = null, elBody = null, elMini = null; // 面板四块（收起态只留胶囊）
 let adjMini = false;   // true＝收起态小胶囊
@@ -6438,6 +6630,29 @@ const pg = panel.querySelector('[data-adj-page]');
 if (pg) pg.textContent = nm;
 const ctx = panel.querySelector('[data-adj-ctx]');
 if (ctx) ctx.textContent = '正在调：' + nm;
+syncPageSeg();
+}
+function syncPageSeg() {
+if (!panel) return;
+const nm = adjPageName();
+panel.querySelectorAll('[data-adj-goto]').forEach(function (b) {
+const on = (b.getAttribute('data-adj-goto') === 'chat') ? (nm === '聊天' || nm === '群聊') : (nm === '桌面');
+b.setAttribute('aria-pressed', on ? 'true' : 'false');
+b.style.background = on ? '#111' : 'var(--btn-cancel-bg,#fafafa)';
+b.style.color = on ? '#fff' : 'var(--ink,#111)';
+b.style.borderColor = on ? '#111' : 'var(--card-border,#ddd)';
+b.style.fontWeight = on ? '800' : '600';
+});
+panel.querySelectorAll('[data-adj-group]').forEach(function (h) {
+const mk = h.querySelector('[data-adj-group-mine]');
+if (mk) mk.style.display = groupIsCurrent(h.getAttribute('data-adj-group')) ? 'inline-block' : 'none';
+});
+const ch = panel.querySelector('[data-adj-ctxhint]');
+if (ch) {
+if (nm === '桌面') ch.textContent = '反色高亮的「桌面」＝你现在正在调的页面；点「聊天」就切到聊天页看现场（面板自动收成小胶囊）。';
+else if (nm === '聊天' || nm === '群聊') ch.textContent = '反色高亮的「聊天」＝你现在正在调的页面；点「桌面」就切到桌面页看现场（面板自动收成小胶囊）。';
+else ch.textContent = '当前不在桌面/聊天页（' + nm + '）：点「桌面」或「聊天」切过去看现场（面板自动收成小胶囊），调完点胶囊展开继续。';
+}
 }
 function setMini(on) {
 if (!panel) return;
@@ -6488,6 +6703,7 @@ if (!tapToOpen && e.target.closest('button')) return; // header 里的按钮不�
 if (e.pointerType === 'mouse' && e.button !== 0) return;
 drag = true; moved = false; sy = e.clientY;
 sb = parseFloat(panel.style.bottom) || bottomReserve();
+panel.style.transition = 'none'; // #1008：拖动期间关掉 bottom 过渡，保证跟手
 try { el.setPointerCapture(e.pointerId); } catch (er) {}
 e.preventDefault();
 });
@@ -6501,6 +6717,7 @@ applyAdjPos();
 const up = () => {
 if (!drag) return;
 drag = false;
+panel.style.transition = 'bottom .16s ease'; // #1008：松手恢复过渡（吸附/回自动位都是动画）
 if (tapToOpen && !moved) { setMini(false); return; } // 胶囊：点一下＝展开
 if (adjBottom != null && adjBottom <= bottomReserve() + 6) adjBottom = null; // 拖回自动位＝吸附复位
 applyAdjPos();
@@ -6529,20 +6746,31 @@ if (!silent) toast(ax.name + ' ' + (nv > 0 ? '+' : '') + nv + 'px');
 function buildPanel() {
 panel = document.createElement('div');
 panel.id = 'screen-adj-panel';
-panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:96;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 14px calc(14px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:6px';
+panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:96;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 14px calc(14px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:6px;transition:bottom .16s ease';
 const grip = document.createElement('div');
 grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 2px;flex:none';
 panel.appendChild(grip);
 bindAdjDrag(grip, false);
 elGrip = grip;
 const head = document.createElement('div');
-head.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none;padding:2px 0 4px';
-head.innerHTML = '<b style="font-size:14px">屏幕适配微调</b><span style="font-size:11px;color:#888;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">拖标题行可上移 · 本机永久保存</span>';
+head.style.cssText = 'display:flex;flex-direction:column;gap:5px;flex:none;padding:2px 0 4px';
+const headTop = document.createElement('div');
+headTop.style.cssText = 'display:flex;align-items:center;gap:8px';
+headTop.innerHTML = '<b style="font-size:14px;flex:1;min-width:0">屏幕适配微调</b><span style="font-size:11px;color:#666;flex:none">本机永久保存</span>';
+head.appendChild(headTop);
+const headTool = document.createElement('div');
+headTool.style.cssText = 'display:flex;align-items:center;gap:8px';
+head.appendChild(headTool);
+const headHint = document.createElement('span');
+headHint.setAttribute('data-adj-draghint', '');
+headHint.style.cssText = 'font-size:11px;color:#666;flex:1;min-width:0;line-height:1.3';
+headHint.textContent = '按住这行标题上下拖＝把面板挪开';
+headTool.appendChild(headHint);
 const done = document.createElement('button');
 done.textContent = '完成';
 done.style.cssText = 'flex:none;border:none;background:#111;color:#fff;font-size:12px;font-weight:700;border-radius:99px;padding:6px 16px;cursor:pointer';
 done.addEventListener('click', closePanel);
-head.appendChild(done);
+headTop.appendChild(done);
 const holdBtn = document.createElement('button');
 holdBtn.textContent = '按住看默认';
 holdBtn.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:12px;border-radius:99px;padding:6px 12px;cursor:pointer';
@@ -6562,7 +6790,7 @@ refreshVals();
 };
 holdBtn.addEventListener('pointerdown', holdOn);
 ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { holdBtn.addEventListener(ev, holdOff); });
-head.insertBefore(holdBtn, done);
+headTool.insertBefore(holdBtn, headHint);
 const foldBtn = document.createElement('button');
 foldBtn.textContent = '收起';
 foldBtn.title = '收成一枚小胶囊（不挡底部导航/输入栏），切到桌面或聊天继续调';
@@ -6571,7 +6799,7 @@ const adjBody = document.createElement('div');
 adjBody.style.cssText = 'display:flex;flex-direction:column;gap:6px;flex:none';
 elBody = adjBody;
 foldBtn.addEventListener('click', () => { setMini(true); });
-head.insertBefore(foldBtn, holdBtn);
+headTool.insertBefore(foldBtn, holdBtn);
 panel.appendChild(head);
 elHead = head;
 bindAdjDrag(head, false); // grip 只有 4px 高，标题行才是主拖拽把手
@@ -6583,8 +6811,9 @@ bindAdjDrag(mini, true);
 panel.appendChild(mini);
 elMini = mini;
 const tip = document.createElement('div');
-tip.style.cssText = 'font-size:11px;color:#888;flex:none;line-height:1.5';
-tip.textContent = '拖动滑杆边看边调，双击滑杆回默认 0；「收起」变成小胶囊、不挡底部导航与输入栏，点「看桌面 / 看聊天」切到现场接着调；配合「屏幕适配诊断」——先诊断差多少 px，再来拖对应轴。';
+tip.setAttribute('data-adj-usage', '');
+tip.style.cssText = 'font-size:11px;color:#666;flex:none;line-height:1.5';
+tip.textContent = '想调哪一页，就点「正在调」旁边那一枚页签——切过去看现场（面板自动收成小胶囊）。下面滑杆按「哪一页生效」分三组，标着「你正在这一页」的那组才是当前页要调的；拖动当场生效、双击滑杆回默认 0。';
 adjBody.appendChild(tip);
 const ctx = document.createElement('div');
 ctx.style.cssText = 'flex:none;display:flex;align-items:center;gap:8px;border:1px solid var(--card-border,#eee);border-radius:10px;padding:7px 10px;font-size:12px';
@@ -6593,14 +6822,22 @@ ctxTxt.setAttribute('data-adj-ctx', '');
 ctxTxt.style.cssText = 'flex:1;min-width:0;font-weight:600';
 ctxTxt.textContent = '正在调：' + adjPageName();
 ctx.appendChild(ctxTxt);
-[['page-phone', '看桌面'], ['chat', '看聊天']].forEach(function (pair) {
+[['page-phone', '桌面'], ['chat', '聊天']].forEach(function (pair) {
 const pb = document.createElement('button');
+pb.setAttribute('data-adj-goto', pair[0]);
+pb.setAttribute('aria-pressed', 'false');
+pb.title = '切到「' + pair[1] + '」页看现场（面板自动收成小胶囊）';
 pb.textContent = pair[1];
-pb.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:12px;font-weight:600;border-radius:99px;padding:5px 12px;cursor:pointer';
+pb.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:12px;font-weight:600;border-radius:99px;padding:5px 14px;cursor:pointer';
 pb.addEventListener('click', function () { goPage(pair[0]); });
 ctx.appendChild(pb);
 });
 adjBody.appendChild(ctx);
+const ctxHint = document.createElement('div');
+ctxHint.setAttribute('data-adj-ctxhint', '');
+ctxHint.style.cssText = 'font-size:11px;color:#666;flex:none;line-height:1.4;margin-top:-2px';
+ctxHint.textContent = '点「桌面」或「聊天」切过去看现场（面板自动收成小胶囊），调完点胶囊展开继续。'; // syncPageSeg 随后按当前页改写
+adjBody.appendChild(ctxHint);
 try {
 const sug = (window.mochiScreenFixSuggest ? window.mochiScreenFixSuggest() : []) || [];
 if (sug.length) {
@@ -6625,7 +6862,21 @@ adjBody.appendChild(srow);
 }
 } catch (eSug) {}
 const cur0 = window.mochiScreenAdj ? window.mochiScreenAdj.all() : {};
+let lastGroup = '';
 AXES.forEach(ax => {
+if (ax.group !== lastGroup) {
+lastGroup = ax.group;
+const gh = document.createElement('div');
+gh.setAttribute('data-adj-group', ax.group);
+gh.style.cssText = 'flex:none;display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;font-weight:800;color:#444;padding-top:7px';
+gh.textContent = AXIS_GROUPS[ax.group] || '';
+const mine = document.createElement('span');
+mine.setAttribute('data-adj-group-mine', '');
+mine.style.cssText = 'display:none;background:#111;color:#fff;font-size:10px;font-weight:700;border-radius:99px;padding:1px 7px';
+mine.textContent = '你正在这一页';
+gh.appendChild(mine);
+adjBody.appendChild(gh);
+}
 const row = document.createElement('div');
 row.style.cssText = 'flex:none;border-top:1px solid var(--card-border,#eee);padding:7px 0';
 const line = document.createElement('div');
@@ -6753,12 +7004,8 @@ syncMiniLabel();
 window.mochiOpenScreenAdj = openAdjPanel;
 const entry = document.getElementById('row-screen-adj');
 if (entry) entry.addEventListener('click', openAdjPanel);
-const chatEntry = document.getElementById('more-screen-adj');
-if (chatEntry) chatEntry.addEventListener('click', () => {
-const mp = document.getElementById('chat-more-panel');
-if (mp) mp.hidden = true; // 与其它 more-item 同口径：点了先把更多面板收掉
-openAdjPanel();
-});
+const chatSetEntry = document.getElementById('cs-screen-adj');
+if (chatSetEntry) chatSetEntry.addEventListener('click', openAdjPanel);
 const decorEntry = document.getElementById('decor-fit');
 if (decorEntry) decorEntry.addEventListener('click', () => {
 try { if (window.exitDecor) window.exitDecor(); } catch (e) {} // 先退出装修模式再开面板，避免两层叠着看不清
@@ -6804,7 +7051,7 @@ const c = relCat();
 return c === 'family' ? '亲情纪念日' : c === 'friend' ? '友情纪念日' : '恋爱纪念日';
 }
 function updateLove() {
-const start = store.get('love-start');
+const start = normDateStr(store.get('love-start'));
 const daysEl = document.getElementById('love-days');
 const dateEl = document.getElementById('love-date');
 const mDays = document.getElementById('mem-love-days');
@@ -6838,13 +7085,34 @@ const cd = Math.ceil((ann - now) / 864e5);
 if (mNext) mNext.textContent = '还有 ' + cd + ' 天 · ' + (ann.getMonth() + 1) + ' 月 ' + ann.getDate() + ' 日';
 }
 updateLove();
-const dateInput = document.getElementById('love-date-input');
 const dateBtnTxt = document.getElementById('love-date-btn-txt');
 const dateBtn = document.getElementById('love-date-btn');
+function normDateStr(v) {
+const s = String(v == null ? '' : v).trim();
+let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+if (!m) m = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
+if (!m) m = /^(\d{4})[./](\d{1,2})[./](\d{1,2})$/.exec(s);
+if (!m) return '';
+const y = +m[1], mo = +m[2], d = +m[3];
+if (y < 1900 || y > 2999 || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+const dt = new Date(y, mo - 1, d);
+if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return '';
+return y + '-' + pad2(mo) + '-' + pad2(d);
+}
+function setLoveStart(v) {
+const ds = normDateStr(v);
+if (!ds) return false;
+store.set('love-start', ds);
+syncLoveDateBtn(ds);
+updateLove();
+try { renderDeskAnniv(); } catch (e) {}
+return true;
+}
 function syncLoveDateBtn(val) {
 if (!dateBtnTxt || !dateBtn) return;
-if (val) {
-const parts = val.split('-');
+const ds = normDateStr(val);
+if (ds) {
+const parts = ds.split('-');
 dateBtnTxt.textContent = parts[0] + ' 年 ' + parts[1] + ' 月 ' + parts[2] + ' 日';
 dateBtn.setAttribute('data-set', '1');
 } else {
@@ -6852,18 +7120,8 @@ dateBtnTxt.textContent = '点击设置日期';
 dateBtn.setAttribute('data-set', '0');
 }
 }
-if (dateInput) {
-const saved = store.get('love-start');
-if (saved) dateInput.value = saved;
-syncLoveDateBtn(dateInput.value);
-dateInput.addEventListener('change', () => {
-if (dateInput.value) {
-store.set('love-start', dateInput.value);
-syncLoveDateBtn(dateInput.value);
-updateLove();
-}
-});
-}
+syncLoveDateBtn(store.get('love-start'));
+if (dateBtn) dateBtn.addEventListener('click', openLoveDateModal);
 const REL_ICONS = {
 love: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7.5-4.7-9.3-9A5.3 5.3 0 0112 6.4a5.3 5.3 0 019.3 5.6c-1.8 4.3-9.3 9-9.3 9z"/></svg>',
 family: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 22V12h6v10"/></svg>',
@@ -6949,42 +7207,57 @@ const memAdd = document.getElementById('mem-add');
 if (memAdd) {
 memAdd.addEventListener('click', openMemAddModal);
 }
-let memMask = null;      // 弹层单例
+let memMask = null;      // 添加纪念日弹层单例
 let memSelDate = '';     // 选中日期 'YYYY-MM-DD'
 let memSelType = 'auto'; // auto/ann/count
-let mvY = 0, mvM = -1;   // 弹层当前查看的年/月（-1=本月）
+const mvYM = { y: 0, m: -1 }; // 弹层当前查看的年/月（m=-1 表示「本月」，首帧落到当前年月）
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 function memToday() {
 const d = new Date();
 return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
 }
-function renderMemCal() {
-if (!memMask) return;
-const now = new Date();
-if (mvM < 0) { mvY = now.getFullYear(); mvM = now.getMonth(); }
-const y = mvY, m = mvM;
-memMask.querySelector('.mem-cal-title').textContent = y + ' 年 ' + (m + 1) + ' 月';
-const first = new Date(y, m, 1);
-const days = new Date(y, m + 1, 0).getDate();
-const startWd = first.getDay();
+const MEM_CAL_NAV_HTML =
+'<div class="mem-cal-nav">' +
+'<button class="mem-cal-btn" data-nav="-12" title="上一年"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M11 17l-5-5 5-5"/><path d="M18 17l-5-5 5-5"/></svg></button>' +
+'<button class="mem-cal-btn" data-nav="-1" title="上个月"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M15 18l-6-6 6-6"/></svg></button>' +
+'<span class="mem-cal-title"></span>' +
+'<button class="mem-cal-btn" data-nav="1" title="下个月"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M9 18l6-6-6-6"/></svg></button>' +
+'<button class="mem-cal-btn" data-nav="12" title="下一年"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M13 7l5 5-5 5"/><path d="M6 7l5 5-5 5"/></svg></button>' +
+'</div>';
+function memCalPaint(panel, ym, selDate, onPick) {
+while (ym.m < 0) { ym.m += 12; ym.y--; }
+while (ym.m > 11) { ym.m -= 12; ym.y++; }
+const title = panel.querySelector('.mem-cal-title');
+const grid = panel.querySelector('.mem-cal-grid');
+if (!title || !grid) return;
+title.textContent = ym.y + ' 年 ' + (ym.m + 1) + ' 月';
+const days = new Date(ym.y, ym.m + 1, 0).getDate();
+const startWd = new Date(ym.y, ym.m, 1).getDay();
 const wds = ['日', '一', '二', '三', '四', '五', '六'];
 const t = memToday();
 let html = wds.map(w => '<span class="mem-cal-wd">' + w + '</span>').join('');
 for (let i = 0; i < startWd; i++) html += '<span class="mem-cal-cell blank"></span>';
 for (let d = 1; d <= days; d++) {
-const ds = y + '-' + pad2(m + 1) + '-' + pad2(d);
-const isToday = ds === t;
-const isSel = ds === memSelDate;
-html += '<span class="mem-cal-cell' + (isToday ? ' today' : '') + (isSel ? ' sel' : '') + '" data-d="' + ds + '">' + d + '</span>';
+const ds = ym.y + '-' + pad2(ym.m + 1) + '-' + pad2(d);
+html += '<span class="mem-cal-cell' + (ds === t ? ' today' : '') + (ds === selDate ? ' sel' : '') + '" data-d="' + ds + '">' + d + '</span>';
 }
-const grid = memMask.querySelector('.mem-cal-grid');
 grid.innerHTML = html;
 grid.querySelectorAll('.mem-cal-cell[data-d]').forEach(cell => {
-cell.addEventListener('click', () => {
-memSelDate = cell.getAttribute('data-d');
-renderMemCal();
+cell.addEventListener('click', () => { onPick(cell.getAttribute('data-d')); });
 });
-});
+}
+function memCalNavBind(panel, ym, onChange) {
+panel.querySelectorAll('.mem-cal-btn').forEach(b => b.addEventListener('click', () => {
+ym.m += parseInt(b.getAttribute('data-nav'), 10) || 0;
+while (ym.m < 0) { ym.m += 12; ym.y--; }
+while (ym.m > 11) { ym.m -= 12; ym.y++; }
+onChange();
+}));
+}
+function renderMemCal() {
+if (!memMask) return;
+if (mvYM.m < 0) { const now = new Date(); mvYM.y = now.getFullYear(); mvYM.m = now.getMonth(); }
+memCalPaint(memMask, mvYM, memSelDate, (d) => { memSelDate = d; renderMemCal(); });
 }
 function closeMemAdd() {
 if (memMask) memMask.hidden = true;
@@ -6998,14 +7271,7 @@ memMask.innerHTML =
 '<div class="mg-panel mem-add-panel">' +
 '<div class="mg-head"><span>添加纪念日 / 倒数日</span><button class="mg-close">✕</button></div>' +
 '<input type="text" class="mem-add-input" placeholder="名称（如：在一起一周年 / 生日）" maxlength="24">' +
-'<div class="mem-cal">' +
-'<div class="mem-cal-nav">' +
-'<button class="mem-cal-btn" data-nav="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M15 18l-6-6 6-6"/></svg></button>' +
-'<span class="mem-cal-title"></span>' +
-'<button class="mem-cal-btn" data-nav="1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M9 18l6-6-6-6"/></svg></button>' +
-'</div>' +
-'<div class="mem-cal-grid"></div>' +
-'</div>' +
+'<div class="mem-cal">' + MEM_CAL_NAV_HTML + '<div class="mem-cal-grid"></div></div>' +
 '<div class="mem-type-row">' +
 '<button class="mem-type-pill sel" data-type="auto">自动</button>' +
 '<button class="mem-type-pill" data-type="ann">纪念日</button>' +
@@ -7021,12 +7287,7 @@ document.body.appendChild(memMask);
 memMask.querySelector('.mg-close').addEventListener('click', closeMemAdd);
 memMask.addEventListener('click', (e) => { if (e.target === memMask) closeMemAdd(); });
 memMask.querySelector('.mem-add-cancel').addEventListener('click', closeMemAdd);
-memMask.querySelectorAll('.mem-cal-btn').forEach(b => b.addEventListener('click', () => {
-mvM += parseInt(b.getAttribute('data-nav'), 10);
-if (mvM < 0) { mvM = 11; mvY--; }
-if (mvM > 11) { mvM = 0; mvY++; }
-renderMemCal();
-}));
+memCalNavBind(memMask, mvYM, renderMemCal);
 memMask.querySelectorAll('.mem-type-pill').forEach(b => b.addEventListener('click', () => {
 memSelType = b.getAttribute('data-type');
 memMask.querySelectorAll('.mem-type-pill').forEach(x => x.classList.toggle('sel', x === b));
@@ -7052,9 +7313,49 @@ memSelType = 'auto';
 const nameInput = memMask.querySelector('input.mem-add-input');
 nameInput.value = '';
 memMask.querySelectorAll('.mem-type-pill').forEach(x => x.classList.toggle('sel', x.getAttribute('data-type') === 'auto'));
-mvY = 0; mvM = -1;
+mvYM.y = 0; mvYM.m = -1;
 renderMemCal();
 setTimeout(() => nameInput.focus(), 80);
+}
+let memDateMask = null;
+let mdSel = '';
+const mdYM = { y: 0, m: 0 };
+function renderMemDateCal() {
+if (!memDateMask) return;
+memCalPaint(memDateMask, mdYM, mdSel, (d) => { mdSel = d; renderMemDateCal(); });
+}
+function closeMemDateModal() { if (memDateMask) memDateMask.hidden = true; }
+function openLoveDateModal() {
+if (!memDateMask) {
+memDateMask = document.createElement('div');
+memDateMask.id = 'mem-date-mask';
+memDateMask.className = 'mg-mask';
+memDateMask.innerHTML =
+'<div class="mg-panel mem-add-panel">' +
+'<div class="mg-head"><span>选择日期</span><button class="mg-close">✕</button></div>' +
+'<div class="mem-cal">' + MEM_CAL_NAV_HTML + '<div class="mem-cal-grid"></div></div>' +
+'<div class="mem-type-hint">‹ › 按月换，‹‹ ›› 按年换；点日期选中后按「确定」</div>' +
+'<div class="mem-add-foot">' +
+'<button class="mem-add-cancel">取消</button>' +
+'<button class="mem-add-ok">确定</button>' +
+'</div>' +
+'</div>';
+document.body.appendChild(memDateMask);
+memCalNavBind(memDateMask, mdYM, renderMemDateCal);
+memDateMask.querySelector('.mg-close').addEventListener('click', closeMemDateModal);
+memDateMask.addEventListener('click', (e) => { if (e.target === memDateMask) closeMemDateModal(); });
+memDateMask.querySelector('.mem-add-cancel').addEventListener('click', closeMemDateModal);
+memDateMask.querySelector('.mem-add-ok').addEventListener('click', () => {
+if (!setLoveStart(mdSel)) { toast('日期没选上，请再点一次'); return; }
+closeMemDateModal();
+});
+}
+const cur = normDateStr(store.get('love-start')) || memToday();
+mdSel = cur;
+const cp = cur.split('-');
+mdYM.y = +cp[0]; mdYM.m = +cp[1] - 1;
+memDateMask.hidden = false;
+renderMemDateCal();
 }
 const memApp = document.querySelector('.app[data-app="memory"]');
 const memPage = document.getElementById('page-memory');
@@ -8553,7 +8854,7 @@ const nameEl = document.getElementById('da-name');
 if (!daysEl || !nameEl) return;
 const now = new Date();
 const cands = [];
-const start = store.get('love-start');
+const start = normDateStr(store.get('love-start'));
 if (start) {
 const d = new Date(start + 'T00:00:00');
 if (!isNaN(d.getTime())) {

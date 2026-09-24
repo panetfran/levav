@@ -1566,6 +1566,7 @@ authLoadedPrefix = myPrefix;
 idbRetryCount = 0;
 _lmChainBusy = null; // #952：本桌读库链成功收尾，放行后续 loadMsgs
 try { if (chatTailMerge(myPrefix) > 0) changed = true; } catch (e) {} // #180：权威就绪后回放尾巴日志（上次会话未落盘的最近消息）；FIX #407 回放插入=下标位移，并入 changed 走重渲，防屏上 data-idx 陈旧串条；FIX #766 传入 myPrefix＝日志必须与这份 msgs 同命名空间才回放
+try { chatDeskInboxMerge(myPrefix); } catch (e) {} // #1200：权威落定后回填跨桌面中转箱（分块桌面整包写不进的两端互通，去重合并＋就地重渲）
 try { chatLedgerSave(myPrefix, chatBlkTotal || idbArr.length, chatBlkTotal ? Math.max(msgsBytes(idbArr), chatLedgerBytes[myPrefix] || 0) : msgsBytes(idbArr)); } catch (e) {} // #722 分块格式：账本记全量条数（热片读时 idbArr 只是尾部，全量条数以 idx.total 为准，缩水守卫才不会误判）
 if (!chatBlkIdx && msgsBytes(idbArr) > CHAT_BLK_MIN) {
 setTimeout(function () {
@@ -1587,16 +1588,20 @@ try { if (window.idbSet) persistChatHistory(myPrefix, msgs); } catch (e) {}
 try { writeLsSnapshot(msgs, myPrefix, true); } catch (e) {}
 __prof('ch7_end');
 if (chatVisible() && chatNearBottom()) {
+chatSettleHoldArm(); // #1010：权威收尾在飞（换装 + 视口媒体解码）——进度条持有到本段结束
 if (!inplacePatchIfSameWindow()) {
 renderWindow(false, true);
 scrollChatBottom();
 }
+chatSettleHoldSettle();
 } else if (chatVisible()) {
 windowStale = true;
 }
 } else if (chatVisible() && msgs.length && !body.children.length) {
+chatSettleHoldArm(); // #1010：冷加载首渲同样走收尾媒体窗
 renderWindow(false, true);
 scrollChatBottom();
+chatSettleHoldSettle();
 }
 if (!changed) {
 setTimeout(function () {
@@ -1894,9 +1899,94 @@ const p = document.getElementById('page-chat');
 return !!(p && !p.hidden);
 }
 let chatRebuilding = false; // #841：分帧整窗重建的「列表已清空、新内容未换装」空窗期——该窗口必须显示进度条，否则用户看到的是闪白/闪旧记录＝当成 bug
+let chatSettleHoldUntil = 0;
+let chatSettleHoldT = null;
+let chatSettleHardUntil = 0;
+function chatMediaPendingCount() {
+try {
+const list = body.querySelectorAll('img.msg-img');
+if (!list.length) return 0;
+const br = body.getBoundingClientRect();
+const top = br.top - 40, bot = br.bottom + 40;
+let pending = 0;
+for (let i = 0; i < list.length; i++) {
+const im = list[i];
+if (im.complete && im.naturalWidth) continue;
+const r = im.getBoundingClientRect();
+if (r.bottom < top || r.top > bot) continue; // 视口外（懒加载未触发）不计
+pending++;
+}
+return pending;
+} catch (e) { return 0; }
+}
+function chatSettleHoldOn() { return chatSettleHoldUntil > 0; }
+function chatSettleHoldDefer() {
+chatSettleHoldUntil = Math.min(chatSettleHoldUntil + 400, chatSettleHardUntil);
+if (!chatSettleHoldT) chatSettleHoldT = setTimeout(chatSettleHoldPoll, 120);
+}
+function chatSettleHoldPoll() {
+chatSettleHoldT = null;
+if (!chatSettleHoldOn()) return;
+if (!chatVisible()) {
+chatSettleHoldUntil = 0;
+try { updateChatLoading(); } catch (e) {}
+return;
+}
+if (batchRendering) { chatSettleHoldDefer(); return; }
+if (chatMediaPendingCount() === 0 || performance.now() > chatSettleHoldUntil) {
+chatSettleHoldUntil = 0;
+try { updateChatLoading(); } catch (e) {}
+return;
+}
+chatSettleHoldT = setTimeout(chatSettleHoldPoll, 120);
+}
+function chatSettleHoldArm() {
+chatSettleHoldUntil = performance.now() + 1200;
+chatSettleHardUntil = chatSettleHoldUntil + 6000;
+}
+function chatSettleHoldSettle() {
+if (!chatSettleHoldOn()) return;
+if (!chatVisible()) {
+chatSettleHoldUntil = 0;
+try { updateChatLoading(); } catch (e) {}
+return;
+}
+if (batchRendering) { chatSettleHoldDefer(); return; } // 换装未落定：等 finishSwap 再判
+if (chatMediaPendingCount() === 0) {
+chatSettleHoldUntil = 0;
+try { updateChatLoading(); } catch (e) {}
+return;
+}
+if (!chatSettleHoldT) chatSettleHoldT = setTimeout(chatSettleHoldPoll, 120);
+}
+function chatScreenHasOwnWindow() {
+if (!body || !body.children.length) return false;
+if (windowRenderedN === 0) return false; // 无屏上凭据（首渲前）
+if (windowStale) return false; // 渲染后数据被归一化/合并改过＝屏上已落后
+try { if (windowRenderedPrefix !== window.activePrefix()) return false; } catch (e) { return false; }
+return true;
+}
+let chatLoadingOutT = null;
+function setChatLoadingUI(show, cover) {
+if (chatLoadingOutT) { clearTimeout(chatLoadingOutT); chatLoadingOutT = null; }
+if (show) {
+chatLoadingEl.hidden = false;
+chatLoadingEl.classList.remove('chat-loading-out');
+} else if (!chatLoadingEl.hidden) {
+chatLoadingEl.classList.add('chat-loading-out'); // #1057c：不撤 DOM 先淡出，160ms 后再真撤（瞬间消失＝用户眼里的「闪」）
+chatLoadingOutT = setTimeout(function () { chatLoadingOutT = null; chatLoadingEl.hidden = true; chatLoadingEl.classList.remove('chat-loading-out'); }, 160);
+}
+const host = chatLoadingEl.parentElement; // #chat-loading 是 #page-chat 的直接子节点
+if (host) host.classList.toggle('chat-loading-cover', !!cover);
+}
 function updateChatLoading() {
 if (!chatLoadingEl) return;
-chatLoadingEl.hidden = !(chatVisible() && (!chatDbReady || chatRebuilding || chatAuthPending) && !chatKnownEmpty); // #703：去掉「msgs 为空」前置 · #841：重建空窗期同样显示 · #967：权威未达同样显示（保险丝置真不代表数据到了，空屏必须一直有提示）
+const ownWin = chatScreenHasOwnWindow(); // #1057a：屏上已有本桌面这一窗＝用户已经在看内容，#967 的「空屏必须有提示」不再成立（标志位照旧置着，只是它不代表空屏）；只有 #1010 的收尾媒体窗还能在它之上顶着
+const flagsUp = (!chatDbReady || chatRebuilding || chatAuthPending || batchRendering || chatSettleHoldOn()) && !chatKnownEmpty; // #703：去掉「msgs 为空」前置 · #841：重建空窗期同样显示 · #967：权威未达同样显示（保险丝置真不代表数据到了，空屏必须一直有提示）· #1010：收尾媒体解码未落地同样显示（否则「弹窗先消失、记录再闪一下」）
+let withdraw = ownWin && !chatSettleHoldOn(); // #1057：判据从「标志位」补上「屏上拿不拿得出本桌面这一窗」
+if (withdraw && flagsUp && chatMediaPendingCount() > 0) { withdraw = false; chatSettleHoldArm(); chatSettleHoldSettle(); }
+const show = chatVisible() && flagsUp && !withdraw;
+setChatLoadingUI(show, show && !ownWin); // #1057b：遮罩只在「屏上不是本桌面的窗」时挂（切桌面/预渲未落地/整窗重建中途）；CSS 侧规则见 chat-main.css 的 #1057b 哨兵
 }
 let chatPinnedBottom = true;
 function chatScrollMax() {
@@ -1943,7 +2033,7 @@ return cb.scrollHeight - cb.scrollTop - cb.clientHeight < 120;
 function chatAtBottom() {
 const cb = document.getElementById('chat-body');
 if (!cb) return true;
-return cb.scrollHeight - cb.scrollTop - cb.clientHeight <= 8;
+return chatScrollMax() - cb.scrollTop <= 8;
 }
 let chatUserFollowScroll = false;
 function maybeScrollChatBottom(side) {
@@ -1955,7 +2045,7 @@ if (!chatVisible()) return;
 const out = side === 'out';
 const userFollow = !out && chatUserFollowScroll; // FIX #492 一次性消费
 if (userFollow) chatUserFollowScroll = false;
-if (!out && !userFollow && !chatPinnedBottom) return;
+if (!out && !userFollow && !chatPinnedBottom && !chatAtBottom()) return;
 if (out || userFollow) {
 scrollChatBottom();
 requestAnimationFrame(scrollChatBottom);
@@ -1966,8 +2056,30 @@ requestAnimationFrame(() => { if (chatPinnedBottom) scrollChatBottomSmooth(); })
 setTimeout(() => { if (chatVisible() && chatPinnedBottom) scrollChatBottomSmooth(); }, 150);
 }
 }
+function rateLimitFull() {
+try {
+const c = cfg();
+if (cfgn(c, 'rl-en', 0) !== 1) return false;
+const win = Math.max(1, cfgn(c, 'rl-win', 5)) * 60000;
+const max = Math.max(1, cfgn(c, 'rl-max', 15));
+const now = Date.now();
+let n = 0;
+for (let i = msgs.length - 1, k = 0; i >= 0 && k < 400; i--, k++) {
+const p = msgs[i];
+if (!p || (p.side || '') !== 'in' || p.nightAllow || p.special === 'read') continue;
+if (now - (p.ts || 0) > win) continue;
+if (++n >= max) return true;
+}
+return false;
+} catch (e) { return false; }
+}
+function rateBlocksIn(side, special, nightAllow) {
+if (side !== 'in' || nightAllow || special === 'read') return false;
+return rateLimitFull();
+}
 function showTyping() {
 if (!typingEl) return;
+if (rateLimitFull()) return; // #1180：额度已满＝TA 不会再发出来了，就别再演「正在输入」（否则每条都变成「打了字又没消息」）
 typingOn = true;
 if (chatVisible()) {
 typingEl.hidden = false; // FIX 2026-09-15 #514 只切可见性、不写 scrollTop（#334 守钉加强版：连钉住态也不抢滚动权）
@@ -1993,9 +2105,10 @@ out.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
 return out;
 }
 const CHAT_READABLE_RE = /[A-Za-z0-9\u4e00-\u9fff\u3041-\u3096\u30a1-\u30fa]/;
+const CHAT_KAOMOJI_FACE_RE = /[｡◕‿・▽´｀￣﹏◠◡≧≦ω＾￢¬^•˙˘๑٩۶ฅヽノ]/;
 function chatLooksKaomoji(c) {
-if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) return true;
-return /[｡◕‿・▽´｀￣﹏◠◡≧≦ω＾￢¬^•˙˘๑٩۶ฅヽノ]/.test(c);
+if (chatIsBracketedKaomojiCard(c)) return true;
+return CHAT_KAOMOJI_FACE_RE.test(c);
 }
 function chatIsEmojiCard(c) {
 if (/[\uD800-\uDBFF]/.test(c)) return true;
@@ -2008,10 +2121,16 @@ if ((cp >= 0x1F000 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) || (cp >=
 return false;
 }
 function chatIsKaomojiCard(c) {
-if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) return true;
+if (chatIsBracketedKaomojiCard(c)) return true;
 if (CHAT_READABLE_RE.test(c)) return false;
-return /[｡◕‿・▽´｀￣﹏◠◡≧≦ω＾￢¬^•˙˘๑٩۶ฅヽノ]/.test(c);
+return CHAT_KAOMOJI_FACE_RE.test(c);
 }
+const CHAT_BRACKET_SHELL_RE = /^[\s()（）[\]【】<>《》]+$/;
+function chatIsBracketedKaomojiCard(c) {
+return !CHAT_BRACKET_SHELL_RE.test(c) && /[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c) && !(CHAT_READABLE_RE.test(c) && !CHAT_KAOMOJI_FACE_RE.test(c));
+}
+window.chatIsKaomojiCard = chatIsKaomojiCard; // 专项验证与展示面共用（同一判据各写一份＝复发土壤）
+window.chatIsBracketedKaomojiCard = chatIsBracketedKaomojiCard; // 群聊/默认字卡分池借用
 function chatHasReadableTextCard(arr) {
 return arr.some(s => typeof s === 'string' && CHAT_READABLE_RE.test(s));
 }
@@ -2149,7 +2268,7 @@ arr.forEach(c => {
 if (isOff && isOff('main', c)) return;
 if (typeof c !== 'string' || !c) return;
 if (/[\uD800-\uDBFF]/.test(c)) emoji.push(c);
-else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) kaomoji.push(c);
+else if (chatIsBracketedKaomojiCard(c)) kaomoji.push(c); // FIX #1152 与自建字卡同一判据（旧写法把「……（好像有谁轻轻应了一声）」这类默认卡也当颜文字）
 else text.push(c);
 });
 });
@@ -2669,7 +2788,7 @@ rpWalletSet(w);
 saveMsgsNow();
 if (!rpPatchStatusInPlace(msgs.indexOf(rpRec))) renderWindow(true, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
 const amtTxt = '（心意币 ¥' + Number(rpRec.rpAmount || 0).toFixed(2) + '）';
-setTimeout(() => addIn('你退回了红包' + amtTxt, { special: 'poke' }), randInt(300, 800));
+setTimeout(() => addIn('你退回了红包' + amtTxt, { special: 'poke', nightAllow: true }), randInt(300, 800));
 }, { okText: '退回', cancelText: '取消' });
 }
 }, 500);
@@ -2679,14 +2798,34 @@ body.addEventListener('pointerup', rpClearPress);
 body.addEventListener('pointerleave', rpClearPress);
 body.addEventListener('pointercancel', rpClearPress);
 body.addEventListener('click', (e) => {
-if (!e.target.closest('.msg-ask-card, .msg-choose-card, .msg-fav-heart, .msg-inplace')) {
-body.querySelectorAll('.msg-ask-card.show-fav, .msg-choose-card.show-fav').forEach(c => c.classList.remove('show-fav'));
+if (!e.target.closest('.msg-ask-card, .msg-choose-card, .msg-survey-card, .msg-fav-heart, .msg-inplace')) {
+body.querySelectorAll('.msg-ask-card.show-fav, .msg-choose-card.show-fav, .msg-survey-card.show-fav').forEach(c => c.classList.remove('show-fav'));
 }
 const favBtn = e.target.closest('.msg-fav-heart');
 if (favBtn) {
 e.stopPropagation();
 const fItem = favBtn.closest('[data-idx]');
 if (fItem && fItem.dataset.idx !== undefined) window.favCardFromMsg(Number(fItem.dataset.idx));
+return;
+}
+const giftClaimBtn = e.target.closest('.msg-gift-claim');
+if (giftClaimBtn) {
+e.stopPropagation();
+const gItem = giftClaimBtn.closest('[data-idx]');
+const gIdx = gItem && gItem.dataset.idx !== undefined ? Number(gItem.dataset.idx) : -1;
+const gRec = gIdx >= 0 ? msgs[gIdx] : null;
+if (!gRec || gRec.special !== 'gift' || !giftIsIncoming(gRec)) return;
+giftClaimNow(gIdx);
+return;
+}
+const giftReplyBtn = e.target.closest('.msg-gift-reply');
+if (giftReplyBtn) {
+e.stopPropagation();
+const grItem = giftReplyBtn.closest('[data-idx]');
+const grIdx = grItem && grItem.dataset.idx !== undefined ? Number(grItem.dataset.idx) : -1;
+const grRec = grIdx >= 0 ? msgs[grIdx] : null;
+if (!grRec || grRec.special !== 'gift' || !giftIsIncoming(grRec)) return;
+giftReplyNow(grIdx);
 return;
 }
 const wishBuyBtn = e.target.closest('.msg-wish-buy');
@@ -2721,7 +2860,7 @@ rpWalletSet(wallet);
 saveMsgsNow();
 const amtTxt = '（心意币 ¥' + Number(rpRec.rpAmount || 0).toFixed(2) + '）';
 if (!rpPatchStatusInPlace(rpIdx)) renderWindow(true, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
-setTimeout(() => addIn('你领取了红包' + amtTxt, { special: 'poke' }), randInt(400, 1000));
+setTimeout(() => addIn('你领取了红包' + amtTxt, { special: 'poke', nightAllow: true }), randInt(400, 1000));
 setTimeout(() => rpCollectFeedback('in'), randInt(1100, 2200));
 return;
 }
@@ -2729,6 +2868,9 @@ if (e.target.closest('.msg-inplace')) return;
 const surveyCard = e.target.closest('.msg-survey-card');
 if (surveyCard) {
 e.stopPropagation(); // 不冒泡触发气泡操作菜单
+const sHadFav = surveyCard.classList.contains('show-fav');
+body.querySelectorAll('.msg-ask-card.show-fav, .msg-choose-card.show-fav, .msg-survey-card.show-fav').forEach(c => c.classList.remove('show-fav'));
+if (!sHadFav) surveyCard.classList.add('show-fav');
 const sItem = surveyCard.closest('.msg-survey');
 const sIdx = sItem && sItem.dataset.idx !== undefined ? Number(sItem.dataset.idx) : -1;
 const sRec = sIdx >= 0 ? msgs[sIdx] : null;
@@ -2842,9 +2984,25 @@ cb.scrollTop = Math.min(cb.scrollTop, realMax); // 超界显式钳回；未超�
 let batchRendering = false;
 let pendingOutScroll = false;
 let appendTarget = null;
-function appendMsg(m) { if (!batchRendering) m.classList.add('msg-enter'); (appendTarget || body).appendChild(m); }
+let batchDefer = null;
+function enterMsgOnce(m) {
+m.classList.add('msg-enter');
+m.addEventListener('animationend', function onEnterEnd(e) {
+if (e.target !== m) return; // 子节点动画（语音波形/小花/抽卡）冒泡上来不算
+m.classList.remove('msg-enter'); // #1151a 摘类＝重播向量归零
+m.removeEventListener('animationend', onEnterEnd);
+});
+}
+function appendMsg(m) {
+if (!batchRendering && chatVisible() && !document.hidden) enterMsgOnce(m); // #1151b · #1181a：闸口从「页面没被切走」补成「用户真的看得见」——浏览器后台期 chatVisible() 仍为真，而 #913 的暂停类会把这些气泡的入场动画冻在第 0 帧（fill:both＝opacity:0、动画永不结束、类永不摘除），攒一整段后台后在回前台那一瞬集体补播＝用户实报「切回来记录弹跳闪一下才恢复正常」
+if (batchDefer) {
+const ix = Number(m.dataset.idx);
+if (Number.isFinite(ix) && ix >= batchDefer.len) { batchDefer.q.push(m); return; }
+}
+(appendTarget || body).appendChild(m);
+}
 function appendAvatarBatch(on) {
-if (on) { if (!avatarBatchCache) avatarBatchCache = {}; }
+if (on) avatarBatchCache = {};
 else avatarBatchCache = null;
 }
 const RENDER_MAX = 200;   // 渲染窗口条数上限
@@ -2867,6 +3025,24 @@ let normRemovedRecs = [];
 let normOrigIdx = null;
 let normSnapTail = null;
 let windowRenderedLite = null;
+let windowKeyLo = -1;
+let windowKeyHi = -1;
+let windowKeyLoVal = '';
+let windowKeyHiVal = '';
+function chatWinKey(m) {
+if (!m || typeof m !== 'object') return '#';
+const t = (typeof m.text === 'string') ? m.text : '';
+const mediaish = !!(m.img || m.voice || m.type === 'image' || m.type === 'sticker' || m.type === 'voice' || m.special || m._lsLite || t === '' || t === '[内容已省略]');
+return (m.ts || 0) + '|' + (m.side || '') + '|' + (m.type || '') + '|' + (m.special || '') + '|' + (mediaish ? 'M' : t.length + ':' + t.slice(0, 24));
+}
+function chatWinKeysSync() {
+try {
+windowKeyLo = renderStart;
+windowKeyHi = renderEnd - 1;
+windowKeyLoVal = (renderStart >= 0 && renderStart < msgs.length) ? chatWinKey(msgs[renderStart]) : '';
+windowKeyHiVal = (windowKeyHi >= 0 && windowKeyHi < msgs.length) ? chatWinKey(msgs[windowKeyHi]) : '';
+} catch (e) { windowKeyLo = -1; windowKeyHi = -1; windowKeyLoVal = ''; windowKeyHiVal = ''; }
+}
 const TIME_DIVIDER_GAP = 5 * 60 * 1000;
 function maybeInsertDivider(idx) {
 if (store.get('cs-time-style') !== 'divider') return;
@@ -2881,7 +3057,8 @@ if (cur.ts - prev.ts < TIME_DIVIDER_GAP) return;
 const d = document.createElement('div');
 d.className = 'msg-time-divider';
 d.innerHTML = '<span>' + timeDividerText(cur.ts) + '</span>';
-body.appendChild(d);
+if (batchDefer && idx >= batchDefer.len) { batchDefer.q.push(d); return; }
+(appendTarget || body).appendChild(d);
 }
 let suppressScrollUntil = 0; // 程序化滚动后短暂忽略 scroll 事件（防渲染本身触发向上加载）
 const RENDER_CHUNK = 50;
@@ -2892,13 +3069,14 @@ try { if (!keepScroll && window.__mochiPhase) window.__mochiPhase('chat-renderWi
 chatRebuilding = false; // #841e：新一轮渲染先复位空窗标志（被作废的旧分帧轮不得把进度条留在屏上）
 const prevTop = keepScroll ? body.scrollTop : 0;
 const prevHeight = keepScroll ? body.scrollHeight : 0;
-if (clampTop) renderStart = Math.max(0, len - RENDER_MAX);
+if (clampTop || renderStart >= len) renderStart = Math.max(0, len - RENDER_MAX);
 const start = Math.min(renderStart, len);
 renderEnd = len; // 整窗重建渲染到最新，窗口终点复位（裁剪状态随之清空）
 windowRenderedN = len;
 windowRenderedPrefix = window.activePrefix();
 windowRenderedNicks = chatNickSig(); // #775b：整窗渲染＝屏上昵称已刷新，登记当时的昵称签名
 windowStale = false;
+chatWinKeysSync(); // #1010：登记屏上窗口首/尾记录身份（收尾据此判前缀 / 尾部切片）
 collectInplaceDrafts();
 windowRenderedLite = null;
 const _liteIdx = [];
@@ -2907,15 +3085,25 @@ batchRendering = true;
 const frag = document.createDocumentFragment();
 appendTarget = frag;
 appendAvatarBatch(true);
+const myAvBatch = avatarBatchCache; // #972：本轮自己的缓存对象身份——作废时只释放「还属于本轮」那份，绝不误清新一轮的
+const myDefer = batchDefer = { len: len, q: [] }; // #1004：本轮开轮时的条数快照（迟到节点判据）＋暂存队列
+const skippedIdx = []; // #1004：本轮因「记录位不是对象」被 #919a 保护性跳过的下标（屏上少画一条，必须留痕）
 let i = start;
 const myToken = ++_rwToken;
 const finishSwap = function () {
-if (myToken !== _rwToken) return; // 已被新一轮 renderWindow 作废
+if (myToken !== _rwToken) { if (avatarBatchCache === myAvBatch) appendAvatarBatch(false); if (batchDefer === myDefer) batchDefer = null; return; }
 if (_liteIdx.length) windowRenderedLite = _liteIdx;
 appendAvatarBatch(false);
 appendTarget = null;
 batchRendering = false;
 body.appendChild(frag);
+if (myDefer.q.length) {
+for (let q = 0; q < myDefer.q.length; q++) body.appendChild(myDefer.q[q]);
+windowRenderedN = msgs.length;
+renderEnd = msgs.length;
+}
+batchDefer = null;
+if (skippedIdx.length) { windowStale = true; armWindowHoleHeal(skippedIdx); }
 if (keepScroll && prevHeight > 0) {
 body.scrollTop = prevTop + (body.scrollHeight - prevHeight);
 }
@@ -2929,14 +3117,15 @@ suppressScrollUntil = Date.now() + 200; // 本轮渲染/滚动结束后 200ms �
 restoreInplaceDrafts();
 chatRebuilding = false; // #841a：新内容已换装落定，交回常规判定
 updateChatLoading(); // 渲染完成（有内容或就绪）→ 隐藏加载进度条
+try { chatSettleHoldSettle(); } catch (e) {} // #1010：分帧换装落定后再判「视口媒体解码是否落地」——在飞期间上面那次 updateChatLoading 只靠 chatRebuilding 顶着，落定这一帧必须重判，否则进度条先撤、图再落地＝原症状
 if (chatPinnedBottom) chatEntrySettle(); // #841b：重建换装＝一次「进页」，重开 1.2s 同帧贴底窗，视口内图片迟到解码当帧收口，不等 250ms 看门狗拽把
 };
 const buildChunk = function () {
-if (myToken !== _rwToken) { try { restoreInplaceDrafts(); } catch (e) {} return; } // #718 作废：草稿回填旧 DOM（新轮 collect 会再收），不丢草稿
+if (myToken !== _rwToken) { try { restoreInplaceDrafts(); } catch (e) {} if (avatarBatchCache === myAvBatch) appendAvatarBatch(false); if (batchDefer === myDefer) batchDefer = null; return; } // #718 作废：草稿回填旧 DOM（新轮 collect 会再收），不丢草稿；#972/#1004：作废轮释放自己那轮的批量头像缓存与迟到队列
 const end = Math.min(i + RENDER_CHUNK, len);
 for (; i < end; i++) {
 const _rm = msgs[i];
-if (!_rm || typeof _rm !== 'object') continue; // #919a 记录位空洞/坏记录跳过不画：renderMsg(undefined) 抛 TypeError 打断整轮分帧构建（setTimeout 链断＝不换装不贴底、batchRendering 卡死，屏上停在窗口最旧的几十条、退出重进才恢复；用户设备 buildChunk→renderMsg「reading 'side'」实锤）
+if (!_rm || typeof _rm !== 'object') { skippedIdx.push(i); continue; } // #919a 记录位空洞/坏记录跳过不画：renderMsg(undefined) 抛 TypeError 打断整轮分帧构建（setTimeout 链断＝不换装不贴底、batchRendering 卡死，屏上停在窗口最旧的几十条、退出重进才恢复；用户设备 buildChunk→renderMsg「reading 'side'」实锤）
 maybeInsertDivider(i);
 if (_rm && (_rm._lsLite || _rm.img === '' || _rm.voice === '' ||
 (Array.isArray(_rm.parts) && _rm.parts.some(p => p && typeof p.v === 'string' && p.v === '')))) {
@@ -2956,7 +3145,7 @@ return;
 }
 for (; i < len; i++) {
 const _rm = msgs[i];
-if (!_rm || typeof _rm !== 'object') continue; // #919b 同 #919a：同步整窗路径也不得被单条空记录打断（异常一路上抛，调用方紧随的贴底/收尾整段跳过）
+if (!_rm || typeof _rm !== 'object') { skippedIdx.push(i); continue; } // #919b 同 #919a：同步整窗路径也不得被单条空记录打断（异常一路上抛，调用方紧随的贴底/收尾整段跳过）
 maybeInsertDivider(i);
 if (_rm && (_rm._lsLite || _rm.img === '' || _rm.voice === '' ||
 (Array.isArray(_rm.parts) && _rm.parts.some(p => p && typeof p.v === 'string' && p.v === '')))) {
@@ -2997,8 +3186,6 @@ if (windowRenderedNicks !== chatNickSig()) return false;
 const grown = len - windowRenderedN;
 if (grown < 0) return false; // 屏上比权威多＝数据被裁/回滚，整窗重建兜底
 if (windowRenderedN === 0) return false; // 无屏上凭据（首渲场景）走原整窗渲染
-const liteUpgrade = (Array.isArray(windowRenderedLite) ? windowRenderedLite : [])
-.filter(i => i >= renderStart && i < windowRenderedN);
 let n = renderStart;
 const pending = [];
 for (let k = 0; k < body.children.length; k++) {
@@ -3009,6 +3196,34 @@ if (el.dataset.pendingRead === '1') pending.push(el);
 n++;
 }
 if (n !== windowRenderedN) return false;
+let winShift = 0;
+{
+const headIdx = renderStart;
+const cnt = windowRenderedN - renderStart;
+const tailIdx = len - cnt;
+const prefixShape = (windowKeyLoVal !== '' && headIdx >= 0 && headIdx < len && chatWinKey(msgs[headIdx]) === windowKeyLoVal);
+const tailShape = !prefixShape && cnt > 0 && tailIdx >= 0 && windowKeyHiVal !== '' &&
+chatWinKey(msgs[tailIdx]) === windowKeyLoVal && chatWinKey(msgs[len - 1]) === windowKeyHiVal;
+if (!prefixShape) {
+if (!tailShape) return false; // 说不清＝整窗重建兜底（保守）
+if (cnt < Math.min(len, RENDER_MAX)) return false;
+winShift = tailIdx - headIdx;
+if (winShift !== 0) {
+for (let k = 0; k < body.children.length; k++) {
+const el = body.children[k];
+if (el.dataset && el.dataset.idx !== undefined) el.dataset.idx = String(Number(el.dataset.idx) + winShift);
+}
+renderStart += winShift;
+windowRenderedN = len;
+renderEnd = len;
+if (Array.isArray(windowRenderedLite)) windowRenderedLite = windowRenderedLite.map(function (i2) { return i2 + winShift; });
+chatWinKeysSync();
+try { (window.__patch1010Log = window.__patch1010Log || []).push('tail-shift:' + winShift + '/n' + cnt); } catch (e0) {}
+}
+}
+}
+const liteUpgrade = (Array.isArray(windowRenderedLite) ? windowRenderedLite : [])
+.filter(i => i >= renderStart && i < windowRenderedN);
 if (liteUpgrade.length) {
 collectInplaceDrafts();
 const wasNearBottom = chatNearBottom();
@@ -3048,7 +3263,7 @@ b.textContent.indexOf('已读不回') >= 0) {
 b.innerHTML = '<span style="opacity:.5;font-size:12px">' + escTxt(rec.text || '已读不回') + '</span>';
 }
 }
-if (grown > 0) {
+if (grown > 0 && !winShift) {
 for (let r = 0; r < Math.ceil(grown / LOAD_STEP) + 1 && renderEnd < len; r++) loadNewerIncremental(len);
 if (renderEnd !== len) return false;
 windowRenderedN = len; // 凭据随增量补齐——loadNewerIncremental 只更 renderEnd，不补此处则下次收尾 grown 错位仍整窗（自纠）
@@ -3186,6 +3401,7 @@ windowRenderedLite = windowRenderedLite
 .filter(x => !rmSet.has(x))
 .map(x => x - shiftsBefore(x));
 }
+chatWinKeysSync(); // #1010：归一化结构删除后窗口下标平移，身份凭据同步
 const dH = body.scrollHeight - prevH;
 if (dH) {
 if (wasNearBottom) scrollChatBottom(); // 原贴底：删除后保持贴底
@@ -3222,6 +3438,7 @@ appendAvatarBatch(false);
 appendTarget = null;
 batchRendering = false;
 renderStart = newStart;
+chatWinKeysSync(); // #1010：上翻增量改了窗口头，身份凭据同步
 if (preNum > 0 && anchor) {
 const anchorTopBefore = anchor.offsetTop;
 body.insertBefore(frag, anchor);
@@ -3267,27 +3484,46 @@ else if (frag.childNodes.length) body.appendChild(frag);
 if (newEnd - renderStart > WINDOW_MAX) pruneWindowTop();
 suppressScrollUntil = Date.now() + 200;
 }
+function nodeKeepIdx(f) {
+if (!f) return undefined;
+if (f.dataset && f.dataset.idx !== undefined) return parseInt(f.dataset.idx, 10);
+const nx = f.nextElementSibling;
+if (nx && nx.dataset && nx.dataset.idx !== undefined) return parseInt(nx.dataset.idx, 10);
+return undefined;
+}
+let _holeHealT = null;
+function armWindowHoleHeal(idxs) {
+if (_holeHealT) return;
+_holeHealT = setTimeout(function () {
+_holeHealT = null;
+if (batchRendering || !chatVisible()) return;
+for (let k = 0; k < idxs.length; k++) { const m = msgs[idxs[k]]; if (!m || typeof m !== 'object') return; }
+renderWindow(true, false);
+}, 700);
+}
 function pruneWindowBottom() {
 const targetEnd = renderStart + WINDOW_MAX;
 if (renderEnd <= targetEnd) return;
 while (body.lastChild) {
 const last = body.lastChild;
-const idx = last.dataset.idx;
-if (idx !== undefined && parseInt(idx, 10) < targetEnd) break; // 已到应保留区
+const idx = nodeKeepIdx(last); // #972：分隔线按其后那条消息的归属下标判
+if (idx !== undefined && idx < targetEnd) break; // 已到应保留区
 body.removeChild(last);
 }
 renderEnd = targetEnd;
+chatWinKeysSync(); // #1010：窗口尾变了，身份凭据同步
 }
 function pruneWindowTop() {
 const targetStart = renderEnd - WINDOW_MAX;
 if (renderStart >= targetStart) return;
 while (body.firstChild) {
 const f = body.firstChild;
-const idx = f.dataset.idx;
-if (idx !== undefined && parseInt(idx, 10) >= targetStart) break; // 已到应保留区
+const idx = nodeKeepIdx(f); // #972：同上
+if (idx !== undefined && idx >= targetStart) break; // 已到应保留区
 body.removeChild(f);
 }
 renderStart = targetStart;
+chatWinKeysSync(); // #1010：窗口头变了，身份凭据同步
 }
 function trimWindowTopQuiet(maxN) {
 const targetStart = Math.max(0, renderEnd - maxN);
@@ -3295,11 +3531,12 @@ if (renderStart >= targetStart) return;
 const h0 = body.scrollHeight;
 while (body.firstChild) {
 const f = body.firstChild;
-const idx = f.dataset.idx;
-if (idx !== undefined && parseInt(idx, 10) >= targetStart) break; // 已到应保留区
+const idx = nodeKeepIdx(f); // #972：分隔线按其后那条消息的归属下标判（别削掉被保留消息头上的那枚）
+if (idx !== undefined && idx >= targetStart) break; // 已到应保留区
 body.removeChild(f);
 }
 renderStart = targetStart;
+chatWinKeysSync(); // #1010：窗口头变了，身份凭据同步
 const cut = h0 - body.scrollHeight;
 if (cut > 0) body.scrollTop = Math.max(0, body.scrollTop - cut);
 suppressScrollUntil = Date.now() + 200; // 本次程序化 scrollTop 写入不算用户滚动（否则补偿位会误触发上翻加载）
@@ -3382,12 +3619,17 @@ const cb868 = document.getElementById('chat-body');
 if (cb868 && chatScrollMax() - cb868.scrollTop > 8) scrollChatBottom(); // #416：≤8px 不折腾
 }
 setInterval(function () {
-if (!chatVisible() || !chatPinnedBottom || batchRendering || _ccSmoothT || chatTouchActive) return; // #716：触摸手势进行中不让路=看门狗与用户上滑对打
+if (!chatVisible() || batchRendering || _ccSmoothT || chatTouchActive) return; // #716：触摸手势进行中不让路=看门狗与用户上滑对打
 if (Date.now() - _chatScrollActTs < 200) return; // #765：列表滚动中（含抬手后的惯性滑行）不让路，落定后再复核
 if (Date.now() - _vvGeomChangeTs < 180) return; // 视口变形进行中不写，等落定
 if (Date.now() - _cbBoxChangeTs < 180) return; // #871：聊天盒还在变尺寸（mobile-adapt 分步恢复中）同样不写
 const cb706 = document.getElementById('chat-body');
 if (!cb706) return;
+if (!chatPinnedBottom) {
+if (!chatAtBottom()) return;
+chatPinnedBottom = true; cb706.classList.remove('scroll-anchor-auto'); chatScrollRealignQuiet();
+return;
+}
 if (cb706.scrollTop < chatScrollMax() - 8) scrollChatBottom();
 }, 250);
 let _rsAlignT = null;
@@ -3603,8 +3845,8 @@ rows += '<div class="msg-survey-item' + (a ? ' answered' : '') + '">' +
 return '<div class="msg-survey-card' + (done ? ' done' : '') + '">' +
 '<div class="msg-survey-head">你发出的问卷 · ' + qs.length + ' 题</div>' +
 '<div class="msg-survey-list">' + (rows || '<div class="msg-survey-item">（问卷内容缺失）</div>') + '</div>' +
-'<div class="msg-survey-tip">' + (done ? '已交卷 · 点击查看问卷详情' : 'TA 正在作答 · 已答 ' + nDone + '/' + qs.length + '，点击查看进度') + '</div>' +
-favHeartHtml(rec, true) +
+'<div class="msg-survey-tip">' + (done ? '已交卷 · 点击查看问卷详情' : 'TA 正在作答 · 已答 ' + nDone + '/' + qs.length + '，点击查看进度') + '<span class="msg-survey-chev">\u203A</span></div>' +
+favHeartHtml(rec) +
 '</div>';
 }
 window.chatSyncSurveyCard = function (surveyTs, status, answers) {
@@ -3730,10 +3972,10 @@ maybeScrollChatBottom(rec.side);
 return m;
 }
 if (rec.special === 'brick') {
-m.className = 'msg-pong';
+m.className = 'msg-pong msg-brick';
 m.innerHTML = '<div class="msg-pong-card">' +
 '<div class="msg-pong-label">🧱 ' + T('双人打砖块') + '</div>' +
-'<div class="msg-pong-result">' + escTxt(T(rec.text || '')) + '</div>' +
+'<div class="msg-pong-result">' + escTxt(T((rec.text || '').replace(/^双人打砖块\s*·\s*/, ''))) + '</div>' +
 '</div>';
 appendMsg(m);
 maybeScrollChatBottom(rec.side);
@@ -3847,6 +4089,8 @@ m.innerHTML = '<div class="msg-gift-card">' +
 '<div class="msg-gift-wish">\u201C' + escTxt(rec.giftWish || '心意') + '\u201D</div>' +
 '<div class="msg-gift-foot"><span class="mg-side">' + escTxt(sideTxt) + '</span>' +
 '<span class="msg-gift-price">\u00A5' + escTxt(Number(rec.giftPrice || 0).toFixed(2)) + '</span></div>' +
+giftCardReplHtml(rec) +
+giftCardActsHtml(rec) +
 favHeartHtml(rec) +
 '</div>';
 appendMsg(m);
@@ -4510,7 +4754,18 @@ deskMsgToggle.addEventListener('change', () => {
 try { store.set('desk-msg-en', deskMsgToggle.checked ? '1' : '0'); } catch (e) {}
 });
 }
+function nightBlocksIn(initiative, nightAllow) {
+if (nightAllow) return false;
+if (!initiative) return false;
+if (window.__nightReplyOpen && Date.now() - window.__nightReplyOpen < 180000) return false;
+return !!(window.nightModeActive && window.nightModeActive());
+}
+function nightOpenReply() {
+if (window.nightModeActive && window.nightModeActive()) window.__nightReplyOpen = Date.now();
+}
 function addRec(rec) {
+if (rec.side === 'in' && nightBlocksIn(rec.initiative, rec.nightAllow)) return null;
+if (rateBlocksIn(rec.side, rec.special, rec.nightAllow)) return null; // #1180 总量限流兜底（chatAddGift 等不过 addIn 的入口也走这里）
 if (!rec.ts) rec.ts = Date.now();
 chatRecStampUid(rec); // FIX #776：出生号——同一条消息被哪条通道克隆回去，认号不认正文
 const len = msgs.length;
@@ -4616,19 +4871,22 @@ try {
 if (!batchRendering && el) {
 windowRenderedN = Number(el.dataset.idx) + 1;
 windowStale = false;
+chatWinKeysSync(); // #1010：增量追加到新尾，身份凭据同步（否则下次收尾判不出前缀）
 }
 } catch (e) {}
 return el;
 }
 function addIn(text, opts) {
 opts = opts || {};
-if (window.playSfx && !opts.silent && opts.special !== 'read') {
+if (nightBlocksIn(opts.initiative, opts.nightAllow)) return null;
+if (rateBlocksIn('in', opts.special, opts.nightAllow)) return null;
+if (window.playSfx && (!opts.silent || opts.sfx === true) && opts.special !== 'read') {
 try { window.playSfx('in'); } catch (e) {}
 }
 const _tagMood = opts.tag ? [{ tag: String(opts.tag), label: opts.tagNoDup ? '' : String(text) }] : null;
 const _tagExtra = Array.isArray(opts.tagExtra) ? opts.tagExtra.filter(md => md && String(md.tag || '').trim()).map(md => ({ tag: String(md.tag), label: md.label == null ? '' : String(md.label) })) : null;
 const _tagMerged = (_tagExtra && _tagExtra.length) ? (_tagMood ? _tagMood.concat(_tagExtra) : _tagExtra) : _tagMood;
-return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, game: opts.game, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, dedupExempt: opts.dedupExempt, nickKeep: opts.nickKeep, mood: opts.mood || _tagMerged || undefined });
+return addRec({ side: 'in', text: text, initiative: opts.initiative, special: opts.special, game: opts.game, quote: opts.quote, qidx: opts.qidx, type: opts.type, img: opts.img, parts: opts.parts, mailNotice: opts.mailNotice, gInv: opts.gInv, silent: opts.silent, nightAllow: opts.nightAllow, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers, dedupExempt: opts.dedupExempt, nickKeep: opts.nickKeep, mood: opts.mood || _tagMerged || undefined });
 }
 function addInTyped(items, opts, firstDelay) {
 try {
@@ -4653,6 +4911,7 @@ step();
 }
 window.chatAddInTyped = function (items, opts, firstDelay) { return addInTyped(items, opts, firstDelay); };
 function addOut(text) {
+nightOpenReply();
 return addRec({ side: 'out', text: text });
 }
 function refreshNickNodesInPlace() {
@@ -4686,7 +4945,8 @@ if (S.legacy && oldName !== S.legacy && hist.indexOf(S.legacy) < 0) window.chatS
 };
 window.chatAddSystem = function (text, opts) {
 opts = opts || {};
-return addIn(text, { special: opts.special || 'poke', silent: opts.silent, img: opts.img, mailNotice: opts.mailNotice, nickKeep: opts.nickKeep, game: opts.game, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers });
+opts.nightAllow = opts.nightAllow === true;
+return addIn(text, { special: opts.special || 'poke', silent: opts.silent, nightAllow: opts.nightAllow, img: opts.img, mailNotice: opts.mailNotice, nickKeep: opts.nickKeep, game: opts.game, askQuestion: opts.askQuestion, askStatus: opts.askStatus, askOptions: opts.askOptions, askType: opts.askType, askTs: opts.askTs, choiceQuestion: opts.choiceQuestion, choiceOptions: opts.choiceOptions, choicePref: opts.choicePref, choiceCat: opts.choiceCat, choiceStatus: opts.choiceStatus, choiceAnswer: opts.choiceAnswer, choiceReply: opts.choiceReply, choiceMatch: opts.choiceMatch, curiousQuestion: opts.curiousQuestion, curiousQuick: opts.curiousQuick, curiousReplies: opts.curiousReplies, curiousFollowup: opts.curiousFollowup, curiousQid: opts.curiousQid, curiousCat: opts.curiousCat, curiousStatus: opts.curiousStatus, curiousAnswer: opts.curiousAnswer, curiousReply: opts.curiousReply, roastText: opts.roastText, roastCat: opts.roastCat, roastStatus: opts.roastStatus, roastAnswer: opts.roastAnswer, roastReply: opts.roastReply, rpAmount: opts.rpAmount, rpWish: opts.rpWish, rpStatus: opts.rpStatus, rpTs: opts.rpTs, rpCover: opts.rpCover, askFen: opts.askFen, askTs: opts.askTs, deskCk: opts.deskCk, deskCkDir: opts.deskCkDir, surveyTs: opts.surveyTs, surveyQs: opts.surveyQs, surveyStatus: opts.surveyStatus, surveyAnswers: opts.surveyAnswers });
 };
 window.chatAddIn = function (text, opts) {
 if (opts && opts.follow) chatUserFollowScroll = true;
@@ -4695,7 +4955,114 @@ if (opts && opts.enter && !chatVisible()) enterChat();
 return r;
 };
 window.chatAddGift = function (rec) { if (!rec.ts) rec.ts = Date.now(); return addRec(rec); };
-function deskAppendMissGuard(cid, tries, onRetry, writeOne) {
+function giftMetaOf(rec) {
+if (!rec || !rec.giftBoxId || !window.giftGiftMeta) return null;
+try { return window.giftGiftMeta(rec.giftBoxId); } catch (e) { return null; }
+}
+function giftReplList(rec) {
+const m = giftMetaOf(rec);
+if (!m || !Array.isArray(m.replies)) return [];
+return m.replies.filter(function (r) { return r && typeof r.text === 'string' && r.text; });
+}
+function giftWhoLabel(who) { return who === 'me' ? '我' : chatPartnerName(); }
+function giftReplRows(rec) {
+return giftReplList(rec).map(function (r) {
+return '<div class="mg-repl-row"><span class="mg-repl-who">' + escTxt(giftWhoLabel(r.who)) + '</span><span class="mg-repl-tx">' + escTxt(r.text) + '</span></div>';
+}).join('');
+}
+function giftIsIncoming(rec) { return !!(rec && rec.side === 'in' && !rec.giftSelf && rec.giftBoxId); }
+function giftCardActsInner(rec) {
+if (!giftIsIncoming(rec)) return '';
+const meta = giftMetaOf(rec);
+if (!meta) return '';
+const claim = meta.claimed === 0
+? '<button class="msg-gift-claim" type="button">领取</button>'
+: (meta.claimed === 1 ? '<span class="msg-gift-got">\u2713 已领取</span>' : '');
+return claim + '<button class="msg-gift-reply" type="button">回复</button>';
+}
+function giftCardActsHtml(rec) { return giftIsIncoming(rec) ? '<div class="msg-gift-acts">' + giftCardActsInner(rec) + '</div>' : ''; }
+function giftCardReplHtml(rec) {
+return '<div class="msg-gift-repl"' + (giftReplList(rec).length ? '' : ' hidden') + '>' + giftReplRows(rec) + '</div>';
+}
+function giftPatchCard(idx) {
+const rec = msgs[idx];
+if (!rec || rec.special !== 'gift' || !body) return false;
+const el = body.querySelector('.msg-gift[data-idx="' + idx + '"]');
+if (!el) return false;
+const card = el.querySelector('.msg-gift-card');
+if (!card) return false;
+const anchorOf = function () { return card.querySelector('.msg-fav-heart'); };
+const acts = card.querySelector('.msg-gift-acts');
+const wantsActs = giftCardActsHtml(rec);
+if (acts) {
+if (wantsActs) acts.innerHTML = giftCardActsInner(rec);
+else acts.remove();
+} else if (wantsActs) {
+const an = anchorOf();
+if (an) an.insertAdjacentHTML('beforebegin', wantsActs); else card.insertAdjacentHTML('beforeend', wantsActs);
+}
+const repl = card.querySelector('.msg-gift-repl');
+if (repl) { repl.innerHTML = giftReplRows(rec); repl.hidden = !giftReplList(rec).length; }
+else if (giftReplList(rec).length) {
+const an2 = card.querySelector('.msg-gift-acts') || anchorOf();
+if (an2) an2.insertAdjacentHTML('beforebegin', giftCardReplHtml(rec)); else card.insertAdjacentHTML('beforeend', giftCardReplHtml(rec));
+}
+return true;
+}
+function giftClaimNow(idx) {
+const rec = msgs[idx];
+if (!giftIsIncoming(rec)) return false;
+const meta = giftMetaOf(rec) || {};
+if (meta.claimed === 1) return true;
+if (!window.giftBoxMarkClaimed) return false;
+try { window.giftBoxMarkClaimed(rec.giftBoxId); } catch (e) { return false; }
+try { if (window.giftBoxLiveRefresh) window.giftBoxLiveRefresh(); } catch (e) {}
+giftPatchCard(idx);
+try { addIn('你收下了 ' + (rec.giftName || '礼物'), { special: 'poke' }); } catch (e2) {}
+return true;
+}
+function giftReplyNow(idx) {
+const rec = msgs[idx];
+if (!giftIsIncoming(rec)) return false;
+if (!window.openModal) return false;
+const orig = String(rec.giftWish || '').trim();
+window.openModal('回复 ' + chatPartnerName(), '', function (v) {
+const text = String(v == null ? '' : v).trim();
+if (!text) return;   // 没写＝这次不追加任何内容，不产生空回复
+addOut(text);                                  // ① 只把我写的这句发进聊天消息
+try { if (rec.giftBoxId && window.giftBoxAttachReply) window.giftBoxAttachReply(rec.giftBoxId, 'me', text); } catch (e) {}
+giftPatchCard(idx);
+try { if (window.giftBoxLiveRefresh) window.giftBoxLiveRefresh(); } catch (e) {}
+}, { placeholder: '写一句你的回复', staticText: '这件礼物原本的文案：「' + (orig || '心意') + '」——这句是送礼人写的，卡片上会一直显示。\n在下面写你自己的一句就好：聊天里只发你这句，卡片上「原本文案 ＋ 你的回复」两处都在。' });
+return true;
+}
+window.chatGiftAttachReplyTo = function (cid, giftTs, who, text, recRef) {
+try {
+if (!giftTs || !text) return false;
+const whoNorm = who === 'me' ? 'me' : 'ta';
+if ((window.__activeCid || 'default') === cid) {
+let rec = null, idx = -1;
+if (recRef && msgs.indexOf(recRef) >= 0) { rec = recRef; idx = msgs.indexOf(recRef); }
+if (!rec) {
+for (let i = msgs.length - 1; i >= 0; i--) {
+const r = msgs[i];
+if (r && r.special === 'gift' && r.ts === giftTs) { rec = r; idx = i; break; }
+}
+}
+if (!rec) return false;
+if (!rec.giftBoxId) return false;   // 存量卡没有心意柜指针＝没有可写的地方（不出动作区，同渲染口径）
+if (window.giftBoxAttachReply) window.giftBoxAttachReply(rec.giftBoxId, whoNorm, text, cid);
+giftPatchCard(idx);
+return true;
+}
+if (!window.chatDeskCardReply) return false;
+window.chatDeskCardReply(cid, 'gift', giftTs, '', function (hit) {
+if (hit && hit.giftBoxId && window.giftBoxAttachReply) window.giftBoxAttachReply(hit.giftBoxId, whoNorm, text, cid);
+}, null, null);
+return true;
+} catch (e) { return false; }
+};
+function deskAppendMissGuard(cid, tries, onRetry, writeOne, onExhaust) {
 const ledKey = 'xy-home-v2:' + cid + ':chat-meta';
 window.idbGet(ledKey).then(function (lv) {
 let ledN = 0;
@@ -4704,9 +5071,74 @@ const o = typeof lv === 'string' ? JSON.parse(lv) : lv;
 if (o && typeof o.n === 'number') ledN = o.n;
 } catch (e) {}
 try { ledN = Math.max(ledN, chatLedger['xy-home-v2:' + cid] || 0); } catch (e) {}
-if (ledN > 0) { if (tries < 5) setTimeout(onRetry, 2000); return; }
+if (ledN > 0) { if (tries < 5) setTimeout(onRetry, 2000); else if (onExhaust) onExhaust(); return; }
 writeOne();
-}).catch(function () { if (tries < 3) setTimeout(onRetry, 1500); });
+}).catch(function () { if (tries < 3) setTimeout(onRetry, 1500); else if (onExhaust) onExhaust(); });
+}
+const CHAT_DESK_INBOX_MAX = 200; // #1200：中转箱容量上限（异常堆积时保最近 200 条）
+function deskAppendInbox(cid, recs) {
+const key = 'xy-home-v2:' + cid + ':chat-desk-inbox';
+let list = [];
+try { const raw = localStorage.getItem(key); if (raw) { const a = JSON.parse(raw); if (Array.isArray(a)) list = a; } } catch (e) {}
+const persist = function () {
+list = list.slice(-CHAT_DESK_INBOX_MAX);
+const s = JSON.stringify(list);
+try { window.idbSet(key, s); } catch (e) {}
+try { localStorage.setItem(key, s); } catch (e) {} // 小记录；IDB 读不到时排空侧回退 LS 副本
+if ((window.__activeCid || 'default') === cid && chatDbReady) { try { chatDeskInboxMerge('xy-home-v2:' + cid); } catch (e) {} } // #1200：写箱时该桌面已切回且权威就绪＝就地排空，不等下次进聊天
+};
+if (list.length || !window.idbGet) { list = list.concat(recs); persist(); return; }
+window.idbGet(key).then(function (v) {
+try {
+if (v !== undefined && v !== null) {
+const a = typeof v === 'string' ? JSON.parse(v) : v;
+if (Array.isArray(a) && a.length > list.length) list = a;
+}
+} catch (e) {}
+list = list.concat(recs);
+persist();
+}).catch(function () { list = list.concat(recs); persist(); });
+}
+function chatDeskInboxMerge(forPrefix) {
+try {
+const prefix = forPrefix || window.activePrefix();
+const key = prefix + ':chat-desk-inbox';
+let cand = [];
+try {
+const raw = localStorage.getItem(key);
+if (raw) { const a = JSON.parse(raw); if (Array.isArray(a)) cand = a; }
+} catch (e) {}
+const consume = function (arr) {
+cand = cand.concat(arr || []).filter(function (m) { return m && typeof m === 'object'; });
+const seenC = new Set();
+cand = cand.filter(function (m) { const s = chatTailId(m); if (seenC.has(s)) return false; seenC.add(s); return true; });
+const clearAll = function () {
+try { localStorage.removeItem(key); } catch (e) {}
+if (cand.length && window.idbDelete) { try { window.idbDelete(key); } catch (e) {} }
+};
+if (!cand.length) { clearAll(); return; }
+if (window.activePrefix() !== prefix || !chatDbReady || !Array.isArray(msgs)) return; // 条件未齐＝不清箱，下次权威加载再兜
+const haveId = new Set(msgs.map(chatTailId));
+const copies = new Set();
+msgs.forEach(function (m) { chatRecKeysAdd(copies, m); });
+const add = cand.filter(function (m) { return !haveId.has(chatTailId(m)) && !chatRecKeysHit(copies, m); });
+clearAll();
+if (!add.length) return;
+msgs = msgs.concat(add).sort(function (a, b) { return ((a && a.ts) || 0) - ((b && b.ts) || 0); });
+saveMsgs();
+try {
+if (chatVisible() && chatNearBottom()) {
+if (!inplacePatchIfSameWindow()) { renderWindow(false, true); scrollChatBottom(); }
+} else if (chatVisible()) windowStale = true;
+} catch (e) {}
+};
+if (!window.idbGet) { consume([]); return; }
+window.idbGet(key).then(function (v) {
+let a = [];
+try { if (v !== undefined && v !== null) { a = typeof v === 'string' ? JSON.parse(v) : v; } } catch (e) { a = []; }
+consume(Array.isArray(a) ? a : []);
+}).catch(function () { consume([]); });
+} catch (e) {}
 }
 window.chatAppendToDeskMsg = function (cid, text, opts) {
 opts = opts || {};
@@ -4723,8 +5155,10 @@ try { window.idbSet(key, JSON.stringify(arr)); } catch (e) {}
 try { localStorage.setItem(key, JSON.stringify(arr)); } catch (e) {}
 try { chatLedgerSave('xy-home-v2:' + cid, arr.length, msgsBytes(arr)); } catch (e) {}
 };
+const mkRec = function () { return { side: 'in', special: opts.special || 'poke', text: text, ts: Date.now(), mailNotice: !!opts.mailNotice }; };
 const attempt = function () {
 tries++;
+if (tries > 5) { deskAppendInbox(cid, [mkRec()]); return; } // #1200：重试预算耗尽改落中转箱，不再静默丢（弹窗已发＝消息必须可达）
 window.idbGet(key).then(function (v) {
 if (v !== undefined && v !== null) {
 let arr = [];
@@ -4732,7 +5166,7 @@ let readOk = true;
 try { arr = typeof v === 'string' ? JSON.parse(v) : v; } catch (e) { arr = []; readOk = false; }
 if (!Array.isArray(arr)) { arr = []; readOk = false; }
 if (!readOk) return;
-arr.push({ side: 'in', special: opts.special || 'poke', text: text, ts: Date.now(), mailNotice: !!opts.mailNotice });
+arr.push(mkRec());
 writeArr(arr);
 return;
 }
@@ -4745,11 +5179,12 @@ return !(keys || []).some(function (k) { return k === key; });
 : Promise.resolve(true));
 confirmMiss.then(function (isMiss) {
 if (!isMiss) { if (tries < 3) setTimeout(attempt, 1500); return; }
-deskAppendMissGuard(cid, tries, attempt, function () {
-writeArr([{ side: 'in', special: opts.special || 'poke', text: text, ts: Date.now(), mailNotice: !!opts.mailNotice }]);
+window.idbGet('xy-home-v2:' + cid + ':chat-blk-idx').then(function (bv) {
+if (bv !== undefined && bv !== null) { deskAppendInbox(cid, [mkRec()]); return; }
+deskAppendMissGuard(cid, tries, attempt, function () { writeArr([mkRec()]); }, function () { deskAppendInbox(cid, [mkRec()]); });
+}).catch(function () { deskAppendMissGuard(cid, tries, attempt, function () { writeArr([mkRec()]); }, function () { deskAppendInbox(cid, [mkRec()]); }); });
 });
-});
-}).catch(function () { if (tries < 3) setTimeout(attempt, 1500); });
+}).catch(function () { if (tries < 3) setTimeout(attempt, 1500); else deskAppendInbox(cid, [mkRec()]); }); // #1200：读键连续抛错＝整包面不可写，同落中转箱
 };
 attempt();
 };
@@ -4768,6 +5203,7 @@ try { chatLedgerSave('xy-home-v2:' + cid, arr.length, msgsBytes(arr)); } catch (
 };
 const attempt = function () {
 tries++;
+if (tries > 5) { deskAppendInbox(cid, [rec]); return; } // #1200：重试预算耗尽改落中转箱，不再静默丢
 window.idbGet(key).then(function (v) {
 if (v !== undefined && v !== null) {
 let arr = [];
@@ -4788,9 +5224,12 @@ return !(keys || []).some(function (k) { return k === key; });
 : Promise.resolve(true));
 confirmMiss.then(function (isMiss) {
 if (!isMiss) { if (tries < 3) setTimeout(attempt, 1500); return; }
-deskAppendMissGuard(cid, tries, attempt, function () { writeArr([rec]); });
+window.idbGet('xy-home-v2:' + cid + ':chat-blk-idx').then(function (bv) {
+if (bv !== undefined && bv !== null) { deskAppendInbox(cid, [rec]); return; }
+deskAppendMissGuard(cid, tries, attempt, function () { writeArr([rec]); }, function () { deskAppendInbox(cid, [rec]); });
+}).catch(function () { deskAppendMissGuard(cid, tries, attempt, function () { writeArr([rec]); }, function () { deskAppendInbox(cid, [rec]); }); });
 });
-}).catch(function () { if (tries < 3) setTimeout(attempt, 1500); });
+}).catch(function () { if (tries < 3) setTimeout(attempt, 1500); else deskAppendInbox(cid, [rec]); }); // #1200：读键连续抛错＝同落中转箱
 };
 attempt();
 };
@@ -5171,9 +5610,9 @@ reply = pickNonBlank(pool.voice); type = 'voice';
 } else {
 reply = pickNonBlank(pool.text) || pick(FALLBACK_REPLY_POOL);
 }
-if (type === 'text' && pool.kaomoji.length && hit(c['kaomoji-prob'])) {
+if (type === 'text' && c['py-en'] === 1 && pool.kaomoji.length && hit(c['kaomoji-prob'])) {
 const kj = pickNonBlank(pool.kaomoji);
-if (kj) { reply += ' ' + kj; replyCards = 2; } // #851 文字卡＋颜文字卡＝一条气泡两张卡
+if (kj) { reply += '\n' + kj; replyCards = 2; } // #851 文字卡＋颜文字卡＝一条气泡两张卡；#1051 连接符空格→硬换行（escTxtBr \n→<br>）：多台真机实报末尾颜文字「不换行＝显示不全」，软换行点部分内核不拆行，<br> 强制换行全内核遵守
 }
 return { text: reply, type: type, cards: replyCards };
 }
@@ -5227,7 +5666,7 @@ try { await ensureReplyCardsReady(); } catch (e) {}
 const myCid = window.__activeCid || 'default';
 const sameCid = () => (window.__activeCid || 'default') === myCid;
 let rep = genOneReply(c);
-if (rep && rep.type === 'text' && typeof rep.text === 'string' && rep.text.indexOf('data:') !== 0 && window.periodWarmText) {
+if (rep && c['py-en'] === 1 && rep.type === 'text' && typeof rep.text === 'string' && rep.text.indexOf('data:') !== 0 && window.periodWarmText) {
 try { const _w0 = rep.text, _w = window.periodWarmText(rep.text); if (_w) { rep.text = _w; if (_w !== _w0) pyMultiDrawn = true; } } catch (e) {}
 }
 const pyMultiHit = pyMultiDrawn;
@@ -5289,6 +5728,7 @@ qidx: (si === 0 && quote) ? quoteIdx : undefined,
 type: 'text',
 parts: si === rep.spell.length - 1 ? spellPartsSync(rep.spell[si], spellImgParts) : null,
 silent: si > 0 ? true : (silent || willRetractR),
+sfx: !willRetractR,
 tag: '词典',
 tagExtra: [{ tag: '词典逐卡连发', label: '' }],
 tagNoDup: true
@@ -5384,6 +5824,7 @@ setTimeout(() => { if (!sameCid()) return; if (window.callMaybeTrigger) window.c
 setTimeout(() => { if (!sameCid()) return; trySystemAutoSend(); trySystemAskMochi(); tryCollectPending(); if (window.maybeAutoGift) window.maybeAutoGift(); }, 2500);
 }
 window.continueChat = function () {
+nightOpenReply();
 const myCid = window.__activeCid || 'default';
 const sameCid = () => (window.__activeCid || 'default') === myCid;
 const c = cfg();
@@ -5406,6 +5847,7 @@ for (let i = 0; i < count; i++) {
 setTimeout(() => {
 if (!sameCid()) return;
 hideTyping();
+chatUserFollowScroll = true; // #1023 用户主动要的回应：本条落地即贴底（上翻态也滑过来）
 replyOnce(c, null, i > 0);
 if (i < count - 1) showTyping();
 if (i === count - 1) setTimeout(() => { if (!sameCid()) return; if (window.maybeMusicRequest) window.maybeMusicRequest(); }, 2000);
@@ -5496,12 +5938,13 @@ lastMineText = '';
 lastMineQuote = '';
 lastMineIdx = -1;
 }
-function pyJoinCards(segs, c) {
+function pyJoinCards(segs, c, sceneOn) {
 if (!Array.isArray(segs) || !segs.length) return '';
 if (segs.length === 1) return String(segs[0] == null ? '' : segs[0]);
 let pool = null;
 const pyJoinOn = !!(c && c['py-en'] === 1 && c['py-punct-en'] === 1); // #956a
-if (pyJoinOn) {
+const usePool = sceneOn === undefined ? pyJoinOn : !!sceneOn;
+if (usePool) {
 pool = [];
 if (c['py-punct-space'] === 1) pool.push(' ');
 if (c['py-punct-dou'] === 1) pool.push('，');
@@ -5510,13 +5953,15 @@ if (c['py-punct-ex'] === 1) pool.push('！');
 if (c['py-punct-q'] === 1) pool.push('？');
 if (c['py-punct-el'] === 1) pool.push('......');
 if (c['py-punct-dash'] === 1) pool.push('——'); // #712 内置「——」（默认开）
+if (c['py-punct-nl'] === 1) pool.push('\n'); // #1198 内置「换行」（默认关）
 let pyc = null;
 try { pyc = JSON.parse(c['py-punct-custom'] || '[]'); } catch (e) {}
 if (Array.isArray(pyc)) pyc.forEach(it => { if (it && typeof it.s === 'string' && it.s && it.on === 1) pool.push(it.s); });
 }
 if (!pool || !pool.length) pool = [' '];
+const isMediaSeg = s => typeof s === 'string' && (s.indexOf('data:') === 0 || s.indexOf('http') === 0 || s.indexOf('sticker:') === 0 || s.indexOf('image:') === 0 || s.indexOf('@@m:') === 0 || (typeof window !== 'undefined' && !!(window.mochiMediaIsToken && window.mochiMediaIsToken(s))));
 let out = String(segs[0] == null ? '' : segs[0]);
-for (let i = 1; i < segs.length; i++) out += pool[Math.floor(Math.random() * pool.length)] + String(segs[i] == null ? '' : segs[i]);
+for (let i = 1; i < segs.length; i++) out += (isMediaSeg(segs[i]) || isMediaSeg(segs[i - 1]) ? ' ' : pool[Math.floor(Math.random() * pool.length)]) + String(segs[i] == null ? '' : segs[i]);
 return out;
 }
 window.pyJoinCards = pyJoinCards; // 各文件独立作用域：ta-ask.js 互动卡回应/文字题同源复用走 window
@@ -5538,6 +5983,7 @@ if (!seps.length) seps = null;
 }
 if (!seps) seps = [' '];
 else if (seps.indexOf(' ') < 0) seps.push(' ');
+if (seps.indexOf('\n') < 0) seps.push('\n');
 const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const pieces = t.split(new RegExp(seps.map(esc).sort((a, b) => b.length - a.length).join('|')));
 let n = 0;
@@ -5609,7 +6055,7 @@ t = replyWord; pyMultiDrawn = false; // FIX 2026-09-18 #773 同上：聊天回�
 }
 if (pyMultiDrawn && (typeof t !== 'string' || !t.trim())) pyMultiDrawn = false;
 if (typeof t !== 'string' || !t.trim()) t = pick(FALLBACK_REPLY_POOL);
-if (hit(window.dcpEff ? window.dcpEff(c['cf-prob']) : c['cf-prob'])) { // FIX 2026-09-15 #518 连接词追加套系统预设字卡总档
+if (c['py-en'] === 1 && hit(window.dcpEff ? window.dcpEff(c['cf-prob']) : c['cf-prob'])) { // FIX 2026-09-15 #518 连接词追加套系统预设字卡总档
 const w = (window.getFollowupWord && window.getFollowupWord(t)) || '';
 if (w) { t += ' ' + w; pyMultiDrawn = true; }
 }
@@ -5758,12 +6204,23 @@ sendTaInvite(inv, name);
 return true;
 }
 window.triggerTaInviteNow = function () {
+nightOpenReply();
 try {
 const name = chatPartnerName();
 const inv = window.taInvitePickAny ? window.taInvitePickAny() : null;
 if (!inv || !inv.text) { toast('TA的邀请题库没有可用内容'); return false; }
 sendTaInvite(inv, name);
 if (window.replyGuideHint) window.replyGuideHint('inv'); // v3.27.x #218 互动频率引导（邀请半框弹出时提醒可调）
+return true;
+} catch (e) { return false; }
+};
+window.triggerTaCuddleNow = function () {
+try {
+const name = chatPartnerName();
+const inv = window.taInvitePickKind ? window.taInvitePickKind('cuddle') : null;
+if (!inv || !inv.text) { toast('TA的邀请题库里没有可用的贴贴话术'); return false; }
+sendTaInvite(inv, name);
+if (window.replyGuideHint) window.replyGuideHint('inv');
 return true;
 } catch (e) { return false; }
 };
@@ -5867,7 +6324,8 @@ const CHAT_RESUME_FRESH_MS = 60000; // 离场超过此值＝长离场，回场�
 function chatResumeRepin() {
 if (document.visibilityState !== 'visible' || !chatVisible()) return;
 const gone = (typeof window.__chatHiddenAgeMs === 'number') ? window.__chatHiddenAgeMs : (chatHiddenAt ? Date.now() - chatHiddenAt : 0); // override 仅供 verify 脚本注入
-if (gone > CHAT_RESUME_FRESH_MS) {
+const awaitLongAway = gone > CHAT_RESUME_FRESH_MS;
+if (awaitLongAway) {
 chatPinnedBottom = true;
 body.classList.remove('scroll-anchor-auto');
 }
@@ -5876,8 +6334,25 @@ if (chatResumeRepinT) clearTimeout(chatResumeRepinT);
 chatResumeRepinT = setTimeout(function () {
 chatResumeRepinT = null;
 if (!chatVisible() || !chatPinnedBottom || batchRendering) return; // 回场期用户已翻页/已解钉＝不抢
-if (chatScrollMax() - body.scrollTop > 8) { scrollChatBottom(); chatEntrySettle(); } // #416 同口径 ≤8px 不折腾
+try { if (awaitLongAway && chatDbReady) loadMsgs(true); } catch (e) {}
+chatResumeRealign(); // #978：回场贴底改「几何落定后同值重落一枪」——350ms 当场裸写正打在回场几何恢复风暴中段＝撕裂源
+chatEntrySettle(); // #930 保留：迟到长高（懒加载图/字体回填）当帧回钉
 }, 350);
+}
+let _rsResumeT = null;
+let _rsResumeDeadline = 0;
+function chatResumeRealign() {
+if (_rsResumeT) return; // 已有一枪在膛：由它负责复查，不重复排队
+_rsResumeDeadline = Date.now() + 3000;
+_rsResumeT = setTimeout(chatResumeRealignStep, 120);
+}
+function chatResumeRealignStep() {
+_rsResumeT = null;
+const now = Date.now();
+if (!chatVisible()) return;
+if (!chatPinnedBottom) return; // #162：回场期用户已翻历史＝绝不拽底
+if (!chatRepinQuietEnough(now)) { if (now < _rsResumeDeadline) _rsResumeT = setTimeout(chatResumeRealignStep, 120); return; }
+if (chatPinnedBottom) scrollChatBottom(); // 同值重落：健康态重写同一个值；撕裂态＝强制内核滚动树重对齐
 }
 document.addEventListener('visibilitychange', function () {
 if (document.visibilityState === 'hidden') { chatHiddenAt = Date.now(); if (chatResumeRepinT) { clearTimeout(chatResumeRepinT); chatResumeRepinT = null; } }
@@ -5894,6 +6369,41 @@ loadMsgs(true);
 document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') chatResumeRearmRead(); });
 document.addEventListener('mochi-fg-resume', chatResumeRearmRead); // bg-keep 回前台统一信号（与 ta-ask/memo 同款通道）
 window.addEventListener('pageshow', function (e) { if (e.persisted) chatResumeRearmRead(); });
+function chatEnterPaintThen(fn) {
+let ran = false;
+const run = function () { if (ran) return; ran = true; fn(); }; // 不吞异常：重活里抛错照旧冒到 window.onerror/__jsErrors（#939 口径），诊断链不断
+if (!window.requestAnimationFrame) { setTimeout(run, 16); return; }
+requestAnimationFrame(function () { requestAnimationFrame(function () { setTimeout(run, 0); }); });
+setTimeout(run, 120); // 保险丝：后台标签/页面不可见时 rAF 会被节流甚至不派发，重活不能因此不跑
+}
+function settleReplayedChatAnim(onlyPaused) {
+if (!document.getAnimations) return 0;
+const all = document.getAnimations();
+let n = 0;
+for (let i = 0; i < all.length; i++) {
+const a = all[i];
+if (typeof a.animationName !== 'string') continue; // 只管 CSS 动画：过渡不会在显隐切换时重播，别去动它
+if (onlyPaused && a.playState !== 'paused') continue; // #1181b：回前台这一路只收「被 #913 暂停类冻住」的那批，正在正常播的（用户可能看得见）一律不动
+const ef = a.effect;
+const tg = ef && ef.target;
+if (!tg || !(tg === body || body.contains(tg))) continue; // 只管聊天窗口内（含窗口自身）
+let iter = Infinity;
+try { iter = ef.getComputedTiming().iterations; } catch (e) {}
+if (iter === Infinity) continue; // #1151c：无限循环者不落终态（波形/打点/加载圈）
+try { a.finish(); n++; } catch (e) {}
+}
+return n;
+}
+if (chatPage) {
+new MutationObserver(function () {
+if (!chatVisible()) return;
+settleReplayedChatAnim(); // #1151c：回场一帧在绘制之前落终态＝看不见这一帧
+}).observe(chatPage, { attributes: true, attributeFilter: ['hidden'] });
+}
+function chatResumeSettleAnim() { try { settleReplayedChatAnim(true); } catch (e) {} }
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') chatResumeSettleAnim(); });
+document.addEventListener('mochi-fg-resume', chatResumeSettleAnim); // bg-keep 统一信号：覆盖「只发 focus / bfcache 恢复」的内核（与 #967 同款双通道）
+window.addEventListener('pageshow', function (e) { if (e.persisted) chatResumeSettleAnim(); });
 function enterChat() {
 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
 const phoneTab = document.querySelector('.tab[data-page="page-phone"]');
@@ -5902,13 +6412,15 @@ document.querySelectorAll('.page').forEach(p => { if (!p.hidden) p.hidden = true
 chatPage.hidden = false;
 chatPinnedBottom = true;
 body.classList.remove('scroll-anchor-auto');
-try { if (window.hydrateLibScopes) window.hydrateLibScopes(['own', 'public']); } catch (e) {}
 fillAvatar('chat-user-av', 'cs-avatar-user');
 fillAvatar('chat-partner-av', 'cs-avatar-partner');
 if (window.applyChatSettings) window.applyChatSettings();
 clearChatUnread();
 chatRebuilding = true; // #841i：进页即有一段「屏上还没有任何列表」的空窗（LS/权威异步读取、首帧未渲），进度条顶上，renderWindow 接手时由 #841e/f 交接、同步收尾就地交回
 updateChatLoading(); // #703：先于 loadMsgs 置位——loadMsgs 里同步 parse LS 快照可能上百毫秒，先让进度条就位
+scrollChatBottom();
+chatEnterPaintThen(function () {
+try { if (window.hydrateLibScopes) window.hydrateLibScopes(['own', 'public']); } catch (e) {}
 loadMsgs();
 if (inplacePatchIfSameWindow()) { chatRebuilding = false; updateChatLoading(); } // #841j：同窗补丁命中＝零重建无空窗，就地交回标志（不等 renderWindow 接手）
 else renderWindow(false, true);
@@ -5922,6 +6434,7 @@ if (typingOn && chatVisible()) {
 typingEl.hidden = false; // FIX 2026-09-15 #514 进页同款：只切可见性、不写 scrollTop（上面三连已在行隐藏态贴到底）
 }
 schedulePanelPrewarm(2500);
+}); // #1017 第二段（重活）结束
 }
 if (chatApp && chatPage) {
 chatApp.addEventListener('click', () => {
@@ -6221,7 +6734,7 @@ text = '{me} ' + action.replace(/我(?![们])/g, '{ta}');
 text = '{me} ' + action;
 }
 chatUserFollowScroll = true;
-addRec({ side: 'in', text: text, special: 'poke' });
+addRec({ side: 'in', text: text, special: 'poke', nightAllow: true });
 if (window.logFish) window.logFish();
 setTimeout(() => {
 const c2 = cfg();
@@ -6509,7 +7022,7 @@ return -1;
 function sendRps(mine) {
 closeRpsPanel();
 const mineName = { rock: '石头', scissors: '剪刀', paper: '布' }[mine] || '';
-addRec({ side: 'in', special: 'poke', text: '我出了 ' + mineName + '，等 TA 出拳…' });
+addRec({ side: 'in', special: 'poke', text: '我出了 ' + mineName + '，等 TA 出拳…', nightAllow: true });
 showTyping();
 setTimeout(() => {
 hideTyping();
@@ -6518,7 +7031,7 @@ const judge = rpsJudge(mine, ta);
 const s = rpsReadScore();
 if (judge > 0) s.w++; else if (judge < 0) s.l++; else s.d++;
 rpsWriteScore(s);
-addRec({ side: 'in', special: 'rps', rpsMine: mine, rpsTa: ta, rpsResult: judge });
+addRec({ side: 'in', special: 'rps', rpsMine: mine, rpsTa: ta, rpsResult: judge, nightAllow: true });
 try {
 const rpsWinFen = Math.random() < 0.3 ? 1314 : 520;
 const real = rpGameCoinGrant('rps', judge > 0 ? rpsWinFen : judge < 0 ? 520 : 130, 2600);
@@ -6527,7 +7040,7 @@ const w = rpWalletGet();
 w.myBalance += real; w.systemBalance += real;
 rpWalletSet(w);
 try { if (window.giftCoinLedgerAdd) window.giftCoinLedgerAdd('earn', real, real, '石头剪刀布'); } catch (e2) {}
-setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke' }), randInt(800, 1600));
+setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke', nightAllow: true }), randInt(800, 1600));
 }
 } catch (e) {}
 if (window.logFish) window.logFish();
@@ -6753,6 +7266,7 @@ try { const v = parseInt(store.get('cs-rp-daily-max'), 10); if (isFinite(v) && v
 return 5;
 }
 function trySystemAutoSend() {
+if (window.nightModeActive && window.nightModeActive()) return;
 if (rpDailyCount() >= rpDailyMax()) return;
 let baseRate = 0.04;
 try { const ap = window.activeStore ? window.activeStore().get('cs-rp-auto-prob') : null; const pv = parseFloat(ap); if (pv !== null && isFinite(pv)) baseRate = Math.max(0, Math.min(100, pv)) / 100; } catch (e) {}
@@ -6812,6 +7326,7 @@ return 0;
 window.rpAskProbRate = rpAskProbRate;
 window.rpAskDailyMax = rpAskDailyMax;
 function trySystemAskMochi() {
+if (window.nightModeActive && window.nightModeActive()) return;
 const askMax = rpAskDailyMax();
 if (askMax > 0 && askDailyCount() >= askMax) return;
 if (Math.random() >= rpAskProbRate()) return;
@@ -6851,7 +7366,7 @@ if (mode !== 0 && mode !== 1) mode = 2;
 } catch (e) {}
 const myCid = window.__activeCid || 'default';
 if (mode === 0 || (mode === 2 && Math.random() < 0.6)) {
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn(dir === 'in' ? rpThxInMsg() : rpThanksMsg(), { silent: true }); }, randInt(600, 1800));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn(dir === 'in' ? rpThxInMsg() : rpThanksMsg(), { silent: true, nightAllow: true }); }, randInt(600, 1800));
 } else {
 setTimeout(() => {
 if ((window.__activeCid || 'default') !== myCid) return;
@@ -6878,7 +7393,7 @@ wallet.myBalance += amtFen;
 rpWalletSet(wallet);
 saveMsgsNow();
 if (!rpPatchStatusInPlace(idx)) renderWindow(false, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 退回了你的红包（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）', { special: 'poke' }); }, randInt(500, 1200));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 退回了你的红包（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）', { special: 'poke', nightAllow: true }); }, randInt(500, 1200));
 } else if (r < 0.9) {
 rec.rpStatus = 'received';
 rec.rpOpenedAt = Date.now();
@@ -6887,7 +7402,7 @@ rpWalletSet(wallet);
 saveMsgsNow();
 if (!rpPatchStatusInPlace(idx)) renderWindow(false, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
 const amtTxt = '（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）';
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke' }); }, randInt(400, 1000));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke', nightAllow: true }); }, randInt(400, 1000));
 rpCollectFeedback('out');
 }
 }
@@ -6905,7 +7420,7 @@ saveMsgsNow();
 if (!rpPatchStatusInPlace(idx)) renderWindow(false, true); // FIX 2026-09-07 #230 红包状态流转不整窗重建（闪屏）
 const amtTxt = '（心意币 ¥' + Number(rec.rpAmount || 0).toFixed(2) + '）';
 const myCid = window.__activeCid || 'default';
-setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke' }); }, randInt(400, 1000));
+setTimeout(() => { if ((window.__activeCid || 'default') !== myCid) return; addIn('TA 领取了你的红包' + amtTxt, { special: 'poke', nightAllow: true }); }, randInt(400, 1000));
 rpCollectFeedback('out');
 }
 function rpExpireCheck() {
@@ -7350,6 +7865,9 @@ bindTaNow('more-choose-now', () => { if (window.triggerTaChooseNow) window.trigg
 bindTaNow('more-curious-now', () => { if (window.triggerTaCuriousNow) window.triggerTaCuriousNow(); });
 bindTaNow('more-roast-now', () => { if (window.triggerTaRoastNow) window.triggerTaRoastNow(); });
 bindTaNow('more-invite-now', () => { if (window.triggerTaInviteNow) window.triggerTaInviteNow(); });
+bindTaNow('more-cuddle-now', () => { if (window.triggerTaCuddleNow) window.triggerTaCuddleNow(); });
+bindTaNow('more-ck-now', () => { if (window.triggerCkQuestion) window.triggerCkQuestion(); });
+bindTaNow('more-xck-now', () => { if (window.triggerIncomingCheckinNow) window.triggerIncomingCheckinNow(); });
 const moreDecide = document.getElementById('more-decide');
 if (moreDecide) {
 moreDecide.addEventListener('click', (e) => {
@@ -7582,6 +8100,15 @@ if (invList) invList.hidden = !isInvite;
 if (invSave) invSave.hidden = !isInvite;
 const bulkBtn = document.getElementById('chat-ask-bulk');
 if (bulkBtn) bulkBtn.hidden = isInvite;
+const invHist = document.getElementById('chat-ask-hist');
+if (invHist) invHist.hidden = !isInvite;
+if (isInvite) {
+const ihList = document.getElementById('chat-ask-hist-list');
+if (ihList) ihList.hidden = true;
+ihPastShown = IH_PAGE_DAYS;
+Object.keys(ihOpenDays).forEach(k => { delete ihOpenDays[k]; });
+renderInviteHist();
+}
 if (isInvite) {
 myInviteAdoptFromIdb().then(() => { if (chatAskMode === 'invite') renderInviteBank(); });
 }
@@ -7728,7 +8255,7 @@ answer = myName + ' 暂时没有回应';
 setTimeout(() => {
 if (!sameCid()) {
 window.chatDeskCardReply(myCid, 'invite', inviteRecTs, 'inviteStatus', function (rec) { rec.inviteStatus = 'answered'; rec.inviteAnswer = answer; }, reply ? [{ side: 'in', text: reply }] : [], applyInviteResult);
-try { window.chatDeskHistPush(myCid, { type: 'invite', q: content, a: reply || status, ts: recTs }); } catch (err) {}
+try { window.chatDeskHistPush(myCid, { type: 'invite', q: content, a: reply || status, st: status, ts: recTs }); } catch (err) {}
 return;
 }
 function applyInviteResult() {
@@ -7749,7 +8276,7 @@ if (reply) addInTyped(reply, null, randInt(800, 1400));
 try {
 const list = JSON.parse(store.get(histKey) || '[]');
 if (!list.some(x => x && x.ts === recTs)) {
-list.unshift({ type: 'invite', q: content, a: reply || status, ts: recTs });
+list.unshift({ type: 'invite', q: content, a: reply || status, st: status, ts: recTs });
 if (list.length > 200) list.length = 200;
 store.set(histKey, JSON.stringify(list));
 }
@@ -7760,6 +8287,115 @@ setTimeout(() => { if (!sameCid()) return; maybeFollowupAskCard(); }, 1200);
 applyInviteResult();
 }, 1500 + Math.random() * 2500);
 }
+const IH_PAGE_DAYS = 5;
+let ihPastShown = IH_PAGE_DAYS; // 已露出的「更早」日期组数（不含今天）
+const ihOpenDays = {};          // 手动展开的更早日期组（key = 年-月-日）
+function ihDayKey(ts) { const d = new Date(ts); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+function ihDayLabel(key) {
+const now = Date.now();
+if (key === ihDayKey(now)) return '今天';
+if (key === ihDayKey(now - 86400000)) return '昨天';
+const p = String(key).split('-');
+return Number(p[1]) + '月' + Number(p[2]) + '日';
+}
+function ihGroups() {
+let list = [];
+try {
+const raw = JSON.parse(store.get('invite-ask-history') || '[]');
+if (Array.isArray(raw)) list = raw.filter(x => x && x.type === 'invite' && Number(x.ts));
+} catch (e) { list = []; }
+list.sort((a, b) => (Number(b.ts) || 0) - (Number(a.ts) || 0));
+const groups = [];
+const byKey = {};
+list.forEach(x => {
+const k = ihDayKey(Number(x.ts));
+if (!byKey[k]) { byKey[k] = { key: k, items: [] }; groups.push(byKey[k]); }
+byKey[k].items.push(x);
+});
+return { groups, total: list.length };
+}
+function ihClock(ts) {
+const d = new Date(ts);
+const p = (n) => (n < 10 ? '0' + n : '' + n);
+return p(d.getHours()) + ':' + p(d.getMinutes());
+}
+function ihItemHtml(x) {
+const st = (x.st === '接受' || x.st === '拒绝' || x.st === '未回应') ? x.st : '';
+const words = x.a && String(x.a) !== st ? String(x.a) : '';
+const verdict = !st ? '' : (st === '接受' ? '<span class="ih-ok">✓ TA 接受了</span>'
+: st === '拒绝' ? '<span class="ih-no">✕ TA 拒绝了</span>'
+: '<span class="ih-nu">… TA 未回应</span>');
+const tail = verdict && words ? ' · ' : '';
+const ta = words ? escTxt(window.taFit ? window.taFit(words) : words) : '';
+return '<div class="tc-listitem"><div class="tc-li-q">' + escTxt(x.q) + '</div>' +
+(verdict || ta ? '<div class="tc-li-line">' + verdict + tail + ta + '</div>' : '') +
+'<div class="tc-li-time">' + ihClock(Number(x.ts)) + '</div></div>';
+}
+function renderInviteHist() {
+const listEl = document.getElementById('chat-ask-hist-list');
+const toggle = document.getElementById('chat-ask-hist-toggle');
+if (!listEl || !toggle) return;
+const g = ihGroups();
+const todayKey = ihDayKey(Date.now());
+const today = g.groups.filter(x => x.key === todayKey);
+const past = g.groups.filter(x => x.key !== todayKey);
+const shown = past.slice(0, ihPastShown);
+const rest = past.slice(ihPastShown);
+const restItems = rest.reduce((n, x) => n + x.items.length, 0);
+toggle.textContent = '📜 邀请记录' + (g.total ? '（' + g.total + '）' : '') + (listEl.hidden ? ' ▾' : ' ▴');
+if (!g.total) {
+listEl.innerHTML = '<div class="ta-empty">还没有邀请记录——在下方点字卡或写一条发出去，就会留在这里</div>';
+return;
+}
+let html = '';
+html += today.length
+? '<div class="ih-day ih-day-today">' + ihDayLabel(todayKey) + ' · ' + today[0].items.length + ' 条</div>' + today[0].items.map(ihItemHtml).join('')
+: '<div class="ih-day ih-day-today">' + ihDayLabel(todayKey) + ' · 0 条</div>';
+shown.forEach(x => {
+const open = !!ihOpenDays[x.key];
+html += '<button type="button" class="ih-day-btn" data-ihday="' + escTxt(x.key) + '">' + ihDayLabel(x.key) + ' · ' + x.items.length + ' 条<span class="ih-caret">' + (open ? '▴' : '▾') + '</span></button>';
+if (open) html += x.items.map(ihItemHtml).join('');
+});
+if (rest.length) html += '<button type="button" class="ih-more" id="ih-more">加载更多（还有 ' + rest.length + ' 天 · ' + restItems + ' 条）</button>';
+listEl.innerHTML = html;
+listEl.querySelectorAll('[data-ihday]').forEach(b => b.addEventListener('click', (e) => {
+e.stopPropagation();
+const k = b.getAttribute('data-ihday');
+if (ihOpenDays[k]) delete ihOpenDays[k]; else ihOpenDays[k] = 1;
+renderInviteHist();
+}));
+const more = document.getElementById('ih-more');
+if (more) more.addEventListener('click', (e) => {
+e.stopPropagation();
+ihPastShown += IH_PAGE_DAYS;
+renderInviteHist();
+});
+}
+const chatAskHistToggle = document.getElementById('chat-ask-hist-toggle');
+if (chatAskHistToggle) chatAskHistToggle.addEventListener('click', (e) => {
+e.stopPropagation();
+const listEl = document.getElementById('chat-ask-hist-list');
+if (!listEl) return;
+listEl.hidden = !listEl.hidden;
+renderInviteHist();
+});
+const chatAskHistClear = document.getElementById('chat-ask-hist-clear');
+if (chatAskHistClear) chatAskHistClear.addEventListener('click', (e) => {
+e.stopPropagation();
+if (!window.openModal) { toast('弹窗组件未就绪'); return; }
+window.openModal('清空本桌面的全部邀请记录？（不可恢复，问问TA 的记录不受影响）', '', () => {
+try {
+const all = JSON.parse(store.get('invite-ask-history') || '[]');
+const keep = Array.isArray(all) ? all.filter(x => x && x.type !== 'invite') : [];
+store.set('invite-ask-history', JSON.stringify(keep));
+} catch (err) {}
+ihPastShown = IH_PAGE_DAYS;
+Object.keys(ihOpenDays).forEach(k => { delete ihOpenDays[k]; });
+renderInviteHist();
+if (window.renderAskRecords) window.renderAskRecords(); // #625 汇总页同口径刷新
+toast('邀请记录已清空');
+}, { noInput: true });
+});
 const MY_INVITE_PRESETS = ['想和你猜拳，来一局？', '想和你玩一局 Pong，来吗？', '想和你玩双人贪吃蛇，来吗？', '想和你一起听歌'];
 let myInviteDirty = false;
 let myInviteCurGroup = '__preset';
@@ -8130,8 +8766,14 @@ document.addEventListener('click', (e) => {
 if (panel.hidden) return;
 if (Date.now() - openedAt < 400) return;
 const t = e.target;
-if (!t || panel.contains(t)) return;
-if (t.closest && t.closest('.modal-mask')) return;
+if (!t) return;
+const path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+if (path && path.length) {
+for (let i = 0; i < path.length; i++) {
+const n = path[i];
+if (n === panel || (n.nodeType === 1 && n.classList && n.classList.contains('modal-mask'))) return;
+}
+} else if (panel.contains(t) || (t.closest && t.closest('.modal-mask'))) return;
 close();
 });
 };
@@ -8408,7 +9050,7 @@ if (window.openBrickPanel) window.openBrickPanel();
 }
 window.sendSnakeResult = function (d) {
 if (!d) return;
-addRec({ side: 'in', special: 'snake', snkResult: d.result, snkPLen: d.pLen, snkOLen: d.oLen, snkPFood: d.pFood, snkOFood: d.oFood, snkPScore: d.pScore, snkOScore: d.oScore, snkTime: d.time });
+addRec({ side: 'in', special: 'snake', nightAllow: true, snkResult: d.result, snkPLen: d.pLen, snkOLen: d.oLen, snkPFood: d.pFood, snkOFood: d.oFood, snkPScore: d.pScore, snkOScore: d.oScore, snkTime: d.time });
 try {
 const snkWinFen = Math.random() < 0.2 ? 5200 : 1314;
 const snkMult = (window.arcadeMult && window.arcadeMult('snake')) || 1;
@@ -8418,7 +9060,7 @@ const w = rpWalletGet();
 w.myBalance += real; w.systemBalance += real;
 rpWalletSet(w);
 try { if (window.giftCoinLedgerAdd) window.giftCoinLedgerAdd('earn', real, real, '贪吃蛇'); } catch (e2) {}
-setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke' }), randInt(800, 1600));
+setTimeout(() => addIn('🪙 双方心意币各 +¥' + (real / 100).toFixed(2), { special: 'poke', nightAllow: true }), randInt(800, 1600));
 }
 } catch (e) {}
 if (window.logFish) window.logFish();
@@ -8428,7 +9070,7 @@ hideTyping();
 const grp = d.result === 'win' ? '游戏失败·回应' : d.result === 'lose' ? '游戏胜利·回应' : '游戏平局·回应';
 const pool = window.getInteractPool ? window.getInteractPool(grp, ['再来一局？']) : ['再来一局？'];
 const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : '再来一局？';
-addRec({ side: 'in', text: say });
+addRec({ side: 'in', text: say, nightAllow: true });
 }, randInt(900, 1600));
 };
 if (chatCallClose) chatCallClose.addEventListener('click', (e) => { e.stopPropagation(); closeChatCall(); });
@@ -8614,7 +9256,8 @@ const compressed = await compressFavListImages(list);
 const tokened = await tokenizeFavList(compressed || list);
 if (!compressed && !tokened) return true;
 const out = tokened || compressed;
-await window.mochiMediaFlush(); // #142：池数据先落盘，收藏里的令牌才有据可查
+const _favPoolOk = await window.mochiMediaFlush(); // #142：池数据先落盘，收藏里的令牌才有据可查
+if (_favPoolOk !== true) { scheduleFavImgPass(8000); return false; }
 const rawNow = store.get('fav-msgs');
 if (rawNow !== rawSnap) {
 if (++_favImgPassRetries < 5) { scheduleFavImgPass(5000); return false; }
@@ -8702,10 +9345,10 @@ if (!f) return;
 if (window.addMyFavItem(f)) toast('已收藏互动卡片');
 else toast('已收藏过这张卡片');
 };
-function favHeartHtml(rec, always) {
-const heart = '<button class="msg-fav-heart"' + (always ? ' style="display:inline-flex"' : '') + ' title="收藏整张互动卡片"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>收藏</button>';
+function favHeartHtml(rec) {
+const heart = '<button class="msg-fav-heart" title="收藏整张互动卡片"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>收藏</button>';
 let time = '';
-if (!always && rec && rec.ts) {
+if (rec && rec.ts) {
 const who = rec.side === 'out' ? chatUserName() : chatPartnerName();
 time = '<div class="msg-fav-time">' + escTxt(who) + ' ' + fmtTime(rec.ts) + ' 发送</div>';
 }
@@ -10399,6 +11042,58 @@ emojiShowWhenDecoded(showEmoji, myToken);
 hydrateCcForChatPanels(() => { if (emojiPanel && !emojiPanel.hidden) renderEmojiPanel(); });
 }
 const EMOJI_DECODE_AWAIT_MAX = 24;
+function emojiPanelFirstScreen() {
+const out = [];
+if (!emojiList) return out;
+let imgs; try { imgs = emojiList.querySelectorAll('img'); } catch (e) { return out; }
+if (!imgs || !imgs.length) return out;
+let cr = null; try { cr = emojiList.getBoundingClientRect(); } catch (e) {}
+const byRect = !!(cr && cr.height > 4); // 隐藏期 keep-alive 下几何仍成立，首屏按可视区量（量不到退回前 N 张）
+for (let i = 0; i < imgs.length; i++) {
+if (out.length >= 48) break;
+const im = imgs[i];
+if (byRect) {
+let r = null; try { r = im.getBoundingClientRect(); } catch (e) {}
+if (r && r.top > cr.bottom + 80) break; // 视口下沿外的留给懒加载
+if (!r || r.bottom < cr.top - 80) continue; // 已滚上去的（本来就已解码）不占等待名额
+out.push(im);
+} else if (i < EMOJI_DECODE_AWAIT_MAX) out.push(im);
+}
+return out;
+}
+function emojiKickFirstScreen(imgs) {
+const toks = [];
+for (let i = 0; i < imgs.length; i++) {
+const im = imgs[i];
+let ds = ''; try { ds = (im.dataset && im.dataset.src) || ''; } catch (e) {}
+const pay = ds || im.getAttribute('src') || '';
+if (!pay) continue;
+const isTok = pay.indexOf('@@m:') === 0;
+if (ds && !im.getAttribute('src')) {
+im.setAttribute('src', ds);
+try { im.removeAttribute('data-src'); } catch (e) {}
+try { if (emojiImgObserver) emojiImgObserver.unobserve(im); } catch (e) {}
+}
+if (isTok && pay.length > 4) toks.push(pay.slice(4));
+}
+if (toks.length && window.mochiMediaWarmTokens) { try { window.mochiMediaWarmTokens(toks); } catch (e) {} }
+}
+function emojiImgReady(im) {
+return new Promise(function (res) {
+let done = false;
+const okNow = function () { try { return !!(im.complete && im.naturalWidth > 0); } catch (e) { return false; } };
+const srcNow = function () { try { return im.getAttribute('src') || ''; } catch (e) { return ''; } };
+const off = function () { try { im.removeEventListener('load', settle); im.removeEventListener('error', settle); } catch (e) {} };
+const settle = function () {
+if (done) return;
+if (okNow()) { done = true; off(); res(true); return; }
+if (srcNow().indexOf('@@m:') !== 0) { done = true; off(); res(false); return; } // 真失败/无源：不挡显示
+};
+try { im.addEventListener('load', settle); im.addEventListener('error', settle); } catch (e) {}
+settle();
+setTimeout(function () { if (!done) { done = true; off(); res(okNow()); } }, 2400); // 单图上限，防个别令牌吊死
+}).then(function () { try { return im.decode ? im.decode().catch(function () {}) : null; } catch (e) { return null; } });
+}
 function emojiShowWhenDecoded(show, token) {
 let shown = false;
 const fin = function () {
@@ -10407,28 +11102,22 @@ if (token !== undefined && token !== emojiShowToken) return; // #692 已关闭/�
 try { show(); } catch (e) {}
 };
 if (!emojiList || !window.Promise) { fin(); return; }
-const imgs = emojiList.querySelectorAll('img');
-if (!imgs.length) { fin(); return; }
+const first = emojiPanelFirstScreen();
+if (!first.length) { fin(); return; }
+emojiKickFirstScreen(first);
 const jobs = [];
-let awaited = 0;
-for (let i = 0; i < imgs.length; i++) {
-const im = imgs[i];
-if (im.dataset && im.dataset.src && !im.getAttribute('src') && i < 16) {
-im.setAttribute('src', im.dataset.src); // #704：首屏图不等懒加载泵，立即起解码
-im.removeAttribute('data-src');
-try { if (emojiImgObserver) emojiImgObserver.unobserve(im); } catch (e) {}
+for (let i = 0; i < first.length; i++) jobs.push(emojiImgReady(first[i]));
+try {
+const all = emojiList.querySelectorAll('img');
+for (let i = 0; i < all.length; i++) {
+const im = all[i];
+if (first.indexOf(im) >= 0) continue;
+if (im.dataset && im.dataset.src && !im.getAttribute('src')) continue; // 交给懒加载泵
+try { if (im.decode) im.decode().catch(function () {}); } catch (e) {}
 }
-if (!im.getAttribute('src')) continue;
-if (awaited < EMOJI_DECODE_AWAIT_MAX) {
-awaited++;
-try { if (im.decode) jobs.push(im.decode().catch(function () {})); } catch (e) {}
-} else {
-try { if (im.decode) im.decode().catch(function () {}); } catch (e) {} // #704：首屏外只预热不等待
-}
-}
-if (!jobs.length) { fin(); return; }
+} catch (e) {}
 Promise.all(jobs).then(fin, fin);
-setTimeout(fin, 2500); // #692 兜底：decode 迟迟不结算也不把面板挂死；#716：1s→2.5s——大库机型首屏 24 张解码超 1s 时半途放行＝用户看到的「每次打开图片闪烁重载」（红米 K80 实报），上限仍在防挂死
+setTimeout(fin, 2500); // #692 兜底：decode 迟迟不结算也不把面板挂死；#716：1s→2.5s，上限仍在防挂死
 }
 function closeEmojiPanel() {
 emojiShowToken++; // #692：作废未兑现的「解码后显示」——等图期间关掉面板不再被自动弹出
@@ -10692,6 +11381,7 @@ toast('表情包面板暂不可用');
 });
 }
 const batchImg = document.getElementById('batch-img');
+if (batchImg && window.mochiFilePickSurface) window.mochiFilePickSurface(batchImg, { id: 'batch-img-tap', accept: 'image/*', multiple: true, owner: 'mochi-batch-img-pick' });
 if (batchImg) {
 batchImg.addEventListener('click', (e) => {
 e.stopPropagation();
@@ -11145,6 +11835,7 @@ renderEmojiPanel();
 });
 }
 const myeAdd = document.getElementById('mye-add');
+if (myeAdd && window.mochiFilePickSurface) window.mochiFilePickSurface(myeAdd, { id: 'mye-add-tap', accept: 'image/*', multiple: true, owner: 'mochi-myemoji-pick' });
 if (myeAdd) {
 myeAdd.addEventListener('click', (e) => {
 e.stopPropagation();
@@ -11564,7 +12255,15 @@ files.forEach(addDraftImg);
 document.body.appendChild(fi);
 chatImgInput = fi;
 if (window.mochiFilePickLabel && imgBtn) window.mochiFilePickLabel(imgBtn, fi);
+if (window.mochiFilePickSurface && imgBtn) window.mochiFilePickSurface(imgBtn, { id: 'chat-img-tap', accept: 'image/*', multiple: true, owner: fi });
 return fi;
+}
+function chatImgSurfaceEnsure() {
+try {
+var fi2 = chatImgPicker();
+var btn = document.getElementById('chat-img-btn');
+if (window.mochiFilePickSurface && btn) window.mochiFilePickSurface(btn, { id: 'chat-img-tap', accept: 'image/*', multiple: true, owner: fi2 });
+} catch (e) {}
 }
 function chatImgPickBridge() {
 const fi = chatImgPicker();
@@ -11607,8 +12306,10 @@ img.src = raw;
 };
 try { reader.readAsDataURL(file); } catch (err) { settled = true; toast('图片读取失败，请换一张再试'); }
 }
+chatImgSurfaceEnsure();
 imgBtn.addEventListener('click', (e) => {
 e.stopPropagation();
+chatImgSurfaceEnsure(); // #1002：点按前幂等补挂真·可点 input 层（按钮被重建过也补回来）
 var _fb = () => { window.mochiFilePickFire(chatImgPickBridge(), { onFail: () => toast('无法打开图片选择器，请重试') }); };
 if (window.mochiFilePickGuard) window.mochiFilePickGuard(chatImgPickBridge(), _fb);
 else _fb();
@@ -11843,7 +12544,7 @@ mapped = _mapBc(mapped, ['mb.self'], OUT_B);
 mapped = _mapBc(mapped, ['mb.other'], IN_B);
 mapped = _mapBc(mapped, OUT_NAMES, OUT_B);
 mapped = _mapBc(mapped, IN_NAMES, IN_B);
-mapped = _mapBc(mapped, SH_NAMES, scope + '.msg-bubble');
+mapped = _mapBc(mapped, SH_NAMES, scope + '.msg-bubble.msg-bubble');
 if (/\.msg-bubble|\.msg-out|\.msg-in/.test(mapped)) {
 out += mapped + '{' + decls + '}';
 hasMapped = true;

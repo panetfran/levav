@@ -99,7 +99,10 @@ const useDefault = (d.settings || {}).useDefault !== false;
 return d.questions.filter(q => q && q.enabled !== false && q.text && kinds.indexOf(q.kind) >= 0 && (useDefault || q.isPreset !== true));
 }
 function gn(c, k, def) { try { const v = c ? c[k] : undefined; return (typeof v === 'number' && !isNaN(v)) ? v : def; } catch (e) { return def; } }
-function hit(p) { return Math.random() * 100 < (window.dcpEff ? window.dcpEff(p) : p); }
+function hit(p) {
+const eff = window.dcpEff ? window.dcpEff(p) : p;
+return Math.random() * 100 < (window.icProb ? window.icProb(eff) : eff);
+}
 window.taInviteDraw = function (c) {
 try {
 const d = tiLoad();
@@ -122,6 +125,12 @@ window.taInvitePickAny = function () {
 try {
 const d = tiLoad();
 return drawFrom(enabledPool(d, ['rps', 'pong', 'snake', 'cuddle']));
+} catch (e) { return null; }
+};
+window.taInvitePickKind = function (kind) {
+try {
+const d = tiLoad();
+return drawFrom(enabledPool(d, [kind]));
 } catch (e) { return null; }
 };
 window.__tiBankInfo = function () {

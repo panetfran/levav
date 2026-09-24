@@ -84,15 +84,23 @@ if (diff === 1) { cur++; max = Math.max(max, cur); } else cur = 1;
 }
 return max;
 }
-function coinRecordSection(icon, title, unit, rows, emptyText) {
-let html = '<div class="stats-sec">' +
-'<div class="stats-sec-head"><span class="stats-sec-title">' + icon + title + '</span>' +
-'<span class="stats-sec-count">' + rows.length + ' 笔</span></div>';
-if (!rows.length) {
+const statsFoldOpen = { askcoin: false, games: false };
+function statsFoldSection(icon, title, unit, rows, emptyText, key) {
+const n = rows.length;
+const open = n > 0 && !!statsFoldOpen[key];
+let html = '<div class="stats-sec stats-fold' + (open ? ' open' : '') + '"' +
+(n ? ' data-stats-fold="' + key + '"' : '') + '>' +
+'<div class="stats-sec-head stats-fold-head"' + (n ? ' role="button" tabindex="0"' : '') +
+' aria-expanded="' + (open ? 'true' : 'false') + '">' +
+'<span class="stats-sec-title">' + icon + title + '</span>' +
+'<span class="stats-fold-right"><span class="stats-sec-count">' + n + ' ' + unit + '</span>' +
+(n ? '<span class="stats-fold-caret">▾</span>' : '') + '</span></div>' +
+'<div class="stats-fold-body">';
+if (!n) {
 html += '<div class="ta-empty">' + emptyText + '</div>';
 } else {
 html += '<div class="stats-list">';
-for (let i = rows.length - 1; i >= 0; i--) {
+for (let i = n - 1; i >= 0; i--) {
 const r = rows[i];
 html += '<div class="stats-item">' +
 '<span class="stats-item-name">' + r.main + '</span>' +
@@ -100,8 +108,31 @@ html += '<div class="stats-item">' +
 }
 html += '</div>';
 }
-return html + '</div>';
+return html + '</div></div>';
 }
+function statsFoldToggle(sec) {
+if (!sec) return;
+const key = sec.getAttribute('data-stats-fold');
+const head = sec.querySelector('.stats-fold-head');
+const open = !statsFoldOpen[key];
+statsFoldOpen[key] = open;
+sec.classList.toggle('open', open);
+if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+document.addEventListener('click', function (e) {
+const sec = e.target && e.target.closest ? e.target.closest('.stats-sec[data-stats-fold]') : null;
+if (!sec) return;
+const head = sec.querySelector('.stats-fold-head');
+if (!head || !head.contains(e.target)) return;
+statsFoldToggle(sec);
+});
+document.addEventListener('keydown', function (e) {
+if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+const head = e.target && e.target.closest ? e.target.closest('.stats-fold-head') : null;
+if (!head) return;
+e.preventDefault();
+statsFoldToggle(head.parentNode);
+});
 function fmtMDHM(ts) {
 if (!ts) return '';
 const t = new Date(ts);
@@ -317,12 +348,12 @@ return '<div class="stats-sec"><div class="stats-sec-head"><span class="stats-se
 return rpSec(myName + ' 发红包', msgs.filter(m => m && m.special === 'redpacket' && m.side === 'out'), '我还没有发过红包（红包也是心意币，去发一个试试）') +
 rpSec(escH(name) + ' 发红包', msgs.filter(m => m && m.special === 'redpacket' && m.side === 'in'), '还没有 ' + escH(name) + ' 发的红包');
 })() +
-coinRecordSection('🪙', name + '申请心意币记录', '笔',
+statsFoldSection('🪙', name + '申请心意币记录', '笔',
 msgs.filter(m => m && m.special === 'askcoin').map(m => ({
 main: '+¥' + (Number(m.askFen || 0) / 100).toFixed(2),
 sub: fmtMDHM(m.askTs || m.ts)
 })),
-escH(name) + ' 还没有向 Mochi 申请过') +
+escH(name) + ' 还没有向 Mochi 申请过', 'askcoin') +
 (function () {
 const GAME_SPECIAL = { brick: '双人打砖块', pong: '乒乓', snake: '贪吃蛇', memory: '记忆翻牌', rps: '猜拳', c4: '四子棋', ms: '合作扫雷' };
 const GAME_KIND = { rps: '猜拳', pong: 'Pong', snake: '双人贪吃蛇', gomoku: '五子棋', linkup: '连连看', match3: '消消乐', auction: '心意币拍卖会' };   // TA 主动邀请（cuddle 贴贴不算游戏）
@@ -345,20 +376,8 @@ push(m, m.text, '🎮');
 });
 const seen = new Set();
 const uniq = rows.filter(r => { const k = r.main + '|' + r.sub; if (seen.has(k)) return false; seen.add(k); return true; });
-uniq.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-let html = '<div class="stats-sec"><div class="stats-sec-head"><span class="stats-sec-title">🎮 小游戏记录</span>' +
-'<span class="stats-sec-count">' + uniq.length + ' 条</span></div>';
-if (!uniq.length) {
-html += '<div class="ta-empty">还没有小游戏记录（更多功能 → 小游戏，和 TA 玩一局试试）</div>';
-} else {
-html += '<div class="stats-list">';
-uniq.forEach(r => {
-html += '<div class="stats-item"><span class="stats-item-name">' + r.main + '</span>' +
-'<span class="stats-item-num dt">' + r.sub + '</span></div>';
-});
-html += '</div>';
-}
-return html + '</div>';
+uniq.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+return statsFoldSection('🎮', '小游戏记录', '条', uniq, '还没有小游戏记录（更多功能 → 小游戏，和 TA 玩一局试试）', 'games');
 })();
 }
 }
@@ -1617,6 +1636,7 @@ if (window.locLibTypeOf) return window.locLibTypeOf(text);
 return 'custom';
 }
 function doLocAuto() {
+if (window.nightModeActive && window.nightModeActive()) return;
 if (document.hidden || Date.now() < locWakeAt || !window.__mochiDataReady) return;
 if (store.get('loc-auto') === '0') return; // 设置「TA 自动换位」关：到点也不发（拦设置后仍残留的当次定时器）
 const companion = ['在你身边', '一直没走远', '隔着世界在你身边', '隐约在你身旁', '在你看不到的地方'];
@@ -2394,7 +2414,7 @@ document.getElementById('water-send').addEventListener('click', () => {
 if (editingNow()) return;
 const t = waterToday(); const g = waterGoal(); const sz = waterSize();
 const done = t.count >= g;
-const base = '我今天喝了 ' + t.count + ' / ' + g + ' 杯（' + (t.count * sz) + 'ml）';
+const base = '你今天喝了 ' + t.count + ' / ' + g + ' 杯（' + (t.count * sz) + 'ml）';
 const praise = libPool('water', '喝够夸奖', DEF_WATER_PRAISE);
 const tail = done ? '，' + praise[Math.floor(Math.random() * praise.length)] : '，还差 ' + (g - t.count) + ' 杯';
 if (window.chatAddIn) { try { window.chatAddIn(base + tail); } catch (e) {} }
@@ -2663,7 +2683,7 @@ document.getElementById('eat-change').addEventListener('click', () => { if (edit
 document.getElementById('eat-send').addEventListener('click', () => { if (editingNow() || eatSpinning) return; if (eatLastPick && window.chatAddIn) { try { window.chatAddIn(eatLastPick); } catch (e) {} toast('已发送'); } });
 document.getElementById('eat-add').addEventListener('click', () => { if (!window.openModal) return; window.openModal('添加菜名', '', (v) => { if (!v) return; const cur = eatCurMenu(); if (cur.menu.dishes.indexOf(v) >= 0) { toast('当前菜单已有「' + v + '」'); return; } cur.menu.dishes.push(v); cur.menus[cur.idx] = cur.menu; eatSaveMenus(cur.menus); eatDrawWheel(eatDishes()); toast('已添加到「' + cur.menu.name + '」'); }); });
 document.getElementById('eat-spin').addEventListener('click', () => { if (editingNow() || eatSpinning) return; const dishes = eatDishes(); eatSpinWheel(dishes, (dish) => { const de = document.getElementById('eat-dish'); if (de) { de.classList.add('fade'); setTimeout(() => { de.textContent = dish; de.classList.remove('fade'); }, 200); } const ce = document.getElementById('eat-comment'); const comments = DEF_EAT_COMMENTS; const comment = comments[Math.floor(Math.random() * comments.length)]; if (ce) { ce.classList.add('fade'); setTimeout(() => { ce.textContent = '\u201c' + comment + '\u201d'; ce.classList.remove('fade'); }, 200); } eatLastPick = dish + ' · ' + comment; eatPushHistory(dish); }); });
-document.getElementById('eat-askta').addEventListener('click', () => { if (editingNow() || eatSpinning) return; if (!eatLastPick) { eatLastPick = eatPick(); } if (!eatLastPick) { toast('当前菜单是空的，先添加菜名'); return; } const m = eatLastPick.match(/^(.+?) ·/); const dish = m ? m[1] : eatLastPick; const msg = EAT_ASK_MSGS[Math.floor(Math.random() * EAT_ASK_MSGS.length)].replace('{0}', dish); if (window.chatAddIn) { try { window.chatAddIn(msg); } catch (e) {} toast('已发送'); } });
+document.getElementById('eat-askta').addEventListener('click', () => { if (editingNow() || eatSpinning) return; if (!eatLastPick) { eatLastPick = eatPick(); } if (!eatLastPick) { toast('当前菜单是空的，先添加菜名'); return; } const m = eatLastPick.match(/^(.+?) ·/); const dish = m ? m[1] : eatLastPick; const msg = EAT_ASK_MSGS[Math.floor(Math.random() * EAT_ASK_MSGS.length)].replace('{0}', dish); if (window.chatSendMsg) { try { window.chatSendMsg(msg); } catch (e) {} toast('已发送'); } });
 let eatEditIdx = 0;
 function eatEsc(s) { return String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
 function eatRenderMenuChips() {
@@ -3435,7 +3455,7 @@ document.getElementById('piggy-reply-send').addEventListener('click', () => {
 if (editingNow()) return;
 const inp = document.getElementById('piggy-reply-in');
 const t = inp ? String(inp.value || '').trim() : '';
-if (t && window.chatAddIn) { try { window.chatAddIn(t); } catch (e) {} toast('已回复'); }
+if (t && window.chatSendMsg) { try { window.chatSendMsg(t); } catch (e) {} toast('已回复'); }
 piggyCloseCare();
 });
 document.getElementById('piggy-reply-skip').addEventListener('click', piggyCloseCare);
@@ -3470,7 +3490,7 @@ const oldCur = g.get('piggy-coin-goal-cur'); if (oldCur) ds.set('piggy-coin2-goa
 try { g.set('piggy-coin2-migrated', '1'); } catch (e) {}
 }
 const COIN_TA_COINS = [5.2, 5.21, 6.66, 8.88, 9.99, 13.14, 52, 52.1];
-const COIN_TA_NOTES = ['偷偷塞了一把心意币', 'TA 的心意币变多了', '帮你多存了一点', '嘿嘿，攒着别乱花'];
+const COIN_TA_NOTES = ['偷偷塞了一把心意币', '你的心意币变多了', '帮你多存了一点', '嘿嘿，攒着别乱花'];
 const COIN_IN_MSG = ['心意币存进来啦', '又攒下一点，真棒', '小金币替你看管着', '离攒币心愿更近了', '安心，都替你收好'];
 const COIN_FULL_MSG = ['攒够心意币啦！！', '目标达成，想好怎么花了吗'];
 const COIN_OUT_MSG = ['取回心意币啦', '金币不多，省着点哦'];
@@ -3571,7 +3591,7 @@ const fen = Math.round(amt * 100);
 try { if (window.giftWalletChange) window.giftWalletChange(-fen, 0); } catch (e) {}
 const log = piggyCoinLog(); log.push({ t: Date.now(), type: 'in', amt: amt, note: note || '' });
 piggySaveCoinLog(log); piggyCoinRender();
-if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我往存钱罐存了 ¥' + piggyFmt(amt), {}); } catch (e) {} }
+if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true }); } catch (e) {} }
 const st = piggyCoinGoalState(); const bal = piggyCoinBal(log);
 if (st.act.g && !st.act.g.done) {
 if (bal >= st.act.g.a) {
@@ -3590,7 +3610,7 @@ const fen = Math.round(amt * 100);
 try { if (window.giftWalletChange) window.giftWalletChange(fen, 0); } catch (e) {}
 const log = piggyCoinLog(); log.push({ t: Date.now(), type: 'out', amt: amt, note: note || '' });
 piggySaveCoinLog(log); piggyCoinRender();
-if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我从存钱罐取了 ¥' + piggyFmt(amt), {}); } catch (e) {} }
+if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我从存钱罐取了 ¥' + piggyFmt(amt), { nightAllow: true }); } catch (e) {} }
 piggyCoinShowMsg(piggyPick(COIN_OUT_MSG));
 }
 function piggyCoinProbGet() {
@@ -3620,7 +3640,7 @@ piggySaveCoinLog(log); piggyCoinRender();
 vibrate([20, 40, 20]);
 try {
 const who = (window.chatPartnerName ? window.chatPartnerName() : '') || 'TA';
-if (window.chatAddSystem) window.chatAddSystem(who + ' 往存钱罐存了 ¥' + piggyFmt(amt), {});
+if (window.chatAddSystem) window.chatAddSystem(who + ' 往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true });
 } catch (e) {}
 setTimeout(function () { piggyCoinShowMsg((window.taFit ? window.taFit(note) : note) + ' ¥' + piggyFmt(amt)); }, 300);
 }

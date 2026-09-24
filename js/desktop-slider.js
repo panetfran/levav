@@ -69,6 +69,67 @@ pages: dotsCache.length // 圆点数＝桌面页数（随手可得，不额外�
 };
 requestAnimationFrame(tick);
 }
+const pageScrollGuard = (function () {
+function inkBottom(sl, pageTop) {
+const stopAt = sl.clientHeight + 1; // 与调用方那句比较共用同一阈值，早退才等价
+let maxB = 0;
+const all = sl.querySelectorAll('*');
+for (let i = 0; i < all.length; i++) {
+const el = all[i];
+if (el.firstElementChild) continue;
+const r = el.getBoundingClientRect();
+const b = r.bottom - pageTop;
+if (r.height <= 0 || b <= maxB) continue;
+const c = getComputedStyle(el);
+if (c.display === 'none' || c.visibility === 'hidden') continue;
+if (c.position === 'absolute' || c.position === 'fixed') continue;
+maxB = b;
+if (maxB > stopAt) return maxB; // 已经证明「有看得见的内容越过可视底」＝不用再扫
+}
+return maxB;
+}
+const verdicts = new WeakMap();
+let timer = null, retries = 0;
+function later(ms, force) { clearTimeout(timer); timer = setTimeout(function () { run(force); }, ms); }
+function run(force) {
+const slides = getSlides();
+let skipped = false;
+for (let i = 0; i < slides.length; i++) {
+const sl = slides[i];
+if (!sl.clientHeight || getComputedStyle(sl).visibility === 'hidden') { skipped = true; continue; }
+const sh = sl.scrollHeight, ch = sl.clientHeight, over = sh - ch;
+const seen = verdicts.get(sl);
+let blind;
+if (!force && seen && seen.sh === sh && seen.ch === ch) {
+blind = seen.blind; // 几何没变＝裁决没变，省掉整棵子树
+} else {
+try { if (window.__mochiPhase) window.__mochiPhase('desk-guard'); } catch (e0) {}
+blind = over > 0 && inkBottom(sl, sl.getBoundingClientRect().top - sl.scrollTop) <= sl.clientHeight + 1;
+verdicts.set(sl, { sh: sh, ch: ch, blind: blind });
+}
+if (blind) {
+if (sl.style.overflowY !== 'hidden') sl.style.overflowY = 'hidden';
+if (sl.scrollTop) sl.scrollTop = 0;
+} else {
+if (sl.style.overflowY) sl.style.overflowY = '';   // 回落到 CSS 的 auto
+if (over <= 0 && sl.scrollTop) sl.scrollTop = 0;
+}
+}
+if (skipped && retries < 8) { retries++; later(800); } else if (!skipped) retries = 0;
+}
+return { run: run, later: later };
+})();
+pageScrollGuard.run(true);
+pages.addEventListener('scroll', () => pageScrollGuard.later(300), true);
+pages.addEventListener('load', () => pageScrollGuard.later(400), true);
+window.addEventListener('resize', () => pageScrollGuard.later(120, true));
+document.addEventListener('visibilitychange', () => { if (!document.hidden) pageScrollGuard.later(80); });
+try {
+new MutationObserver(() => pageScrollGuard.later(400, true)).observe(pages, { childList: true, subtree: true });
+} catch (e) {}
+try { document.addEventListener('mochi-restore-done', () => pageScrollGuard.later(400, true)); } catch (e) {}
+pageScrollGuard.later(900, true);
+setTimeout(() => pageScrollGuard.run(true), 2600);
 const SW_KEY = 'xy-home-v2:__diag-swperf';
 const SW_FRAMES = 30;
 function swSample() {
@@ -101,12 +162,18 @@ requestAnimationFrame(tick);
 let swOn = false;
 let rafId = 0;
 let settleTimer = null;
+let swipeBlurTimer = null; // #976：滑页暂停壁纸模糊的收尾计时
 function syncFrame() {
 rafId = 0;
 sync();
 }  pages.addEventListener('scroll', () => {
 if (!rafId) rafId = requestAnimationFrame(syncFrame);
 perfSample(); // #690：翻页现场记一段帧耗时（静止时不跑）
+try {
+document.documentElement.classList.add('desk-swiping');
+clearTimeout(swipeBlurTimer);
+swipeBlurTimer = setTimeout(function () { document.documentElement.classList.remove('desk-swiping'); }, 150);
+} catch (e0) {}
 clearTimeout(settleTimer);
 settleTimer = setTimeout(sync, 80);
 }, { passive: true });
@@ -126,6 +193,7 @@ if (!phonePage.hidden && pages.clientWidth) {
 refreshCache();
 pages.scrollLeft = idx * pageStep();
 sync();
+pageScrollGuard.later(60); // #989：回桌面复核一次（残留滚动量在进桌面当帧就修掉）
 swSample(); // #884：从聊天/其他页切回桌面那一刻现场采一段帧耗时
 }
 });

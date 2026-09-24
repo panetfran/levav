@@ -385,7 +385,7 @@ const replyText = type === 'typeb' && options
 : '【多人决定】' + question + '\n' + lines.join('\n');
 if (gdPanelFromGroup && window.gcSendDecisionText) window.gcSendDecisionText(replyText); // 群聊那一路自己响 playSfxGc('in')，此处不补（补了就是两声）
 else if (window.chatAddIn) {
-window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true }); // FIX 2026-09-15 #492 多人决定结果是用户主动触发，跟底不吃 in 侧钉住闸（chat.js follow 通道）；FIX 2026-09-15 #544 dedupExempt 决定答案豁免收件侧去重（同 decision.js #544 口径）
+window.chatAddIn(replyText, { enter: true, silent: true, follow: true, dedupExempt: true, nightAllow: true }); // FIX 2026-09-15 #492 多人决定结果是用户主动触发，跟底不吃 in 侧钉住闸（chat.js follow 通道）；FIX 2026-09-15 #544 dedupExempt 决定答案豁免收件侧去重（同 decision.js #544 口径）
 try { if (window.playSfx) window.playSfx('in'); } catch (e) {} // FIX 2026-09-21 #968 多人决定结果响收消息音效
 }
 }
@@ -403,20 +403,42 @@ let gdIdleId = window.requestIdleCallback ? window.requestIdleCallback(gdRunSett
 const gdSettleT = setTimeout(gdRunSettle, 80);
 }, thinkTime * 1000);
 }
-function renderHistory() {
-const el = document.getElementById('gd-history');
-if (!el) return;
-const h = loadHistory();
-el.innerHTML = h.length
-? h.map(r => {
+function fmtDayKey(ts) { const d = new Date(ts); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+function fmtDayLabel(ts) {
+const d = new Date(ts); const now = new Date();
+const md = (d.getMonth() + 1) + '月' + d.getDate() + '日';
+return d.getFullYear() === now.getFullYear() ? md : d.getFullYear() + '年' + md;
+}
+function histItemHtml(r) {
 const resultsStr = (r.members || []).map(m => m + '：' + ((r.results || {})[m] || '')).join('\n');
 return '<div class="tc-listitem">' +
 '<div class="tc-li-q">' + esc(r.question) + '</div>' +
 (r.options && r.options.length ? '<div class="dc-h-options">选项：' + r.options.map((o, i) => (i + 1) + '. ' + esc(o)).join('，') + '</div>' : '') +
 '<div class="dc-h-result gd-pre">' + esc(resultsStr) + '</div>' +
 '<div class="dc-h-time">' + fmtDT(r.ts) + '</div></div>';
-}).join('')
-: ((window.mochiDataPending && window.mochiDataPending()) ? window.mochiLoadingHtml('多人决定记录') : '<div class="ta-empty">暂无多人决定记录</div>');
+}
+function renderHistory() {
+const el = document.getElementById('gd-history');
+if (!el) return;
+const h = loadHistory();
+if (!h.length) { el.innerHTML = ((window.mochiDataPending && window.mochiDataPending()) ? window.mochiLoadingHtml('多人决定记录') : '<div class="ta-empty">暂无多人决定记录</div>'); return; }
+const today = fmtDayKey(Date.now());
+const todayItems = [], pastDays = {}, pastKeys = [];
+h.forEach(r => {
+if (!r || r.ts === undefined) return;
+const k = fmtDayKey(r.ts);
+if (k === today) { todayItems.push(r); return; }
+if (!pastDays[k]) { pastDays[k] = { label: fmtDayLabel(r.ts), items: [] }; pastKeys.push(k); }
+pastDays[k].items.push(r);
+});
+const pastCount = pastKeys.reduce((n, k) => n + pastDays[k].items.length, 0);
+let html = todayItems.length ? todayItems.map(histItemHtml).join('') : '<div class="dc-h-day-empty">今天暂无记录</div>';
+if (pastCount) {
+html += '<details class="dc-h-more"><summary class="dc-h-more-sum">更早记录<span class="dc-h-more-cnt">' + pastCount + ' 条</span></summary><div class="dc-h-more-body">' +
+pastKeys.map(k => '<div class="dc-h-day"><div class="dc-h-day-label">' + pastDays[k].label + '</div>' + pastDays[k].items.map(histItemHtml).join('') + '</div>').join('') +
+'</div></details>';
+}
+el.innerHTML = html;
 }
 if (window.mochiOnDataReady) window.mochiOnDataReady(function () { try { renderHistory(); } catch (e) {} });
 groupDecisionPanelRef = openPanel;

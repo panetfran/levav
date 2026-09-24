@@ -7,6 +7,9 @@ function gGet(k) {
 try { const v = window.xyStore ? window.xyStore(GNS).get(k) : null; if (v !== null && v !== undefined) return v; } catch (e) {}
 try { return store.get(k); } catch (e) { return null; }
 }
+function bgNoDedup() {
+try { return gGet('bg-notify-nodedup') === '1'; } catch (e) { return false; }
+}
 function gSet(k, v) {
 try { if (window.xyStore) window.xyStore(GNS).set(k, v); } catch (e) {}
 }
@@ -373,7 +376,7 @@ kaHbTimer = setInterval(kaHbTick, 30000);
 function kaHbStop() {
 if (kaHbTimer) { clearInterval(kaHbTimer); kaHbTimer = null; }
 }
-let kaEv = { stall: 0, died: 0 };
+let kaEv = { stall: 0, died: 0, diedAt: [] };
 try {
 const _evSaved = gGet('__ka-ev');
 if (_evSaved && String(_evSaved).charAt(0) === '{') {
@@ -382,6 +385,25 @@ if (_ev && typeof _ev === 'object') kaEv = Object.assign(kaEv, _ev);
 }
 } catch (e) {}
 function kaEvSave() { try { gSet('__ka-ev', JSON.stringify(kaEv)); } catch (e) {} }
+let kaDiedNotice = false; // #1199 TDZ 闸：必须声明在 sessBootCheck() 之前
+const SESS_KEY = '__sess-alive';
+function sessMark(closed) { try { gSet(SESS_KEY, JSON.stringify({ t: Date.now(), closed: !!closed })); } catch (e) {} }
+function sessBootCheck() {
+try {
+const prev = JSON.parse(gGet(SESS_KEY) || 'null');
+if (prev && typeof prev.t === 'number' && !prev.closed && (Date.now() - prev.t) < 30 * 60 * 1000) {
+kaEv.died++;
+kaEv.diedAt = kaEv.diedAt || [];
+kaEv.diedAt.push(Date.now());
+if (kaEv.diedAt.length > 30) kaEv.diedAt.shift();
+kaEvSave();
+kaDiedNotice = true;
+}
+} catch (e) {}
+sessMark(false);
+}
+try { window.addEventListener('pagehide', function () { sessMark(true); }); } catch (e) {}
+try { document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') sessMark(false); }); } catch (e) {}
 document.addEventListener('visibilitychange', function () {
 if (document.visibilityState === 'hidden') {
 if (!keepEnabled) return;
@@ -392,6 +414,9 @@ kaHb.resumed = Date.now();
 if (kaHb.ts && kaHb.resumed - kaHb.ts > 90000) {
 kaEv.stall++; kaEvSave();
 try { if (keepAudio && keepAudio.el && !kaCustomAudio) keepAudio.el.volume = KA_VOL_MAX; } catch (e) {}
+if (kaHb.hid && kaHb.resumed - kaHb.hid >= 600000) {
+toast('⚠ 挂后台太久，保活被系统冻结截断过\n这段时间的后台消息/后台弹窗可能失效（回本页已自动恢复）\n经常失效：彻底关闭网页重新打开，再把「后台保活」「后台弹窗」开关重新打开', 6000);
+}
 }
 try { if (window.idbSet) window.idbSet(KA_HB_KEY, kaHb); } catch (e) {}
 }
@@ -399,8 +424,18 @@ kaHbStop();
 }
 });
 try {
+sessBootCheck(); // #961：通用存活标记启动判定（含正常收尾标记，与保活开关无关）
 if (window.idbGet) window.idbGet(KA_HB_KEY).then(function (old) {
-if (old && old.n > 0 && !old.resumed && !old.bye) { kaEv.died++; kaEvSave(); }
+if (kaDiedNotice) return;
+if (old && old.n > 0 && !old.resumed && !old.bye) {
+kaEv.died++;
+kaEv.diedAt = kaEv.diedAt || [];
+kaEv.diedAt.push(Date.now());
+if (kaEv.diedAt.length > 30) kaEv.diedAt.shift();
+kaEvSave();
+kaDiedNotice = true;
+tryShowKaDiedNotice();
+}
 }).catch(function () {});
 } catch (e) {}
 window.addEventListener('pagehide', function () {
@@ -408,6 +443,134 @@ if (!kaHb) return;
 kaHb.bye = 1;
 try { if (window.idbSet) window.idbSet(KA_HB_KEY, kaHb); } catch (e) {}
 });
+let kaPermNoticeArmed = false;
+function kaLivenessOn() {
+try { return !!keepEnabled || !!notifyEnabled; } catch (e) { return false; }
+}
+function kaNoticeCool(key, ms) {
+try { const t = Number(gGet(key)) || 0; return t > 0 && (Date.now() - t) < ms; } catch (e) { return false; }
+}
+function kaNoticeStamp(key) { try { gSet(key, String(Date.now())); } catch (e) {} }
+function kaNoticeAfterSplash(fn) {
+try {
+if (chanSplashGone()) { fn(); return; }
+const s = document.getElementById('splash');
+if (!s) { fn(); return; }
+let done = false;
+let mo = null, moBody = null, tmr = null;
+const cleanup = function () {
+done = true;
+try { if (mo) mo.disconnect(); } catch (e) {}
+try { if (moBody) moBody.disconnect(); } catch (e) {}
+try { if (tmr) clearTimeout(tmr); } catch (e) {}
+};
+const fire = function () { if (done) return; cleanup(); try { fn(); } catch (e) {} };
+if (typeof MutationObserver === 'function') {
+mo = new MutationObserver(function () { if (chanSplashGone()) fire(); });
+try { mo.observe(s, { attributes: true, attributeFilter: ['class', 'hidden'] }); } catch (e) {}
+moBody = new MutationObserver(function () { if (!s.isConnected) fire(); });
+try { moBody.observe(document.body, { childList: true }); } catch (e) {}
+}
+tmr = setTimeout(cleanup, 90000);
+} catch (e) { try { fn(); } catch (e2) {} }
+}
+const MEM_NOTE_OFF = '__ka-mem-note-off';
+function memNoteOff() { try { return gGet(MEM_NOTE_OFF) === '1'; } catch (e) { return false; } }
+function recentDiedCount() {
+try {
+const cut = Date.now() - 48 * 3600 * 1000;
+const list = Array.isArray(kaEv.diedAt) ? kaEv.diedAt : [];
+const keep = list.filter(function (t) { return typeof t === 'number' && t >= cut; });
+if (keep.length !== list.length) { kaEv.diedAt = keep; kaEvSave(); }
+return keep.length;
+} catch (e) { return 0; }
+}
+const MEM_HOW_TO = '页面在后台被手机收回，是系统的省电与后台管控在做主，网站拦不住——但下面几条是真能少发生：\n\n① 别从「最近任务」把本站划掉（划掉＝你亲手关掉，回来一样要重载）。\n② 系统设置 → 应用 → 你用的浏览器 → 省电/电池 → 选「无限制 / 允许后台活动」；有「后台管理 / 自启动」的也一并设为允许。\n③ 最近任务里长按本站卡片选「锁定」（或小锁图标），一键清理后台时会跳过它。\n④ 不用时把 设置→系统 的「后台保活」关掉（它靠一直放近无声音频续命，本身也吃内存）。\n⑤ 设置→工具→「查看存储」清掉最占地方的一项（表情包大图/旧聊天记录，删前先导出备份）——页面越轻，越不容易被系统挑中收回。\n\n被收回不会丢数据：回到本页会自动重载接上，保活在你碰一下页面时自动恢复。';
+function gotoStorageView() {
+try {
+const t = document.querySelector('.tabbar .tab[data-page="page-setting"]');
+if (t) t.click();
+setTimeout(function () {
+try {
+const tg = document.querySelector('#set-tabs .them-tab[data-sec="tools"]');
+if (tg) tg.click();
+} catch (e) {}
+setTimeout(function () {
+try { const r = document.getElementById('row-storage-view'); if (r && r.scrollIntoView) r.scrollIntoView({ block: 'center' }); } catch (e) {}
+}, 300);
+}, 350);
+} catch (e) {}
+}
+function showMemWarnBar(recent) {
+try {
+if (memNoteOff()) return;
+if (document.getElementById('mem-warn-bar')) return;
+const b = document.createElement('div');
+b.className = 'ver-update-bar';
+b.id = 'mem-warn-bar';
+b.innerHTML = '<span class="vub-txt"></span>'
++ '<span class="vub-act" id="mem-warn-how">怎么清</span>'
++ '<span class="vub-act" id="mem-warn-off">不再提示</span>'
++ '<span class="vub-act vub-close" id="mem-warn-x" role="button" aria-label="关闭本条提示">×</span>';
+b.querySelector('.vub-txt').textContent = '近两天有 ' + recent + ' 次，这个页面在后台被手机收回后重新加载——切回来白一下/自动刷新就是它。是系统的省电与内存管控在做主，不是网站坏了，数据不会丢';
+const close = function () { try { b.hidden = true; } catch (e) {} };
+const how = b.querySelector('#mem-warn-how');
+if (how) how.addEventListener('click', function (ev) {
+try { ev.stopPropagation(); } catch (e) {}
+try {
+const ctl = window.openModal('怎么让它少被收回', '', function () { gotoStorageView(); }, { noInput: true, staticText: MEM_HOW_TO, big: true });
+if (ctl && ctl.okText) ctl.okText('去清存储');
+} catch (e) {}
+});
+const off = b.querySelector('#mem-warn-off');
+if (off) off.addEventListener('click', function (ev) {
+try { ev.stopPropagation(); } catch (e) {}
+try { gSet(MEM_NOTE_OFF, '1'); } catch (e) {}
+close();
+});
+const x = b.querySelector('#mem-warn-x');
+if (x) x.addEventListener('click', function (ev) {
+try { ev.stopPropagation(); } catch (e) {}
+kaNoticeStamp('__ka-mem-note-at'); // 明确关掉＝这一轮冷却重新计时，不再当场复弹
+close();
+});
+(document.body || document.documentElement).appendChild(b);
+setTimeout(close, 60000); // 60s 自动收起，不常驻
+} catch (e) {}
+}
+function tryShowKaDiedNotice() {
+if (!kaDiedNotice) return;
+if (memNoteOff()) { kaDiedNotice = false; return; }
+try { if (document.visibilityState !== 'visible') return; } catch (e) { return; }
+const recent = recentDiedCount();
+if (recent >= 3) {
+if (kaNoticeCool('__ka-mem-note-at', 7 * 24 * 3600 * 1000)) { kaDiedNotice = false; return; }
+kaDiedNotice = false;
+kaNoticeStamp('__ka-mem-note-at');
+kaNoticeAfterSplash(function () { showMemWarnBar(recent); });
+return;
+}
+if (kaNoticeCool('__ka-died-note-at', 12 * 3600 * 1000)) { kaDiedNotice = false; return; }
+kaDiedNotice = false;
+kaNoticeStamp('__ka-died-note-at');
+toast('⚠ 刚才这个页面在后台被手机收回过一次（系统的省电/内存管控在做主）——所以切回来会白一下、重新加载。这不是网站坏了，也不会丢数据。想少发生：①别从最近任务划掉本站 ②设置→系统 关掉「后台保活」③设置→工具→「查看存储」清掉最占地方的一项。');
+}
+function nbPermPendingNotice() {
+try { if (!notifyEnabled) return; } catch (e) { return; }
+let p = 'default';
+try { p = nbPermState(); } catch (e) { return; }
+if (p !== 'default' && p !== 'denied') return;   // 已授权 / 本机无通知能力（unsupported）都不在此提示
+if (kaNoticeCool('__nb-perm-note-at', 12 * 3600 * 1000)) return;
+try { if (document.visibilityState !== 'visible') return; } catch (e) { return; }
+kaNoticeStamp('__nb-perm-note-at');
+toast(p === 'denied'
+? '⚠「后台通知」开关开着，但浏览器还挡着本站的通知权限\n地址栏左侧图标 → 网站设置 → 通知 → 允许（允许后自动生效，不用再点开关）\n这是权限限制，不是开关坏了'
+: '⚠「后台通知」开关开着，但浏览器还没给通知权限\n地址栏左侧图标 → 网站设置 → 通知 → 允许（没允许之前，后台消息不会弹窗）\n这是权限限制，不是开关坏了', 7000);
+}
+try {
+if (kaDiedNotice) kaNoticeAfterSplash(tryShowKaDiedNotice);
+setTimeout(function () { kaPermNoticeArmed = true; kaNoticeAfterSplash(nbPermPendingNotice); }, 20000);
+} catch (e) {}
 window.__kaProbe = function () {
 let audio = null, ms = null;
 try { audio = keepAudio && keepAudio.el ? { paused: !!keepAudio.el.paused, volume: keepAudio.el.volume, loop: !!keepAudio.el.loop } : null; } catch (e) {}
@@ -490,7 +653,12 @@ hold = !!(md && String(md.title) === 'Mochi 后台保活');
 }
 } catch (e) { hold = true; }
 if (hold) {
-try { if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
+try {
+if (navigator.mediaSession && navigator.mediaSession.playbackState !== 'playing') {
+try { if (window.__mochiPhase) window.__mochiPhase('ka-ms'); } catch (e0) {}
+navigator.mediaSession.playbackState = 'playing';
+}
+} catch (e) {}
 }
 if (kaPauseStreak && Date.now() - kaLastPlayAt > kaStableMs()) kaPauseStreak = 0;
 return;
@@ -622,11 +790,32 @@ wakeSentinel = sentinel;
 document.addEventListener('music-media-release', function () {
 if (keepEnabled) { setKeepMediaSession(); syncKeepForMusic(); }
 });
+function kaOpenEnableHints() {
+try {
+if (typeof window.openModal !== 'function') return;
+window.openModal('后台保活已开启 · 三条必知', '', function () {}, {
+noInput: true, pillSubmit: true,
+pills: [{ label: '知道了', value: 'ok' }],
+staticText: '保活＝页面在后台持续播放一段近无声音频，让系统不冻结本页。有两条硬限制（手机/浏览器限制，不是网站故障）：\n\n① 别的 App 会把保活截断：刷视频、听歌等会占用手机音频通道，保活音频被暂停＝保活失效，回到本页才自动恢复；被截断期间后台消息收不到、后台弹窗不弹。\n\n② 后台挂久了会失效：系统省电/内存策略会把挂久的页面冻结甚至丢弃重载（Edge「睡眠标签页」/Chrome「内存节省程序」约 30 分钟就会丢）。失效后请彻底关闭网页重新打开，再把「后台保活」「后台弹窗」开关重新打开。\n\n③ 开着它时页面不会在后台自动换新版（换版要重载页面、会把后台运行打断）：顶部出现「检测到新版本」条时，你自己挑时间点「刷新使用新版」即可；不点也不影响使用，下次彻底关闭网页重开会自然换到新版。'
+});
+} catch (e) {}
+}
 const kaBtn = document.getElementById('bg-keepalive');
 function syncKeepUI() { if (kaBtn) kaBtn.checked = keepEnabled; }
+let kaInputAt = 0;
+try {
+const kaMarkInput = function (e) {
+try { if (e && e.isTrusted === false) return; } catch (er) {}
+kaInputAt = Date.now();
+};
+['pointerdown', 'pointerup', 'touchstart', 'touchend', 'mousedown', 'mouseup', 'click', 'keydown'].forEach(function (t) {
+try { document.addEventListener(t, kaMarkInput, { passive: true, capture: true }); } catch (err) {}
+});
+} catch (e) {}
 function kaUserGesture(e) {
 try {
 if (e && e.isTrusted === false) return false;
+if (Date.now() - kaInputAt <= 1200) return true;
 if (navigator.userActivation && navigator.userActivation.hasBeenActive === false) return false;
 } catch (er) {}
 return true;
@@ -638,7 +827,7 @@ keepUserTouched = true; // #88：手动动过 → 回填后不再重读覆盖
 keepEnabled = kaBtn.checked;
 gSet('bg-keepalive', keepEnabled ? '1' : '0');
 gSet('__ka-user-off', keepEnabled ? '0' : '1');
-if (keepEnabled) startKeepAlive(true);
+if (keepEnabled) { startKeepAlive(true); kaOpenEnableHints(); }
 else stopKeepAlive(true);
 });
 }
@@ -865,40 +1054,76 @@ pageFallback();
 } catch (e) { note('none'); resolve(false); }
 });
 }
-function requestNotifyPermission(cb, failCb) {
+function requestNotifyPermission(cb, failCb, opts) {
+const quiet = !!(opts && opts.quiet);
+const say = function (m) { if (!quiet) toast(m); };
+const fail = function (why) { if (failCb) failCb(why); };
 if (!('Notification' in window)) {
 const _isIOS = !!(window.mochiDevice || {}).isIOS;
-toast(_isIOS
-? 'iPhone 网页版不支持系统通知\n请安装到主屏幕后由系统接管'
-: '当前浏览器不支持系统通知\n请改用 Chrome/Edge，或添加到主屏幕后由系统接管');
-if (failCb) failCb();
+say(_isIOS
+? 'iPhone / iPad 的网页拿不到系统通知\n（添加到主屏幕也不保证）请用「桌面消息弹窗」'
+: '当前浏览器不支持系统通知\n请改用 Chrome/Edge 打开本站（安卓或电脑都行）');
+fail('unsupported');
 return;
 }
 if (Notification.permission === 'granted') { if (cb) cb(); return; }
-if (Notification.permission === 'default') {
-Notification.requestPermission().then(function (p) {
-if (p === 'granted') { if (cb) cb(); }
-else {
-toast('未获得通知权限，后台消息无法弹窗');
-if (failCb) failCb();
+if (Notification.permission !== 'default') {
+say('通知权限被拒绝，请在浏览器设置中允许通知');
+fail('denied');
+return;
 }
-}).catch(function () { if (failCb) failCb(); });
-} else {
-toast('通知权限被拒绝，请在浏览器设置中允许通知');
-if (failCb) failCb();
+try {
+let settled = false;
+const once = function (p) {
+if (settled) return;
+settled = true;
+if (p === 'granted') { if (cb) cb(); return; }
+if (p === 'denied') { say('通知权限被拒绝，请在浏览器设置中允许通知'); fail('denied'); return; }
+say('还没拿到通知权限：请在浏览器弹窗里点「允许」（地址栏左侧图标 → 网站设置 → 通知）');
+fail('pending');
+};
+const ret = Notification.requestPermission(once);
+if (ret && typeof ret.then === 'function') {
+ret.then(function (p) { once(p); }, function () { once('error'); });
 }
+} catch (e) { fail('error'); }
+}
+const ndBtn = document.getElementById('bg-notify-nodedup');
+let ndUserTouched = false;
+function syncNoDedupUI() { if (ndBtn) ndBtn.checked = (gGet('bg-notify-nodedup') === '1'); }
+if (ndBtn) {
+syncNoDedupUI();
+ndBtn.addEventListener('change', function (e) {
+if (!kaUserGesture(e)) { syncNoDedupUI(); return; }
+ndUserTouched = true;
+if (ndBtn.checked) { gSet('bg-notify-nodedup', '1'); toast('已开启：以后每条消息都单独弹通知（内容重复时会连环弹）'); }
+else { gSet('bg-notify-nodedup', '0'); toast('已关闭：恢复去重（内容相同或近期弹过的只弹一条）'); }
+});
 }
 const nbBtn = document.getElementById('bg-notify');
 function syncNotifyUI() { if (nbBtn) nbBtn.checked = notifyEnabled; }
-if (nbBtn) {
-nbBtn.addEventListener('change', function (e) {
-if (!kaUserGesture(e)) { syncNotifyUI(); try { nbBtn.checked = notifyEnabled; } catch (er) {} return; }
-notifyUserTouched = true; // #88：手动动过 → 回填后不再重读覆盖
-if (nbBtn.checked) {
-requestNotifyPermission(function () {
+function nbPermState() {
+try { return ('Notification' in window) ? Notification.permission : 'unsupported'; } catch (e) { return 'unsupported'; }
+}
+const NB_SETTLE_MS = 12000; // 待决等待上限：覆盖「系统弹窗弹着、用户过几秒才点允许」的正常窗口
+let nbAttempt = 0;          // 每轮「用户动开关」的代号：回调/轮询只认自己那一轮，过期即弃
+let nbSettleTimer = null;
+let nbSettlePoke = null;    // 待决轮询的「探一脚」入口（回前台/重新聚焦时立刻补查）
+let nbAppliedFor = 0;       // 已落地的轮次（granted 可能从回调与轮询两边同时到）
+function nbAttemptNext() {
+nbAttempt++;
+if (nbSettleTimer) { clearTimeout(nbSettleTimer); nbSettleTimer = null; }
+nbSettlePoke = null;
+return nbAttempt;
+}
+function nbRevertOff() { notifyEnabled = false; gSet('bg-notify', '0'); syncNotifyUI(); }
+function nbApplyOn(my) {
+if (my !== nbAttempt || nbAppliedFor === my) return;
+nbAppliedFor = my;
 notifyEnabled = true;
 gSet('bg-notify', '1');
 syncNotifyUI();
+nbSyncPermWarn();   // #1014：权限已到位，撤掉行下那条标红说明（否则权限好了还挂着「还挡着」）
 showSysNotification('通知已开启', { body: '后台消息提醒将正常弹窗' });
 if (kaIsIOS()) setTimeout(function () { toast('iPhone 提示：受系统限制，后台弹窗不保证弹出；消息不会丢，回来自动补看'); }, 1600);
 setTimeout(function () {
@@ -920,16 +1145,160 @@ if (location.protocol !== 'https:' && location.hostname !== 'localhost' && locat
 toast('提醒：需 HTTPS 访问，浏览器才允许通知');
 }
 }, 400);
-}, function () {
-notifyEnabled = false;
-gSet('bg-notify', '0');
-syncNotifyUI();
-});
-} else {
-notifyEnabled = false;
-gSet('bg-notify', '0');
-syncNotifyUI();
 }
+function nbNoticeOnce(key, msg) {
+try { if (kaNoticeCool(key, 60 * 1000)) return; kaNoticeStamp(key); } catch (e) {}
+toast(msg, 7000);
+}
+function nbPermWarnText() {
+const p = nbPermState();
+if (p === 'unsupported') {
+return (window.mochiDevice || {}).isIOS
+? '⚠ 本机拿不到系统通知（iPhone / iPad 平台限制，添加到主屏幕也不保证）：请用「桌面消息弹窗」的应用内横幅'
+: '⚠ 本机浏览器没有通知能力（小米 / vivo / OPPO 自带浏览器、UC、夸克、Via 常见如此）：请改用 Chrome / Edge 打开本站';
+}
+if (!notifyEnabled) return '';
+if (p === 'denied') return '⚠ 浏览器已把本站通知记成「屏蔽」（授权框反复弹出后 Chrome 会自动挡，多半不是你点了拒绝）。两条路恢复：① 地址栏左侧图标 → 权限 → 通知 → 改「允许」；② Chrome 右上角 ⋮ → 设置 → 网站设置 → 通知 → 「添加网站例外」→ 输入本站网址。改了仍不弹＝Chrome 对本站的自动屏蔽无法解除：请换 Edge / 电脑打开本站（聊天记录可在 设置 → 通用 导出 / 导入 迁移）。允许后自动生效，不用再点开关（此权限与「经期提醒」共用）；从主屏幕图标打开的（已安装应用）：长按图标卸载后重新「添加到主屏幕」即可重置授权';
+if (p === 'default') return '⚠ 还没给本站通知权限：点「测试」或开关会请求一次；没弹授权框＝Chrome 对弹过多次的站静默拒绝。两条路手动恢复：① 地址栏左侧图标 → 权限 → 通知 → 允许；② Chrome ⋮ → 设置 → 网站设置 → 通知 → 「添加网站例外」→ 输入本站网址。允许后自动生效（此权限与「经期提醒」共用）；从主屏幕图标打开的（已安装应用）：卸载后重新「添加到主屏幕」可重置授权';
+return '';
+}
+function nbSyncPermWarn() {
+try {
+const el = document.getElementById('bg-notify-perm-warn');
+if (!el) return;
+const t = nbPermWarnText();
+el.textContent = t;
+el.hidden = !t;
+} catch (e) {}
+}
+let nbWaitingGrant = false;   // 意图在、权限没到位＝正等一个授权（等到了自动生效）
+let nbWatchTimer = null;
+let nbWatchFor = -1;          // 等待窗属于哪一轮（同轮不重挂，见 nbArmWatch）
+function nbArmWatch(my) {
+const p0 = nbPermState();
+const want = !!notifyEnabled && (p0 === 'denied' || p0 === 'default');
+if (nbWatchTimer && nbWaitingGrant && nbWatchFor === my && want) return;
+if (nbWatchTimer) { clearTimeout(nbWatchTimer); nbWatchTimer = null; }
+nbWaitingGrant = want;
+nbWatchFor = my;
+if (!nbWaitingGrant) return;
+let ticks = 0;
+const tick = function () {
+nbWatchTimer = null;
+if (my !== nbAttempt || !notifyEnabled) { nbWaitingGrant = false; return; }
+const p = nbPermState();
+try { nbSyncPermWarn(); } catch (e) {}   // #1014：读数为 default/unsupported 时标红说明也要跟着变
+if (p === 'granted') { nbWaitingGrant = false; nbApplyOn(my); return; }
+if (p === 'unsupported' || ++ticks >= 24) { nbWaitingGrant = false; return; }  // 2 分钟封顶，不做永动机
+nbWatchTimer = setTimeout(tick, 5000);
+};
+nbWatchTimer = setTimeout(tick, 5000);
+}
+function nbHoldOn(my, why) {
+if (my !== nbAttempt) return;
+notifyEnabled = true;
+gSet('bg-notify', '1');
+syncNotifyUI();
+nbSyncPermWarn();
+nbArmWatch(my);
+if (why === 'denied') {
+nbNoticeOnce('__nb-denied-note-at',
+'⚠ 浏览器这次没放行通知权限（可能没弹授权框就直接挡了）\n地址栏左侧图标 → 网站设置 → 通知 → 允许；列表里没有本站就在「允许」里手动添加本站网址\n开关已记住你的选择：允许后自动生效，不用再点一次开关');
+}
+nbArmRetry(my);
+}
+function nbSettleStart(my, quiet) {
+const start = Date.now();
+const tick = function () {
+if (my !== nbAttempt) return;
+if (nbSettleTimer) { clearTimeout(nbSettleTimer); nbSettleTimer = null; }
+const p = nbPermState();
+if (p === 'granted') { nbSettlePoke = null; nbApplyOn(my); return; }
+if (p === 'denied') {
+nbSettlePoke = null;
+nbHoldOn(my, 'denied');
+return;
+}
+if (Date.now() - start < NB_SETTLE_MS) {
+nbSettleTimer = setTimeout(tick, (Date.now() - start) < 3000 ? 600 : 2000);
+return;
+}
+nbSettlePoke = null;
+if (!quiet) toast('通知权限还没定下来：地址栏左侧图标 → 网站设置 → 通知 → 允许；开关已为你保持开启，允许后自动生效');
+nbArmRetry(my);
+};
+nbSettlePoke = tick;
+nbSettleTimer = setTimeout(tick, 600);
+}
+let nbRetryTap = null;
+let nbRetryUsed = 0;   // 哪一轮已经用过「下一次点按」这次机会
+function nbArmRetry(my) {
+if (nbRetryTap) {   // 单例：先撤掉上一份（同轮重复收口不得叠加监听）
+try {
+document.removeEventListener('pointerdown', nbRetryTap, true);
+document.removeEventListener('keydown', nbRetryTap, true);
+} catch (e) {}
+nbRetryTap = null;
+}
+if (my !== nbAttempt || !notifyEnabled || nbPermState() !== 'default') return;
+if (nbRetryUsed === my) return;
+const onTap = function () {
+document.removeEventListener('pointerdown', onTap, true);
+document.removeEventListener('keydown', onTap, true);
+if (nbRetryTap === onTap) nbRetryTap = null;
+if (my !== nbAttempt) return;
+const p = nbPermState();
+if (p === 'granted') { nbApplyOn(my); return; }
+if (p === 'denied') { nbHoldOn(my, 'denied'); return; }   // FIX #1014：同上，不回弹
+if (p !== 'default') return;
+nbRetryUsed = my;   // 这一轮的机会用掉了（用户再动一次开关才会换新的一轮）
+requestNotifyPermission(null, function () {}, { quiet: true });
+nbSettleStart(my, true);
+};
+nbRetryTap = onTap;
+document.addEventListener('pointerdown', onTap, true);
+document.addEventListener('keydown', onTap, true);
+}
+function nbPermRecheck() {
+try { if (nbSettlePoke) nbSettlePoke(); } catch (e) {}
+try { if (nbWaitingGrant && notifyEnabled && nbPermState() === 'granted') { nbWaitingGrant = false; nbApplyOn(nbAttempt); } } catch (e) {}
+try { nbSyncPermWarn(); } catch (e) {}
+}
+try { window.addEventListener('focus', nbPermRecheck); } catch (e) {}
+if (nbBtn) {
+nbBtn.addEventListener('change', function (e) {
+if (!kaUserGesture(e)) { syncNotifyUI(); try { nbBtn.checked = notifyEnabled; } catch (er) {} return; }
+notifyUserTouched = true; // #88：手动动过 → 回填后不再重读覆盖
+const my = nbAttemptNext();
+if (nbBtn.checked) {
+const p0 = nbPermState();
+notifyEnabled = true;
+gSet('bg-notify', '1');
+syncNotifyUI();
+nbSyncPermWarn();
+if (p0 === 'unsupported') {
+requestNotifyPermission(null, function () {
+if (my !== nbAttempt) return;
+nbAttemptNext(); nbRevertOff();
+});
+return;
+}
+requestNotifyPermission(function () {
+if (my !== nbAttempt) return;
+nbApplyOn(my);
+}, function (why) {
+nbHoldOn(my, why);
+});
+if (p0 === 'default') nbSettleStart(my, false);
+return;
+}
+notifyEnabled = false;
+gSet('bg-notify', '0');
+nbWaitingGrant = false;
+if (nbWatchTimer) { clearTimeout(nbWatchTimer); nbWatchTimer = null; }
+nbAttemptNext();
+syncNotifyUI();
+nbSyncPermWarn();
 });
 }
 (function () {
@@ -938,15 +1307,14 @@ if (saved === null) {
 const old = store.get('bg-notify');
 if (old !== null) { gSet('bg-notify', old); saved = old; }
 }
-notifyEnabled = saved === '1' && 'Notification' in window && Notification.permission !== 'denied';
+notifyEnabled = saved === '1';
 if ('Notification' in window && Notification.permission === 'granted') { getBadgeUrl(function () {}); }
-if (saved === '1' && !notifyEnabled) {
-try { gSet('bg-notify', '0'); } catch (e) {}
-toast('通知权限已被回收，已自动关闭通知');
-}
 syncNotifyUI();
+nbSyncPermWarn();
+if (notifyEnabled) nbArmWatch(nbAttempt);
 })();
 function reheatBgSwitches() {
+try { if (!ndUserTouched) syncNoDedupUI(); } catch (e) {}
 if (!keepUserTouched) {
 const wantKeep = gGet('bg-keepalive') === '1' && gGet('__ka-user-off') !== '1';
 if (wantKeep !== keepEnabled) {
@@ -958,18 +1326,15 @@ try { console.info('[mochi] #88 回填后重读后台保活：' + (wantKeep ? '�
 }
 }
 if (!notifyUserTouched) {
-const savedNotify = gGet('bg-notify');
-const permState = ('Notification' in window) ? Notification.permission : 'unsupported';
-const wantNotify = savedNotify === '1' && (permState === 'granted' || permState === 'default');
+const wantNotify = gGet('bg-notify') === '1';
 if (wantNotify !== notifyEnabled) {
 notifyEnabled = wantNotify;
 syncNotifyUI();
 if (wantNotify) getBadgeUrl(function () {}); // 预热 badge 单色图（同初始化）
 try { console.info('[mochi] #88 回填后重读后台通知：' + (wantNotify ? '开' : '关')); } catch (e) {}
 }
-if (savedNotify === '1' && permState === 'denied') {
-try { gSet('bg-notify', '0'); } catch (e) {}
-}
+try { nbSyncPermWarn(); } catch (e) {}
+try { nbArmWatch(nbAttempt); } catch (e) {}
 }
 }
 try {
@@ -980,41 +1345,73 @@ setTimeout(reheatBgSwitches, 16000); // 回填整体挂起设备的兜底
 } catch (e) {}
 const testBtn = document.getElementById('bg-notify-test');
 if (testBtn) {
-testBtn.addEventListener('click', function () {
-toast('正在检查通知环境…');
-const env = [];
-if (!('Notification' in window)) {
-env.push('✗ 当前浏览器不支持 Notification API');
-env.push('原因：安卓 Chrome 必须 HTTPS 访问才有通知');
-env.push('当前：' + location.protocol + '//' + location.host);
-env.push('解决：用 https:// 部署访问（GitHub Pages 即是 HTTPS）');
-toast('环境检查：\n' + env.join('\n'));
-return;
-}
-if (Notification.permission === 'default') {
-Notification.requestPermission().then(function (p) {
-if (p === 'granted') runTest(env);
-else {
-env.push('✗ 通知权限：拒绝了授权请求');
-env.push('解决：地址栏左侧图标 → 网站设置 → 通知 → 允许');
-toast('环境检查：\n' + env.join('\n'));
-}
-}).catch(function () {
-toast('环境检查：\n✗ 请求通知权限失败');
-});
-return;
-}
-runTest(env);
-});
-function runTest(env) {
-try {
-const kp = (typeof window.__kaProbe === 'function') ? window.__kaProbe() : null;
+let testSeq = 0;          // 每轮点按的代号：迟到的异步结论只认自己那一轮
+let env = [];             // 结果行（第一段写满即出，后续证据原地追加）
+let resultShown = false;  // 结果单飞闸（发送/超时/队列回读三路只出一次，之后只改内容）
+let verStale = false;     // 旧包（#761）——排查步骤据此把「先升级」排在第一位
+const showResult = function () {
+if (!env.length) return;
+resultShown = true;
+toast('测试结果：\n' + env.join('\n'), 6000);
+};
+const pushLine = function (line) {
+if (env.indexOf(line) >= 0) return;
+env.push(line);
+if (resultShown) showResult();   // 已出过结果：原地重写同一条 toast（不重开一条，不动驻留窗口语义）
+};
+const envCheck = function () {
+env = [];
+resultShown = false;
+verStale = false;
+env.push(notifyEnabled
+? '✓ 后台通知开关：已开启'
+: '✗ 后台通知开关：未开启——后台消息不会弹通知（点本行开关把它打开）');
+const p = nbPermState();
+if (p === 'granted') env.push('✓ 通知权限：已允许');
+else if (p === 'default') env.push('✗ 通知权限：还没允许——地址栏左侧图标 → 网站设置 → 通知 → 允许');
+else if (p === 'denied') env.push('✗ 通知权限：被浏览器挡着——地址栏左侧图标 → 网站设置 → 通知 → 允许（允许后自动生效）');
+else env.push('✗ 通知权限：本机浏览器没有通知能力——请改用 Chrome / Edge（安卓或电脑都行）');
+let kp = null;
+try { kp = (typeof window.__kaProbe === 'function') ? window.__kaProbe() : null; } catch (e) {}
 if (!kp || !kp.keep) env.push('✗ 后台保活：未开启（后台不产生消息，通知无从弹起）');
-else env.push(kp.audio && !kp.audio.paused ? '✓ 后台保活：音频播放中' : '! 后台保活：音频已暂停（回本页自动恢复；后台消息可能到不了）');
+else {
+env.push((kp.audio && !kp.audio.paused) ? '✓ 后台保活：音频播放中' : '! 后台保活：音频已暂停（回本页自动恢复；后台消息可能到不了）');
+const anchor = [];
+if (kp.ms && kp.ms.metadata) anchor.push('媒体会话');
+if (kp.pc && kp.pc !== 'off') anchor.push('连接保活');
+if (kp.hb && kp.hb.n) anchor.push('心跳 ' + kp.hb.n + ' 拍');
+if (anchor.length) env.push('· 保活锚点：' + anchor.join(' / '));
+if (kp.ev && (kp.ev.stall || kp.ev.died)) env.push('! 历史取证：断流 ' + kp.ev.stall + ' 次 / 后台终止 ' + kp.ev.died + ' 次（被系统冻结或丢弃过——恢复口径见本行「功能说明」）');
+}
+try {
+kaSWReady().then(function (reg) {
+pushLine(reg
+? '✓ 后台服务：已就绪（Service Worker 通道，切后台 / 关屏也能弹）'
+: '! 后台服务：未就绪——只会走页面通道，切后台就不弹了（刷新页面后重测）');
+});
 } catch (e) {}
-let verStale = false;
-const verP = new Promise(function (resolve) {
-const fin = function () { resolve(); };
+};
+const queueProbe = function (wasHidden) {
+kaSWReady().then(function (reg) {
+if (!reg || !reg.getNotifications) return null;
+return new Promise(function (res) {
+setTimeout(function () {
+try { reg.getNotifications().then(res, function () { res(null); }); } catch (e) { res(null); }
+}, 500);
+});
+}).then(function (list) {
+const found = !!(list && list.some && list.some(function (n) { return n && n.title === '后台通知测试'; }));
+pushLine(found
+? '✓ 已确认进入系统通知队列——手机上没看到＝系统层拦截（通知总开关/悬浮横幅/省电限制），见本行「功能说明」排查'
+: '! 已提交但未进系统通知队列＝多半被系统拦截，见本行「功能说明」排查');
+if (found && wasHidden) {
+pushLine('✓ 发送时页面在后台——屏幕上方应有横幅；没看见＝系统层拦截（通知总开关/悬浮横幅/省电限制）见本行「功能说明」');
+} else if (found) {
+pushLine('! 前台发送不弹顶层横幅——要验「屏幕上方弹出」请用下方第二段：按 Home 切后台（或锁屏）再发一条');
+}
+}).catch(function () {});
+};
+const verProbe = function () {
 try {
 const sv = document.getElementById('splash-ver');
 const localTs = Number(sv && sv.getAttribute('data-build-ts')) || 0;
@@ -1022,25 +1419,21 @@ kaWithTimeout(function () { return fetch('./version.json?v=' + Date.now()); }, 4
 .then(function (r) { return r && r.json ? r.json() : null; })
 .then(function (d) {
 const ts = Number(d && d.ts) || 0;
-if (!localTs || !ts) env.push('! 版本：没问到线上版本（网络受限，不影响本测试）');
+if (!localTs || !ts) pushLine('! 版本：没问到线上版本（网络受限，不影响本测试）');
 else if (ts > localTs) {
 verStale = true;
-env.push('✗ 旧包正在运行：本页 ' + new Date(localTs).toLocaleString() + ' · 线上最新 ' + new Date(ts).toLocaleString() + '——「什么都没改弹窗突然全没」的常见原因，彻底关闭浏览器重开（升级新版本）后再测');
-} else env.push('✓ 版本已最新：' + new Date(ts).toLocaleString());
-fin();
-}, function () { env.push('! 版本：没拉到 version.json（网络受限，不影响本测试）'); fin(); });
-} catch (e) { fin(); }
-});
-try {
-const name = store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
-let testChan = '';
-let testSettled = false;
-let testOk = false;
-let resultShown = false;
-const askSeen = function () {
+pushLine('✗ 旧包正在运行：本页 ' + new Date(localTs).toLocaleString() + ' · 线上最新 ' + new Date(ts).toLocaleString() + '——「什么都没改弹窗突然全没」的常见原因，彻底关闭浏览器重开（升级新版本）后再测');
+} else pushLine('✓ 版本已最新：' + new Date(ts).toLocaleString());
+}, function () { pushLine('! 版本：没拉到 version.json（网络受限，不影响本测试）'); });
+} catch (e) {}
+};
+const askSeen = function (phase2) {
 if (typeof window.openModal !== 'function') return;
 window.openModal('自检确认', '', function (choice) {
-if (choice === 'seen') { toast('✓ 弹窗链路全通：以后后台消息没弹时，先回来点这个测试', 4000); return; }
+if (choice === 'seen') {
+toast(phase2 ? '✓ 后台弹窗链路全通：切后台（锁屏）也能弹横幅' : '✓ 弹窗链路全通：以后后台消息没弹时，先回来点这个测试', 4000);
+return;
+}
 if (choice !== 'miss') return;
 const MARKS = ['①', '②', '③', '④'];
 const steps = [];
@@ -1056,63 +1449,148 @@ staticText: steps.join('\n')
 });
 }, {
 noInput: true, lock: true,
-staticText: '刚才屏幕上方弹出「后台通知测试」横幅了吗？\n（通知栏里有小图标 ≠ 屏幕上方弹出；前台发送通常只进通知栏，要验横幅请按 Home 切后台后再测一次）',
+staticText: (phase2
+? '刚才按 Home 把页面切到后台（或锁屏）之后，屏幕上方弹出「后台通知测试（后台阶段）」这条横幅了吗？\n（通知栏里有小图标 ≠ 屏幕上方弹出；锁屏界面上的通知算弹出）'
+: '刚才屏幕上方弹出「后台通知测试」横幅了吗？\n（通知栏里有小图标 ≠ 屏幕上方弹出；前台发送通常只进通知栏，要验横幅请用第二段：按 Home 切后台后再测一次）'),
 pills: [{ label: '看到了，顶部弹出', value: 'seen' }, { label: '没看到', value: 'miss' }],
 pillSubmit: true
 });
 };
-const showResult = function () {
-if (resultShown) return;
-resultShown = true;
-toast('测试结果：\n' + env.join('\n'), 6000);
-if (testChan === 'sw' && testOk) askSeen();
+const bgT2 = { armed: false, sent: false, done: false, ok: false, chan: '', reported: false, hideT: null, disarmT: null };
+const bgT2Arm = function () {
+if (bgT2.armed && !bgT2.sent) return;
+if (bgT2.hideT) { clearTimeout(bgT2.hideT); bgT2.hideT = null; }
+bgT2.armed = true; bgT2.sent = false; bgT2.done = false; bgT2.ok = false; bgT2.chan = ''; bgT2.reported = false;
+toast('第二段已就绪：按 Home 把页面切到后台（可锁屏），5 秒后自动发一条；回到本页看结论', 7000);
+if (bgT2.disarmT) clearTimeout(bgT2.disarmT);
+bgT2.disarmT = setTimeout(function () { if (!bgT2.sent) bgT2.armed = false; }, 180000); // 3 分钟没切后台就作废
 };
-const testWasHidden = document.hidden;
-showSysNotification('后台通知测试', { body: '来自 ' + name + ' · 如果能看到这条，后台通知就通了' }, function (ch) { testChan = ch; }).then(function (ok) {
-testSettled = true;
-testOk = !!ok;
-if (testChan === 'sw' && ok) {
-env.push('✓ 测试通知已发送并真正提交系统显示（Service Worker 通道：后台关屏也能弹）');
-const queueCheck = kaSWReady().then(function (reg) {
-if (!reg || !reg.getNotifications) return null;
-return new Promise(function (res) {
-setTimeout(function () {
-try { reg.getNotifications().then(res, function () { res(null); }); } catch (e) { res(null); }
-}, 500);
+const bgT2Report = function () {
+if (!bgT2.armed || !bgT2.sent || !bgT2.done || bgT2.reported) return;   // #1017：未落定不下结论
+if (document.visibilityState === 'hidden') return;   // 后台弹的 toast 用户看不见，等回前台再说
+bgT2.reported = true;
+bgT2.armed = false;
+if (bgT2.disarmT) { clearTimeout(bgT2.disarmT); bgT2.disarmT = null; }
+const chTxt = bgT2.chan === 'sw' ? 'Service Worker 通道' : (bgT2.chan === 'page' ? '页面通道（后台会被系统抑制）' : '通道未就绪');
+const sayIt = function () { toast('第二段（后台阶段）结果：\n'
++ (bgT2.ok
+? '✓ 页面切到后台后发出的通知已提交系统（' + chTxt + '）\n（通知栏里有小图标 ≠ 屏幕上方弹出，下面请如实回答）'
+: '✗ 页面切到后台后没能发出通知（' + chTxt + '）——后台弹窗这一半不通，见本行「功能说明」排查'), 8000); };
+setTimeout(sayIt, 700);
+if (bgT2.ok) setTimeout(function () { askSeen(true); }, 1800);
+};
+const offerPhase2 = function () {
+if (typeof window.openModal !== 'function') return;
+window.openModal('后台弹窗自测 · 第二段', '', function (choice) {
+if (choice === 'go') { bgT2Arm(); return; }
+if (choice === 'no') askSeen(false);
+}, {
+noInput: true,
+staticText: '第一段测的是「现在能不能发出通知」。第二段测你真正关心的那一半：按 Home 把页面切到后台（可锁屏）之后还会不会弹。\n\n点「现在测（切后台）」后：按 Home → 页面在后台 5 秒后自动发一条 → 回到本页即出结论并问你看没看到。\n（第一段前台发的那条通常只进通知栏，屏幕上方横幅只能这样验）\n点「不用了」＝只测第一段，会照旧问你一句「刚才那条看到了吗」。',
+pills: [{ label: '现在测（切后台）', value: 'go' }, { label: '不用了', value: 'no' }],
+pillSubmit: true
 });
-}).then(function (list) {
-const found = !!(list && list.some && list.some(function (n) { return n && n.title === '后台通知测试'; }));
-env.push(found
-? '✓ 已确认进入系统通知队列——手机上没看到＝系统层拦截（通知总开关/悬浮横幅/省电限制），见本行「功能说明」排查'
-: '! 已提交但未进系统通知队列＝多半被系统拦截，见本行「功能说明」排查');
-if (found && testWasHidden) {
-env.push('✓ 发送时页面在后台——屏幕上方应有横幅；没看见＝系统层拦截（通知总开关/悬浮横幅/省电限制）见本行「功能说明」');
-} else if (found) {
-env.push('! 前台发送不弹顶层横幅——要验「屏幕上方弹出」：按 Home 切后台（或锁屏），即可看到通知从屏幕顶部弹出');
+};
+document.addEventListener('visibilitychange', function () {
+if (!bgT2.armed) return;
+if (document.visibilityState === 'hidden') {
+if (bgT2.sent || bgT2.hideT) return;
+bgT2.hideT = setTimeout(function () {
+bgT2.hideT = null;
+if (!bgT2.armed || bgT2.sent || document.visibilityState !== 'hidden') return;
+bgT2.sent = true;
+try {
+const nm = store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
+showSysNotification('后台通知测试（后台阶段）', { body: '这条是在页面切到后台之后发出的 · 来自 ' + nm }, function (ch) { bgT2.chan = ch; })
+.then(function (ok) { bgT2.ok = !!ok; bgT2.done = true; bgT2Report(); });
+} catch (e) { bgT2.ok = false; bgT2.done = true; bgT2Report(); }
+}, 5000);
+return;
 }
-}).catch(function () {});
-Promise.all([queueCheck, verP]).then(showResult);
-setTimeout(showResult, 4500); // 队列回读/版本比对卡住也出结果
+if (bgT2.hideT) { clearTimeout(bgT2.hideT); bgT2.hideT = null; }
+bgT2Report();
+});
+const runTest = function (my) {
+const testWasHidden = document.hidden;   // 发送那一刻在不在后台（决定「屏幕上方横幅」怎么解释）
+let testChan = '';
+let settled = false;
+const settle = function () {
+if (my !== testSeq || settled) return;
+settled = true;
+showResult();
+if (testChan === 'sw') offerPhase2();
+};
+try {
+const name = store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
+showSysNotification('后台通知测试', { body: '来自 ' + name + ' · 如果能看到这条，后台通知就通了' }, function (ch) { testChan = ch; }).then(function (ok) {
+if (my !== testSeq) return;
+if (testChan === 'sw' && ok) {
+pushLine('✓ 测试通知已发送并真正提交系统显示（Service Worker 通道：后台关屏也能弹）');
 } else if (testChan === 'page') {
-env.push(ok
+pushLine(ok
 ? '✓ 测试通知已发送（页面通道：仅本页前台可见）'
 : '! 未真正送达：后台服务未就绪，页面通道在后台会被系统抑制（已挂自动补发，或刷新页面重试）');
-verP.then(showResult);
 } else {
-env.push('✗ 测试通知提交失败：被浏览器/系统拒绝——见本行「功能说明」排查（权限已允许仍被拒＝查系统设置里本浏览器的通知总开关）');
-verP.then(showResult);
+pushLine('✗ 测试通知提交失败：被浏览器/系统拒绝——见本行「功能说明」排查（权限已允许仍被拒＝查系统设置里本浏览器的通知总开关）');
 }
+settle();
+if (testChan === 'sw' && ok) queueProbe(testWasHidden);
+verProbe();
 });
+} catch (e) {
+pushLine('✗ 测试执行异常：' + (e && e.message ? e.message : e));
+settle();
+return;
+}
 setTimeout(function () {
-if (testSettled) return;
-env.push('✗ 测试超时：通知发送链 8 秒未落定（应用内故障，非权限/系统问题）——请用「诊断信息」一键反馈');
+if (my !== testSeq || settled) return;
+settled = true;
+pushLine('✗ 测试超时：通知发送链 8 秒未落定（应用内故障，非权限/系统问题）——请用「诊断信息」一键反馈');
 showResult();
 }, 8000);
-} catch (e) {
-env.push('✗ 测试执行异常：' + (e && e.message ? e.message : e));
-toast('测试结果：\n' + env.join('\n'), 6000);
+};
+testBtn.addEventListener('click', function () {
+const my = ++testSeq;
+toast('正在检查通知环境…');
+envCheck();
+if (!('Notification' in window)) {
+if (!window.isSecureContext) {
+pushLine('✗ 当前浏览器不支持 Notification API');
+pushLine('原因：' + location.protocol + '//' + location.host + ' 不是安全上下文，浏览器不开放通知能力');
+pushLine('解决：用 https:// 部署访问（GitHub Pages 即是 HTTPS）');
+} else if (kaIsIOS()) {
+pushLine('✗ 当前浏览器不支持 Notification API');
+pushLine('原因：iPhone / iPad 的网页拿不到系统通知（添加到主屏幕也不保证）');
+pushLine('解决：改用 设置 → 系统 →「桌面消息弹窗」的应用内横幅');
+} else {
+pushLine('✗ 当前浏览器不支持 Notification API');
+pushLine('原因：本机浏览器没有通知能力（小米 / vivo / OPPO 等自带浏览器、UC、夸克、Via 常见如此）');
+pushLine('解决：改用 Chrome / Edge 打开本站（安卓或电脑都行）');
 }
+showResult();
+return;
 }
+if (Notification.permission === 'default') {
+Notification.requestPermission().then(function (p) {
+if (my !== testSeq) return;
+if (p === 'granted') { envCheck(); runTest(my); return; }
+pushLine('✗ 通知权限：这次没能拿到' + (p === 'denied' ? '（浏览器没放行——可能没弹授权框就直接挡了）' : '（还没在弹窗里做选择）'));
+pushLine('解决：地址栏左侧图标 → 网站设置 → 通知 → 允许（开关已记住你的选择，允许后自动生效）');
+pushLine('② 若列表里没有本站：Chrome ⋮ → 设置 → 网站设置 → 通知 → 「添加网站例外」→ 输入 ' + location.origin);
+pushLine('③ 上面改了还是不行＝Chrome 对本站的自动屏蔽无法解除：换 Edge / 电脑打开本站（数据在 设置 → 通用 导出 / 导入 迁移）');
+if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+pushLine('本站当前是「已安装应用」（主屏图标）形态：通知权限由应用自己管理（Chrome 网站设置里不显示本站＝正常）。授权框不出现时——长按主屏图标卸载本应用，重新打开网站「添加到主屏幕」并允许通知，即可重置');
+}
+showResult();
+}).catch(function () {
+if (my !== testSeq) return;
+pushLine('✗ 请求通知权限失败（浏览器没给授权框）——地址栏左侧图标 → 网站设置 → 通知 → 允许');
+showResult();
+});
+return;
+}
+runTest(my);
+});
 }
 let hiddenSentCount = 0;
 let hiddenSentName = '';
@@ -1124,6 +1602,9 @@ hiddenSentName = '';
 return;
 }
 if (vis !== 'visible') return;
+nbPermRecheck();
+try { kaNoticeAfterSplash(tryShowKaDiedNotice); } catch (e) {}
+try { if (kaPermNoticeArmed) kaNoticeAfterSplash(nbPermPendingNotice); } catch (e) {}
 const saved = gGet('bg-notify');
 if (saved === '1') {
 const keepOn = keepEnabled;
@@ -1315,10 +1796,10 @@ if (d && (d.vis || d.nAt)) { gateStats.replay++; return; }
 }
 gateStats.total++;
 const force = !!extra.force;
-if (!force && lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS &&
+if (!force && !bgNoDedup() && lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS &&
 recentChatDup(nkey, ts, NOTIFY_FRESH_CHAT_DUP_MS)) { gateStats.tooFresh++; return; }
-if (!force && (notifiedDup(nkey) || seenDup(nkey))) { gateStats.dup++; return; }
-if (!force && recentChatDup(nkey, ts)) { gateStats.dup++; return; }
+if (!force && !bgNoDedup() && (notifiedDup(nkey) || seenDup(nkey))) { gateStats.dup++; return; }
+if (!force && !bgNoDedup() && recentChatDup(nkey, ts)) { gateStats.dup++; return; }
 gateStats.sent++; markNotified(nkey);
 hiddenSentCount++;
 hiddenSentName = extra.name || store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
@@ -1385,25 +1866,6 @@ ctx.fillStyle = '#ffffff';
 ctx.fillRect(0, 0, w, h);
 ctx.drawImage(img, 0, 0, w, h);
 cb(c.toDataURL('image/jpeg', 0.85));
-} catch (e) { cb(''); }
-};
-img.onerror = function () { cb(''); };
-img.src = dataUrl;
-} catch (e) { cb(''); }
-}
-function compressNotifyImg(dataUrl, cb) {
-try {
-const img = new Image();
-img.onload = function () {
-try {
-const maxSide = 96;
-const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-const w = Math.max(1, Math.round(img.width * scale));
-const h = Math.max(1, Math.round(img.height * scale));
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-c.getContext('2d').drawImage(img, sx || 0, sy || 0, w, h);
-cb(c.toDataURL('image/jpeg', 0.72));
 } catch (e) { cb(''); }
 };
 img.onerror = function () { cb(''); };
@@ -1483,6 +1945,7 @@ if (tags.indexOf(PSYNC_TAG) >= 0) await navigator.periodicSync.unregister(PSYNC_
 psyncSyncStatus();
 }
 async function drainPsyncQueue(force) {
+if (!force && window.nightModeActive && window.nightModeActive()) return 0;
 if (!window.idbGet || !window.idbSet || !window.chatAddIn) return 0;
 try { if (!force && performance.now() < 10000) return 0; } catch (e) {} // 开屏 10s 内不动，等聊天权威数据就绪
 let arr = null;
@@ -1518,8 +1981,8 @@ if (!el) return;
 const isIOS = !!(window.mochiDevice || {}).isIOS;
 if (!psyncSupported()) {
 el.textContent = isIOS
-? '此浏览器不支持离线提醒（iPhone 只能靠系统通知/保活；安卓请用 Chrome/Edge，并把应用添加到主屏幕）'
-: '此浏览器不支持离线提醒（请用安卓 Chrome/Edge，并把应用添加到主屏幕后重开此开关）';
+? '此浏览器不支持离线提醒（iPhone / iPad 拿不到；请靠「后台保活」+「桌面消息弹窗」的应用内横幅）'
+: '此浏览器不支持离线提醒（需要 Chromium 内核：安卓或电脑上的 Chrome / Edge，并把应用添加到主屏幕后重开此开关）';
 return;
 }
 if (!psyncEnabled()) { el.textContent = '已关闭 · 页面全关后不再收到 TA 的消息提醒'; return; }

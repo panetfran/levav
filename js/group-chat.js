@@ -1030,7 +1030,7 @@ if (window.chatHasMediaPayload ? window.chatHasMediaPayload(c)
 : (c.indexOf('data:') === 0 || c.indexOf('|||') >= 0 || (window.mochiMediaIsToken && window.mochiMediaIsToken(c)))) return;
 if (/^https?:\/\//i.test(c)) return; // 图链卡不进群聊文字池
 if (/[\uD800-\uDBFF]/.test(c) || /^[😀-🙏🌀-🫿]/u.test(c)) emoji.push(c);
-else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) kaomoji.push(c);
+else if (window.chatIsBracketedKaomojiCard ? window.chatIsBracketedKaomojiCard(c) : (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c))) kaomoji.push(c); // FIX #1152 与单聊同一判据
 else text.push(c);
 });
 } catch (e) {}
@@ -1048,7 +1048,7 @@ defGrps.forEach(g => {
 if (isOff && isOff('main', card)) return;
 if (typeof card !== 'string' || !card) return;
 if (/[\uD800-\uDBFF]/.test(card)) emoji.push(card);
-else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(card) && /[\)）】)]/.test(card)) kaomoji.push(card);
+else if (window.chatIsBracketedKaomojiCard ? window.chatIsBracketedKaomojiCard(card) : (/[\(（｡◕(◕)(づ｡(¬)]/.test(card) && /[\)）】)]/.test(card))) kaomoji.push(card); // FIX #1152 默认字卡兜底同判据
 else text.push(card);
 });
 });
@@ -1084,8 +1084,8 @@ t = pick(pool.voice); type = 'voice';
 t = pick(pool.text) || FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)];
 }
 }
-if (type === 'text' && pool.kaomoji.length && hit(c['gc-kaomoji-prob'])) {
-t += ' ' + pick(pool.kaomoji);
+if (type === 'text' && c['gc-py-en'] === 1 && pool.kaomoji.length && hit(c['gc-kaomoji-prob'])) {
+t += '\n' + pick(pool.kaomoji); // #1051 同单聊 genReplyText：末尾颜文字卡改硬换行相接（\n→<br>），软换行点部分内核不拆行＝末尾显示不全
 }
 if (type === 'text') {
 try {
@@ -1143,13 +1143,13 @@ const data = JSON.stringify(arr);
 localStorage.setItem(groupMsgKey(gid), data);
 try { if (window.idbSet) window.idbSet(groupMsgKey(gid), data); } catch (e) {}
 }
-function gcDeliverReply(gid, rec, sfx) {
+function gcDeliverReply(gid, rec, sfx, forceFollow) {
 if (!gcGroupAlive(gid)) return -1;
 if (gid === curGid) {
 msgs.push(rec);
 saveMsgs();
 renderMsg(rec, msgs.length - 1);
-followGcBottom();
+followGcBottom(!!forceFollow);
 if (sfx && window.playSfxGc) window.playSfxGc(sfx);
 return msgs.length - 1;
 }
@@ -1250,7 +1250,7 @@ setTimeout(() => {
 if (gid === curGid) hideTyping();
 if (hit(c['gc-touch-prob'])) {
 const rec = { side: 'in', cid: cid, name: name, text: gcPokeText(cid), special: 'poke', ts: Date.now() };
-gcDeliverReply(gid, rec, 'in'); // FIX 串群 #242：落回来源群
+gcDeliverReply(gid, rec, 'in', continuation); // FIX 串群 #242：落回来源群 · #1023 continuation＝用户点「继续说」要的回应，落地强制贴底
 return;
 }
 const rpMin = Math.max(1, Number(c['gc-reply-min']) || 1);
@@ -1276,7 +1276,7 @@ rec.mood = chain.map(it => ({ tag: typeName[it.type] || '情绪', label: it.cont
 if (window.addChatCount) window.addChatCount();
 } catch (e) {}
 }
-const myIdx = gcDeliverReply(gid, rec, 'in'); // FIX 串群 #242：落回来源群
+const myIdx = gcDeliverReply(gid, rec, 'in', continuation); // FIX 串群 #242：落回来源群 · #1023 continuation＝用户点「继续说」要的回应，落地强制贴底（上翻态也滑过来）
 if (i < count - 1 && gid === curGid) showTyping(name);
 if (hit(c['gc-rc-prob'])) {
 setTimeout(() => {
@@ -1635,7 +1635,7 @@ newRow.innerHTML = '<div class="gc-mp-av gc-gp-ico add">' +
 '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>' +
 '</div><span class="gc-mp-name">新建群聊</span>';
 newRow.addEventListener('click', startCreateGroup);
-el.appendChild(newRow);
+el.insertBefore(newRow, el.firstChild);
 }
 function renderGroupsPanel() {
 if (gpBody) { gpBody.innerHTML = ''; fillGroupsList(gpBody); }
@@ -1772,6 +1772,11 @@ e.stopPropagation();
 showMoreMenu(moreMenu.hidden);
 });
 document.addEventListener('click', () => showMoreMenu(false));
+const moreNewGroup = document.getElementById('gc-more-newgroup');
+if (moreNewGroup) moreNewGroup.addEventListener('click', () => {
+showMoreMenu(false);
+startCreateGroup();
+});
 const moreSettings = document.getElementById('gc-more-settings');
 if (moreSettings) moreSettings.addEventListener('click', () => {
 showMoreMenu(false);
@@ -2338,7 +2343,7 @@ liveBtn.id = 'gc-live-adjust';
 liveBtn.style.cssText = 'display:flex;align-items:center;gap:10px;width:calc(100% - 24px);margin:10px 12px 0;padding:11px 14px;border:1px solid var(--btn-bg,#111);border-radius:12px;background:color-mix(in srgb, var(--btn-bg,#111) 10%, transparent);color:var(--ink,#111);text-align:left;cursor:pointer;-webkit-tap-highlight-color:transparent;flex-shrink:0';
 liveBtn.innerHTML = '<span style="flex:1;min-width:0">' +
 '<span style="display:block;font-size:15px;font-weight:700;line-height:1.25">边看边调</span>' +
-'<span style="display:block;font-size:11.5px;font-weight:400;opacity:.85;margin-top:2px">打开调色条：群聊在上、控件在下，改哪看哪、即时生效</span>' +
+'<span style="display:block;font-size:11.5px;font-weight:400;opacity:.85;margin-top:2px">打开调色条：群聊在上、控件在下，改哪看哪、即时生效；标题行可按住往上拖让位</span>' +
 '</span><span style="flex:none;font-size:12px;font-weight:700;padding:7px 10px;border:1px solid var(--btn-bg,#111);border-radius:999px;background:var(--btn-bg,#111);color:var(--btn-ink,#fff);white-space:nowrap">点击开启 ›</span>';
 liveBtn.addEventListener('click', openGcBeautyDrawer);
 rootEl.insertBefore(liveBtn, rootEl.firstChild);
@@ -2584,10 +2589,16 @@ if (!t || !t.closest) return;
 if (t.closest('.tab') || t.closest('#gc-back') || t.closest('.app[data-app]')) hideGcBeautyDrawer();
 }, true);
 let gcDrawerSec = 'bubble';
+let gcDockBot = null;
+function gcDrawerApplyBottom() {
+const d = document.getElementById('gc-beauty-drawer');
+if (!d) return;
+d.style.bottom = (gcDockBot || 0) + 'px';
+}
 function openGcBeautyDrawer() {
 try { if (settingsPanel) settingsPanel.hidden = true; } catch (e) {}
 const d = gcDrawerEl();
-d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
+d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;transition:bottom .16s ease;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
 d.innerHTML = '';
 const grip = document.createElement('div');
 grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 0;flex:none';
@@ -2600,11 +2611,43 @@ b.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background
 b.addEventListener('click', fn);
 return b;
 };
+const bindGcDockDrag = (el) => {
+el.style.touchAction = 'none';
+el.style.cursor = 'grab';
+let sy = 0, sb = 0, drag = false;
+el.addEventListener('pointerdown', (e) => {
+if (e.target.closest('button')) return;
+if (e.pointerType === 'mouse' && e.button !== 0) return;
+drag = true; sy = e.clientY; sb = gcDockBot || 0;
+d.style.transition = 'none'; // 拖动期间关掉 bottom 过渡，保证跟手
+try { el.setPointerCapture(e.pointerId); } catch (er) {}
+e.preventDefault();
+});
+el.addEventListener('pointermove', (e) => {
+if (!drag) return;
+gcDockBot = Math.max(0, Math.min(Math.round(window.innerHeight * 0.6), Math.round(sb + sy - e.clientY)));
+gcDrawerApplyBottom();
+e.preventDefault();
+});
+const up = () => {
+if (!drag) return;
+drag = false;
+d.style.transition = 'bottom .16s ease';
+if ((gcDockBot || 0) < 24) gcDockBot = null; // 接近底部＝吸附回贴底
+gcDrawerApplyBottom();
+};
+el.addEventListener('pointerup', up);
+el.addEventListener('pointercancel', up);
+};
+bindGcDockDrag(grip);
 const hd = document.createElement('div');
 hd.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none';
 const hdTxt = document.createElement('span');
 hdTxt.textContent = '边看边调（即时生效）';
-hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:none';
+const hdHint = document.createElement('span');
+hdHint.textContent = '按住标题行上下拖 · 让开看群聊';
+hdHint.style.cssText = 'font-size:11px;color:var(--muted,#888);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
 const panelBody = document.createElement('div');
 panelBody.style.cssText = 'display:flex;flex-direction:column;gap:8px;flex:none';
 const body = document.createElement('div');
@@ -2618,8 +2661,9 @@ const closeBtn = mkMini('\u2715', () => {
 hideGcBeautyDrawer();
 try { gcSetTab = 'beauty'; renderSettingsPanel(); if (settingsPanel) settingsPanel.hidden = false; } catch (e) {}
 }, ';padding:4px 8px');
-hd.appendChild(hdTxt); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
+hd.appendChild(hdTxt); hd.appendChild(hdHint); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
 d.appendChild(hd);
+bindGcDockDrag(hd); // grip 只有 4px 高，标题行才是主拖拽把手
 const chipsRow = document.createElement('div');
 chipsRow.style.cssText = 'display:flex;gap:6px;flex:none';
 panelBody.appendChild(chipsRow);
@@ -2854,14 +2898,20 @@ wrap.appendChild(mkNote('想逐项精调（含美化方案保存/导出等）回
 return wrap;
 } }
 ];
-const renderSec = (key) => {
-gcDrawerSec = key;
+const paintGcChips = (key) => {
 Array.prototype.forEach.call(chipsRow.children, c => {
 const on = c.dataset.sec === key;
-c.style.background = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
-c.style.color = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
-c.style.borderColor = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+const bg = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
+if (c.style.background !== bg) c.style.background = bg;
+const fg = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
+if (c.style.color !== fg) c.style.color = fg;
+const bd = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+if (c.style.borderColor !== bd) c.style.borderColor = bd;
 });
+};
+const renderSec = (key) => {
+gcDrawerSec = key;
+paintGcChips(key);
 body.innerHTML = '';
 paletteHost = null;
 colorItems = [];
@@ -2876,6 +2926,7 @@ c.addEventListener('click', () => renderSec(s.key));
 chipsRow.appendChild(c);
 });
 renderSec(gcDrawerSec);
+gcDrawerApplyBottom();
 d.style.display = 'flex';
 }
 const GC_SCHEMES_KEY = 'gc-beauty-schemes';
@@ -3453,12 +3504,15 @@ reader.readAsDataURL(f);
 document.body.appendChild(fi);
 gcImgInput = fi;
 if (window.mochiFilePickLabel && gcImgBtn) window.mochiFilePickLabel(gcImgBtn, fi);
+if (window.mochiFilePickSurface && gcImgBtn) window.mochiFilePickSurface(gcImgBtn, { id: 'gc-img-tap', accept: 'image/*', multiple: true, owner: fi });
 return fi;
 }
+try { if (window.mochiFilePickSurface && gcImgBtn) window.mochiFilePickSurface(gcImgBtn, { id: 'gc-img-tap', accept: 'image/*', multiple: true, owner: gcImgPicker() }); } catch (err) {}
 if (gcImgBtn) gcImgBtn.addEventListener('click', (e) => {
 e.stopPropagation();
 const fi = gcImgPicker();
 try { if (window.mochiFilePickLabel) window.mochiFilePickLabel(gcImgBtn, fi); } catch (err) {}
+try { if (window.mochiFilePickSurface) window.mochiFilePickSurface(gcImgBtn, { id: 'gc-img-tap', accept: 'image/*', multiple: true, owner: fi }); } catch (err) {}
 var _fb = () => { window.mochiFilePickFire(fi, { onFail: () => toast('无法打开图片选择器，请重试') }); };
 if (window.mochiFilePickGuard) window.mochiFilePickGuard(fi, _fb);
 else _fb();
@@ -3645,34 +3699,66 @@ const gcPokeNameEl = document.getElementById('gc-poke-name');
 const gcPokeCloseBtn = document.getElementById('gc-poke-close');
 let gcPokeCid = null;
 const GC_POKE_PRESETS = ['拍了拍你', '戳了戳你的脸蛋', '弹了一下你的额头', '揉了揉你的头发', '捏了捏你的脸颊', '拍了拍你的肩膀'];
-function gcPokeActions() {
-const out = GC_POKE_PRESETS.slice();
-const _pkOk = function (x) {
+function gcPokeTextOnly(x) {
 if (typeof x !== 'string' || !x.trim()) return false;
 if (x.indexOf('data:') === 0 || x.indexOf('|||') >= 0 || x.indexOf('@@m:') >= 0) return false;
 if (/^https?:\/\//i.test(x)) return false;
 return true;
-};
-try { (window.getPokeCards() || []).forEach(x => { if (_pkOk(x) && out.indexOf(x) < 0) out.push(x); }); } catch (e) {}
-[['poke-groups-mine', false], ['poke-user-mine', true]].forEach(([k, flat]) => {
-try {
-const v = JSON.parse(window.activeStore().get(k) || 'null');
-if (flat && Array.isArray(v)) {
-v.forEach(x => { if (_pkOk(x) && out.indexOf(x) < 0) out.push(x); });
-} else if (Array.isArray(v)) {
-v.forEach(g => { if (Array.isArray(g) && Array.isArray(g[1])) g[1].forEach(x => { if (_pkOk(x) && out.indexOf(x) < 0) out.push(x); }); });
 }
-} catch (e) {}
+const gcPokeBar = document.createElement('div');
+gcPokeBar.className = 'poke-groups';
+if (gcPokeCard && gcPokeList) gcPokeCard.insertBefore(gcPokeBar, gcPokeList);
+let gcPokeCur = '';
+function gcPokePrefGet() { try { return window.activeStore().get('gc-poke-group') || ''; } catch (e) { return ''; } }
+function gcPokePrefSet(k) { try { window.activeStore().set('gc-poke-group', k); } catch (e) {} }
+function gcPokeJson(key) {
+try {
+const v = JSON.parse(window.activeStore().get(key) || 'null');
+return Array.isArray(v) ? v : [];
+} catch (e) { return []; }
+}
+function gcPokeGroups() {
+const seen = new Set();
+const out = [];
+const push = (scope, label, cards) => {
+const list = (cards || []).filter(x => {
+if (!gcPokeTextOnly(x) || seen.has(x)) return false;
+seen.add(x);
+return true;
 });
+if (list.length) out.push({ key: scope + '|' + label, label, cards: list });
+};
+push('preset', '预设', GC_POKE_PRESETS);
+let lib = [];
+try { lib = (window.getPokeGroups && window.getPokeGroups()) || []; } catch (e) {}
+lib.forEach(g => { if (Array.isArray(g) && Array.isArray(g[1]) && g[0]) push('lib', String(g[0]), g[1]); });
+gcPokeJson('poke-groups-mine').forEach(g => { if (Array.isArray(g) && Array.isArray(g[1]) && g[0]) push('mine', String(g[0]), g[1]); });
+push('legacy', '我的新增', gcPokeJson('poke-user-mine'));
 return out;
 }
 function gcClosePokeCard() { if (gcPokeCard) gcPokeCard.hidden = true; gcPokeCid = null; }
+function renderGcPokeBar(groups) {
+if (!gcPokeBar) return;
+gcPokeBar.innerHTML = '';
+if (groups.length < 2) { gcPokeBar.style.display = 'none'; return; }
+gcPokeBar.style.display = '';
+groups.forEach(g => {
+const c = document.createElement('span');
+c.className = 'emoji-g-chip' + (gcPokeCur === g.key ? ' sel' : '');
+c.textContent = g.label + g.cards.length;
+c.addEventListener('click', (e) => { e.stopPropagation(); gcPokeCur = g.key; gcPokePrefSet(g.key); renderGcPokeList(); });
+gcPokeBar.appendChild(c);
+});
+}
 function renderGcPokeList() {
 if (!gcPokeList) return;
+const groups = gcPokeGroups();
+if (!groups.some(g => g.key === gcPokeCur)) gcPokeCur = groups.length ? groups[0].key : '';
+renderGcPokeBar(groups);
 gcPokeList.innerHTML = '';
-const acts = gcPokeActions();
-if (!acts.length) { gcPokeList.innerHTML = '<div class="cc-empty">暂无拍一拍文字</div>'; return; }
-acts.forEach((a) => {
+const cur = groups.find(g => g.key === gcPokeCur);
+if (!cur) { gcPokeList.innerHTML = '<div class="cc-empty">暂无拍一拍文字</div>'; return; }
+cur.cards.forEach((a) => {
 const d = document.createElement('div');
 d.className = 'cc-item glass';
 d.innerHTML = '<div class="cc-txt"><div class="t">' + escapeHtml(a) + '</div></div>';
@@ -3684,6 +3770,7 @@ function gcOpenPokeCard(cid) {
 if (!gcPokeCard || !gcPokeList) return;
 closeGcMsgActions(); // 菜单开着时先收，防双浮层叠着（stopPropagation 会跳过 document 收菜单那条路）
 gcPokeCid = cid;
+gcPokeCur = gcPokePrefGet(); // 键按桌面命名空间存，切桌面后开面板要重新落位
 if (gcPokeNameEl) gcPokeNameEl.textContent = memberName(cid);
 renderGcPokeList();
 gcPokeCard.hidden = false;

@@ -136,6 +136,14 @@ if (isSeed) { try { if (window.idbDelete) window.idbDelete(MUSIC_PREFIX + ':musi
 }
 });
 {
+let httpsUpgraded = false;
+library.forEach(m => {
+if (!m || m.neteaseId || m.source !== 'url' || !m.url) return;
+if (/^http:\/\//i.test(m.url)) { m.url = m.url.replace(/^http:\/\//i, 'https://'); httpsUpgraded = true; }
+});
+if (httpsUpgraded) saveLibrary();
+}
+{
 const before = library.length;
 library = library.filter(m => !(m && m.id && m.id.indexOf('sm_seed_') === 0));
 if (library.length !== before) {
@@ -1178,6 +1186,7 @@ if (neteaseId) {
 url = neteaseMetingUrl(neteaseId);
 if (!nm) nm = '网易云音乐-' + neteaseId;
 }
+if (!neteaseId && /^http:\/\//i.test(url)) url = url.replace(/^http:\/\//i, 'https://');
 if (!/^(https?:\/\/|file:\/\/|data:|\/)/i.test(url)) return;
 const id = 'sm_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6) + '_' + li;
 const item = { id: id, neteaseId: neteaseId || '', name: nm, artist: batchMode ? '' : artist, url: url, source: 'url', duration: 0, playlistId: targetPl || 'default', addedAt: Date.now() };
@@ -1315,6 +1324,7 @@ const fn = (url.match(/\/([^/?#]+?)(?:\.[^/.?#]+)?$/) || [])[1];
 name = fn || '链接音乐';
 }
 if (!/^(https?:\/\/|file:\/\/|data:|\/)/i.test(url)) return;
+if (!neteaseId && /^http:\/\//i.test(url)) url = url.replace(/^http:\/\//i, 'https://');
 const nid = 'sm_batch_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6) + '_' + ui;
 const item = { id: nid, neteaseId: neteaseId || '', name: name, artist: artist, url: url, source: 'url', duration: 0, playlistId: targetPl || 'default', addedAt: Date.now() };
 library.push(item);
@@ -1581,7 +1591,7 @@ const icon = active && audio && !audio.paused
 ? '<path d="M7 5.5h3.5v13H7zM13.5 5.5H17v13h-3.5z"/>'
 : '<path d="M8 5.5v13l11-6.5z"/>';
 const badge = m.source === 'local'
-? '<span class="sm-src sm-src-local">本地</span>' + (m.probeFail ? '<span class="sm-src sm-src-bad">放不了</span>' : '')
+? '<span class="sm-src sm-src-local">本地</span>' + (m.fileLost ? '<span class="sm-src sm-src-bad">文件丢失</span>' : m.probeFail ? '<span class="sm-src sm-src-bad">放不了</span>' : '')
 : '<span class="sm-src">网络</span>';
 const checked = musicBatch && batchSel.has(m.id) ? ' sel' : '';
 const chk = musicBatch ? '<span class="sm-batch-chk"></span>' : '';
@@ -2414,9 +2424,11 @@ if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
 updatePlayerBar();
 if (m.source === 'local' || (!m.url && m.source !== 'url')) {
 const key = MUSIC_PREFIX + ':music-file:' + m.id;
+const markFileLost = () => { try { if (!m.fileLost) { m.fileLost = 1; saveLibrary(); } } catch (e) {} };
 const loadLocal = (v) => {
 if (currentId !== m.id) return;
 if (plausibleLocalValue(v)) {
+if (m.fileLost) { m.fileLost = 0; try { saveLibrary(); } catch (e) {} }
 playLocal(m, v);
 return;
 }
@@ -2426,6 +2438,7 @@ if (idx >= 0) {
 playDemoFor(m, idx);
 return;
 }
+markFileLost();
 toast('音乐文件加载失败，可能已被清理'); wantPlay = false; clearBgResume(); currentId = null; updatePlayerBar(); renderLibrary();
 };
 {
@@ -2450,7 +2463,7 @@ if (currentId !== m.id) return;
 if (v2 !== undefined && v2 !== null && v2 !== '') loadLocal(v2);
 else failLocal();
 };
-const failLocal = () => { toast('音乐文件加载失败，可能已被清理'); wantPlay = false; clearBgResume(); currentId = null; updatePlayerBar(); renderLibrary(); };
+const failLocal = () => { markFileLost(); toast('音乐文件加载失败，可能已被清理'); wantPlay = false; clearBgResume(); currentId = null; updatePlayerBar(); renderLibrary(); };
 const oldLs = localStorage.getItem(legacyKey);
 if (oldLs) { legacyFallback(oldLs); return; }
 if (MUSIC_PREFIX !== 'xy-home-v2') {
@@ -2931,11 +2944,34 @@ const w = document.getElementById('music-widget');
 return !!(w && w.offsetParent !== null);
 } catch (e) { return false; }
 }
+let floatClampSig = '';
+function clampFloatPos() {
+try {
+const el = document.getElementById('sm-float');
+if (!el || el.hidden) return; // 隐藏时量不到尺寸，等可见那一次再钳
+const sig = window.innerWidth + 'x' + window.innerHeight;
+if (floatClampSig === sig) return;
+floatClampSig = sig;
+const w = el.offsetWidth, h = el.offsetHeight;
+if (!w || !h) return;
+const r = el.getBoundingClientRect();
+const maxX = Math.max(4, window.innerWidth - w - 4);
+const maxY = Math.max(4, window.innerHeight - h - 4);
+let x = r.left, y = r.top;
+if (x < 4) x = 4; else if (x > maxX) x = maxX;
+if (y < 4) y = 4; else if (y > maxY) y = maxY;
+if (Math.abs(x - r.left) < 1 && Math.abs(y - r.top) < 1) return;
+el.style.left = x + 'px';
+el.style.top = y + 'px';
+store.set('music-float-pos', JSON.stringify({ left: el.style.left, top: el.style.top }));
+} catch (e) {}
+}
 function renderFloat() {
 const el = document.getElementById('sm-float');
 if (!el) return;
 const m = findTrack(currentId);
 el.hidden = !(settings.floatEn && !floatClosed && currentId && audio && m) || floatHideByWidget || floatOwnSurfaceShown();
+if (!el.hidden) clampFloatPos(); // #994：可见这一次确保位置在当前视口内
 applyFloatMin();
 if (!m) return;
 document.getElementById('sm-f-name').textContent = m.name || '未知歌曲';
@@ -3024,7 +3060,7 @@ function syncFloatToggle() {
 const cb = document.getElementById('music-float-en');
 if (cb) cb.checked = settings.floatEn;
 }
-function taMusicSys(text) { try { if (window.chatAddSystem) window.chatAddSystem(text, { silent: true }); } catch (e) {} }
+function taMusicSys(text) { try { if (window.chatAddSystem) window.chatAddSystem(text, { silent: true, nightAllow: true }); } catch (e) {} }
 function taMusicSay(text) { try { if (window.chatAddIn) window.chatAddIn(text, { silent: true }); } catch (e) {} }
 function taFavList() {
 try {
@@ -3209,6 +3245,11 @@ try {
 const pos = JSON.parse(store.get('music-float-pos') || 'null');
 if (pos && pos.left && pos.top) { el.style.left = pos.left; el.style.top = pos.top; }
 } catch(e) {}
+let _fpClampT = null;
+window.addEventListener('resize', function () {
+if (_fpClampT) clearTimeout(_fpClampT);
+_fpClampT = setTimeout(function () { _fpClampT = null; floatClampSig = ''; clampFloatPos(); }, 300);
+});
 }
 function addRecord(trackId, triggerType) {
 const m = findTrack(trackId);
@@ -3343,13 +3384,31 @@ toast('已删除');
 });
 }
 let invitePlayCheckTimer = null;
+let inviteCheckStage = 0;
 function armInvitePlayCheck() {
 try {
 if (invitePlayCheckTimer) clearTimeout(invitePlayCheckTimer);
-invitePlayCheckTimer = setTimeout(function () {
+inviteCheckStage = 0;
+invitePlayCheckTimer = setTimeout(invitePlayCheckStep, 4000);
+} catch (e) {}
+}
+function invitePlayCheckStep() {
 invitePlayCheckTimer = null;
 try {
-if (!currentId || !audio) return; // 曲目加载失败等路径已有各自的 toast，不重复打扰
+if (!currentId) return; // 曲目加载失败等路径已有各自的 toast，不重复打扰
+if (!audio) {
+if (inviteCheckStage === 0) { inviteCheckStage = 1; invitePlayCheckTimer = setTimeout(invitePlayCheckStep, 5000); return; }
+if (inviteCheckStage === 1) {
+inviteCheckStage = 2;
+const retryId = currentId;
+try { toast('本地音乐读取较慢，正在重试…'); } catch (e) {}
+try { playTrack(retryId); } catch (e) {}
+invitePlayCheckTimer = setTimeout(invitePlayCheckStep, 5000);
+return;
+}
+try { armAutoResume(); toast('音乐没能播放出来：点一下屏幕任意位置再试，或在播放列表换一首'); } catch (e) {}
+return;
+}
 if (!audio.paused) return;        // 在播或在缓冲＝健康，交给停滞守卫盯
 const p = audio.play();
 if (p && p.catch) p.catch(function () {
@@ -3362,8 +3421,77 @@ function () { try { if (audio) audio.muted = false; } catch (e) {} armAutoResume
 );
 });
 } catch (e) {}
-}, 4000);
+}
+function inviteStaleToast(name) {
+reqData = null;
+try { toast('已切换联系人，这份听歌邀请已失效，可以让 ' + name + ' 再邀一次'); } catch (e) {}
+}
+function prewarmLocalAudio(id) {
+try {
+const m = findTrack(id);
+if (!m || !(m.source === 'local' || (!m.url && m.source !== 'url'))) return;
+if (localBlobCache[id]) return;
+const lsV = store.get('music-file:' + id);
+if (plausibleLocalValue(lsV)) { localBlobCache[id] = lsV; return; }
+if (!window.idbGet) return;
+window.idbGet(MUSIC_PREFIX + ':music-file:' + id).then(function (v) {
+if (plausibleLocalValue(v) && !localBlobCache[id]) localBlobCache[id] = v;
+});
 } catch (e) {}
+}
+function openMusicInvitePanel(trackId, switching) {
+const track = findTrack(trackId);
+if (!track) return false;
+const myCid = window.__activeCid || 'default'; // 多桌面：弹窗期间切换联系人后点按钮不得写到新桌面
+const name = partnerName();
+const trackName = track.name || '未知歌曲';
+const artist = track.artist ? ' - ' + track.artist : '';
+reqData = { trackId: trackId, switching: !!switching };
+taActive = true;
+taMusicSys(switching
+? name + ' 想邀请你切换到《' + trackName + '》' + artist
+: name + ' 想和你一起听《' + trackName + '》' + artist);
+if (!window.openTCPanel) return false;
+window.openTCPanel('音乐', '' +
+'<div class="sm-req">' +
+'<div class="sm-req-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>' +
+'<div class="sm-req-hint">' + (window.taFit ? window.taFit(name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：')) : (name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：'))) + '</div>' +
+'<div class="sm-req-name">《' + esc(trackName) + '》</div>' +
+'</div>' +
+'<div class="mail-actions"><button class="cc-tool" id="sm-req-no">稍后</button><button class="cc-tool" id="sm-req-yes">' + (switching ? '切过去' : '一起听') + '</button></div>');
+const noBtn = document.getElementById('sm-req-no');
+const yesBtn = document.getElementById('sm-req-yes');
+if (!noBtn || !yesBtn) return false;
+noBtn.addEventListener('click', () => {
+document.getElementById('tc-mask').hidden = true;
+if ((window.__activeCid || 'default') !== myCid) { inviteStaleToast(name); return; }
+reqData = null;
+history.push({ id: 'smh_' + Date.now(), trackId: '', trackName: '', triggerType: '拒绝了 TA 的听歌邀请《' + esc(trackName) + '》', rejected: true, ts: Date.now() });
+if (history.length > 500) history = history.slice(-500);
+saveHistory(); renderHistory();
+taMusicSys('你拒绝了 ' + name + ' 的听歌邀请');
+});
+yesBtn.addEventListener('click', () => {
+document.getElementById('tc-mask').hidden = true;
+if ((window.__activeCid || 'default') !== myCid) { inviteStaleToast(name); return; }
+if (!reqData) return; // 连点两次只认第一次
+const switchNow = !!reqData.switching;
+reqData = null;
+if (!findTrack(trackId)) {
+try { toast('《' + trackName + '》已不在音乐库里，无法播放'); } catch (e) {}
+return;
+}
+callHoldPlaying = false; callHoldPending = false; // #904a
+playTrack(trackId);
+addRecord(trackId, '接受了 TA 的听歌邀请');
+taMusicSys(switchNow
+? '你接受了邀请，已切换到《' + trackName + '》'
+: '你接受了 ' + name + ' 的听歌邀请，一起听《' + trackName + '》');
+toast('开始播放');
+armInvitePlayCheck(); // #904b
+renderFloat(); // #904a：hold 藏起的小框随新播放意图立刻恢复（本地歌异步起播由 onplay 再刷新）
+});
+return true;
 }
 window.maybeMusicRequest = function () {
 try {
@@ -3375,63 +3503,17 @@ const now = Date.now();
 const cooling = now - cooldownAt < settings.cooldownMs;
 if (!cooling) {
 const prob = (typeof settings.reqProb === 'number' ? settings.reqProb : 5);
-if (Math.random() * 100 < prob) {
+const effProb = window.icProb ? window.icProb(prob) : prob;
+if (Math.random() * 100 < effProb) {
 console.log('[music-req] TRIGGER');
 cooldownAt = now;
 const candidates = library.slice();
 if (!candidates.length) return;
 const track = candidates[Math.floor(Math.random() * candidates.length)];
-const myCid = window.__activeCid || 'default';
-const switching = !!currentId;
-reqData = { trackId: track.id, switching: switching };
-taActive = true;
-const name = partnerName();
-const trackName = track.name || '未知歌曲';
-const artist = track.artist ? ' - ' + track.artist : '';
-const askMsg = switching
-? name + ' 想邀请你切换到《' + trackName + '》' + artist
-: name + ' 想和你一起听《' + trackName + '》' + artist;
-taMusicSys(askMsg);
-if (window.openTCPanel) {
-window.openTCPanel('音乐', '' +
-'<div class="sm-req">' +
-'<div class="sm-req-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>' +
-'<div class="sm-req-hint">' + (window.taFit ? window.taFit(name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：')) : (name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：'))) + '</div>' +
-'<div class="sm-req-name">《' + esc(trackName) + '》</div>' +
-'</div>' +
-'<div class="mail-actions"><button class="cc-tool" id="sm-req-no">稍后</button><button class="cc-tool" id="sm-req-yes">' + (switching ? '切过去' : '一起听') + '</button></div>');
-document.getElementById('sm-req-no').addEventListener('click', () => {
-document.getElementById('tc-mask').hidden = true;
-if ((window.__activeCid || 'default') !== myCid) { reqData = null; return; }
-reqData = null;
-history.push({ id: 'smh_' + Date.now(), trackId: '', trackName: '', triggerType: '拒绝了 TA 的听歌邀请《' + esc(trackName) + '》', rejected: true, ts: Date.now() });
-if (history.length > 500) history = history.slice(-500);
-saveHistory(); renderHistory();
-taMusicSys('你拒绝了 ' + name + ' 的听歌邀请');
-});
-document.getElementById('sm-req-yes').addEventListener('click', () => {
-document.getElementById('tc-mask').hidden = true;
-if ((window.__activeCid || 'default') !== myCid) { reqData = null; return; }
-if (!reqData) return;
-document.getElementById('tc-mask').hidden = true;
-if ((window.__activeCid || 'default') !== myCid) { reqData = null; return; }
-if (!reqData) return;
-const switchNow = !!reqData.switching;
-callHoldPlaying = false; callHoldPending = false; // #904a
-playTrack(reqData.trackId);
-addRecord(reqData.trackId, '接受了 TA 的听歌邀请');
-const accMsg = switchNow
-? '你接受了邀请，已切换到《' + (track.name || '未知歌曲') + '》'
-: '你接受了 ' + name + ' 的听歌邀请，一起听《' + (track.name || '未知歌曲') + '》';
-taMusicSys(accMsg);
-reqData = null;
-toast('开始播放');
-armInvitePlayCheck(); // #904b：同意后 4 秒还没声＝被外部打停，自动补播并兜手势恢复
-renderFloat(); // #904a：hold 藏起的小框随新播放意图立刻恢复（本地歌异步起播由 onplay 再刷新）
-});
+if (!openMusicInvitePanel(track.id, !!currentId)) { console.log('[music-req] panel open failed'); return; }
+prewarmLocalAudio(track.id);
 }
 return; // 「一起去听」已触发，本次调用不再判断「预订下一首」
-}
 }
 const rProb = probOf(settings.taReserveProb, 6);
 if (currentId && !(now - cooldownAt < settings.cooldownMs) && Math.random() * 100 < rProb && library.length) {
@@ -3673,15 +3755,8 @@ document.getElementById('sm-diag-force').addEventListener('click', () => {
 document.getElementById('tc-mask').hidden = true;
 if (!library.length) { toast('library 为空，无法触发'); return; }
 const track = library[Math.floor(Math.random() * library.length)];
-reqData = { trackId: track.id };
-taActive = true;
-const name = partnerName();
-const trackName = track.name || '未知歌曲';
-const artist = track.artist ? ' - ' + track.artist : '';
-taMusicSys(name + ' 想和你一起听《' + trackName + '》' + artist);
-if (window.openTCPanel) {
-window.openTCPanel('音乐', '<div class="sm-req"><div class="sm-req-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div><div class="sm-req-hint">' + name + ' 想和你一起听：</div><div class="sm-req-name">《' + esc(trackName) + '》</div></div><div class="mail-actions"><button class="cc-tool" id="sm-req-no">稍后</button><button class="cc-tool" id="sm-req-yes">一起听</button></div>');
-}
+if (!openMusicInvitePanel(track.id, false)) { toast('邀请面板没能打开，请重进音乐页再试'); return; }
+prewarmLocalAudio(track.id);
 });
 });
 const clearBtn = document.getElementById('sm-clear-cache');

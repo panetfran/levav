@@ -417,6 +417,15 @@ let g = auth[t].find(p => p[0] === name);
 if (!g) { g = [name, []]; auth[t].push(g); }
 const have = new Set(g[1]);
 cards.forEach(c => { if (!have.has(c)) { g[1].push(c); have.add(c); } });
+const uniq = (a) => a.filter((x, i) => a.indexOf(x) === i);
+const memU = uniq(cards);
+if (memU.length === cards.length && uniq(g[1]).length === g[1].length) {
+const shared = memU.filter(c => g[1].indexOf(c) >= 0);
+if (shared.length > 1) {
+let k = 0;
+for (let i = 0; i < g[1].length; i++) if (shared.indexOf(g[1][i]) >= 0) g[1][i] = shared[k++];
+}
+}
 });
 });
 return auth;
@@ -1002,6 +1011,9 @@ let rendering = false; // 分块渲染进行中（局部删除前判断：渲染
 const DRAG_CATS = ['text', 'kaomoji', 'emoji', 'sticker'];
 function attachCardDrag(el, gname, i) {
 if (DRAG_CATS.indexOf(cur) < 0) return;
+el.style.setProperty('-webkit-user-select', 'none');
+el.style.setProperty('user-select', 'none');
+el.style.setProperty('-webkit-touch-callout', 'none');
 let pressTimer = null;
 let startX = 0, startY = 0;
 el.addEventListener('pointerdown', (e) => {
@@ -1038,6 +1050,7 @@ document.body.appendChild(clone);
 el.classList.add('cc-dragging');
 if (navigator.vibrate) try { navigator.vibrate(15); } catch (err) {}
 let dropTarget = null;
+const stopPan = (ev) => { if (ev.cancelable) ev.preventDefault(); };
 const onMove = (ev) => {
 ev.preventDefault();
 clone.style.top = (ev.clientY - offsetY) + 'px';
@@ -1045,6 +1058,7 @@ dropTarget = computeCardDrop(ev.clientY);
 updateCardDropIndicator(dropTarget);
 };
 const onUp = () => {
+document.removeEventListener('touchmove', stopPan);
 document.removeEventListener('pointermove', onMove);
 document.removeEventListener('pointerup', onUp);
 document.removeEventListener('pointercancel', onUp);
@@ -1053,6 +1067,7 @@ el.classList.remove('cc-dragging');
 clearCardDropIndicator();
 if (dropTarget) moveCardTo(gname, i, dropTarget);
 };
+document.addEventListener('touchmove', stopPan, { passive: false });
 document.addEventListener('pointermove', onMove, { passive: false });
 document.addEventListener('pointerup', onUp);
 document.addEventListener('pointercancel', onUp);
@@ -1148,7 +1163,12 @@ return c.toLowerCase();
 }
 function render() {
 const token = ++renderToken;
+try { if (window.__mochiPhase) window.__mochiPhase('cc-render'); } catch (e0) {}
 rendering = true;
+try {
+var _ccImpSync = document.getElementById('cc-import');
+if (_ccImpSync && _ccImpSync.__ccSyncSurface) _ccImpSync.__ccSyncSurface();
+} catch (e1) {}
 renderTabCounts();
 let mediaHelp = document.getElementById('cc-media-help');
 const showMediaHelp = cur === 'sticker' || cur === 'image';
@@ -1252,19 +1272,40 @@ openEditCard(it.gname, it.i);
 attachCardDrag(el, it.gname, it.i);
 }
 };
-const step = () => {
+const IDLE_BATCH = 40;
+const scheduleNext = (fn) => {
+try {
+if (typeof window.requestIdleCallback === 'function') {
+window.requestIdleCallback(function () { fn(); }, { timeout: 300 });
+return;
+}
+} catch (e) {}
+setTimeout(fn, 60);
+};
+const step = (batch) => {
 if (token !== renderToken) { rendering = false; return; } // 新渲染已开始，废弃本批次
-const end = Math.min(pos + RENDER_BATCH, flat.length);
+const n = batch || RENDER_BATCH;
+const end = Math.min(pos + n, flat.length);
 for (; pos < end; pos++) {
 const el = document.createElement('div');
 build(el, flat[pos]);
 frag.appendChild(el);
 }
 list.appendChild(frag);
-if (pos < flat.length) requestAnimationFrame(step);
-else rendering = false;
+if (pos < flat.length) {
+if (document.hidden) {
+var _onVis = function () {
+document.removeEventListener('visibilitychange', _onVis);
+if (token !== renderToken) { rendering = false; return; }
+scheduleNext(function () { step(IDLE_BATCH); });
 };
-step(); // 首帧同步跑第一批（小列表一次完成，行为与原一致）
+document.addEventListener('visibilitychange', _onVis);
+return;
+}
+scheduleNext(function () { step(IDLE_BATCH); });
+} else rendering = false;
+};
+step(); // 首批同步跑（小列表一次完成，行为与原一致）
 }
 tabsWrap.querySelectorAll('.cc-tab').forEach(tab => {
 tab.addEventListener('click', () => {
@@ -1312,6 +1353,7 @@ searchResultEl.style.cssText = 'padding:0 12px';
 searchResultEl.hidden = true;
 (function () { const w = document.querySelector('#page-chatcard .tc-search-wrap'); if (w && w.parentNode) w.parentNode.insertBefore(searchResultEl, w.nextSibling); })();
 function renderSearchResult(kw) {
+try { if (window.__mochiPhase) window.__mochiPhase('cc-search'); } catch (e0) {}
 if (!kw) { searchResultEl.hidden = true; searchResultEl.innerHTML = ''; return; }
 searchResultEl.hidden = false;
 kw = window.mochiSearch ? window.mochiSearch.qnorm(kw) : kw; // #573 查询侧标点归一：「晚安。」＝「晚安」
@@ -1893,8 +1935,10 @@ if ((replaced & 15) === 0) await yieldUI();
 }
 if (failed) { seenTok.clear(); out.libs.push({ label: L.label, skipped: '令牌化不可用，本库未改动' }); continue; }
 if (!largeTotal) continue;
+let _poolOk = false;
+try { _poolOk = await window.mochiMediaFlush(); } catch (e) { _poolOk = false; }
+if (_poolOk !== true) { out.libs.push({ label: L.label, skipped: '媒体池写盘失败（存储繁忙），本库保持不变，稍后自动重试' }); continue; }
 out.images += largeTotal;
-try { await window.mochiMediaFlush(); } catch (e) {}
 outStr += raw.slice(last);
 if (!replaced || outStr.length >= raw.length) continue;
 try { window.xyStore(L.prefix).set(L.key, outStr); } catch (eW) { out.libs.push({ label: L.label, skipped: '写回失败' }); continue; }
@@ -2086,6 +2130,15 @@ if (mode === 'paste') { pasteImportFile(); return; }
 pickImportFile(mode);
 }, {
 noInput: true,
+pickOk: {
+entry: 'cc-import-data', accept: '',
+skipWhen: (m) => m === 'paste',
+onFiles: (files, mode) => {
+const f = files && files[0];
+if (!f) { toast('没有取到文件，请再选一次'); return; }
+importFromFile(f, mode);
+}
+},
 staticText: '选择导入方式：\n· 追加字卡：保留现有字卡，按分组并入，重复内容自动去除\n· 导入到「' + curName + '」：文件里全部字卡都并入当前分类\n· 替换字卡：清空当前字卡库，完全使用文件内容\n· 粘贴文本导入：文件选不出来时用这个（按「追加字卡」并入）',
 pills: [
 { label: '追加字卡（自动去重）', value: 'merge' },
@@ -2634,6 +2687,14 @@ liCcFullImport.addEventListener('click', () => {
 if (!window.openModal) return;
 window.openModal('导入自定义字卡', '', (mode) => { ccFullPickFile(mode); }, {
 noInput: true,
+pickOk: {
+entry: 'li-cc-full-import', accept: '',
+onFiles: (files, mode) => {
+const f = files && files[0];
+if (!f) { toast('没有取到文件，请再选一次'); return; }
+ccFullImportFile(f, mode);
+}
+},
 staticText: '导入范围：文件里包含的各库（公用聊天字卡 / 专属聊天字卡 / 互动功能字卡 / 寻踪日常 / 今日情话 / TA 六类题库）——公用、专属、互动功能、全量四种导出文件都支持，文件里没有的部分不动。\n注意：「专属」部分会导入到当前桌面联系人——如文件来自别的桌面，请先切到对应联系人桌面再导入。\n选择导入方式：\n· 追加合并：保留现有字卡，按内容去重并入（推荐）\n· 整包替换：文件里包含的各库清空后完全使用文件内容，未包含在文件里的现有字卡会丢失',
 pills: [
 { label: '追加合并（自动去重）', value: 'merge' },
@@ -2643,8 +2704,9 @@ pill: 'merge'
 });
 });
 function ccFullPickFile(mode) {
-pickFiles('', false, (files) => {
-const f = files && files[0];
+pickFiles('', false, (files) => ccFullImportFile(files && files[0], mode));
+}
+function ccFullImportFile(f, mode) {
 if (!f) return;
 const fname = f.name || '未命名文件';
 const reader = new FileReader();
@@ -2685,7 +2747,6 @@ handleText(raw, '');
 };
 reader.onerror = () => toast('导入失败：文件读取失败，请重选文件再试');
 reader.readAsText(f);
-});
 }
 function ccFullApply(d, mode) {
 try {
@@ -2846,10 +2907,8 @@ b.remove();
 }
 const impBtn = document.getElementById('cc-import');
 if (impBtn) {
-impBtn.addEventListener('click', () => {
-if (IMG_TYPES[cur]) {
-pickFiles(cur === 'voice' ? '' : 'image/*', true, (files) => {
-if (!files.length) return;
+function ccImportMedia(files) {
+if (!files || !files.length) return;
 if (!groups[cur]) groups[cur] = [];
 let g = null;
 if (curGroup) {
@@ -2863,14 +2922,16 @@ if (!g) { g = [defName, []]; groups[cur].push(g); }
 let done = 0;
 let skipped = 0;
 let notAudio = 0;
+let badResolve = 0; // 解析/解码失败的图片计数（旧版静默「加载不出来」）
 let gifSaved = 0;  // 动图直存（跳过压缩）计数
 let cmpSaved = 0;  // 静态图压缩成功计数
 const sizeLimit = cur === 'voice' ? 10 * 1024 * 1024 : 20 * 1024 * 1024;
 files.forEach((f) => {
+const settleOne = () => { if (done === files.length) finishUpload(done - skipped - notAudio - badResolve, skipped, notAudio, badResolve); };
 if (f.size > sizeLimit) {
 skipped++;
 done++;
-if (done === files.length) finishUpload(done - skipped, skipped);
+settleOne();
 return;
 }
 const reader = new FileReader();
@@ -2883,13 +2944,13 @@ const isAudio = audioMimeFromName(f.name) || (f.type && f.type.indexOf('audio/')
 if (isVideo || !isAudio) {
 notAudio++;
 done++;
-if (done === files.length) finishUpload(done - skipped - notAudio, skipped, notAudio);
+settleOne();
 return;
 }
 }
 const process = (data) => {
 const val = cur === 'voice' ? ((f.name || '音频').replace(/\.[^.]+$/, '') + '|||' + data) : data;
-const commit = (v) => { g[1].push(v); done++; if (done === files.length) finishUpload(done - skipped, skipped); };
+const commit = (v) => { g[1].push(v); done++; settleOne(); };
 if (cur !== 'voice' && window.mochiMediaTokenize && typeof data === 'string' && data.length >= CC_CC_TOK_MIN) {
 try { window.mochiMediaTokenize(data).then((tok) => commit(tok || val)).catch(() => commit(val)); return; } catch (e) { commit(val); return; }
 }
@@ -2897,28 +2958,31 @@ commit(val);
 };
 if (cur === 'voice') process(normalizeAudioDataURL(reader.result, f));
 else {
-const isGif = /image\/gif/i.test(f.type || '') || /\.gif$/i.test(f.name || '');
+let src = String(reader.result || '');
+try { const mime = window.chatFixNoMimeImg ? window.chatFixNoMimeImg(src) : ''; if (mime) src = mime; } catch (e0) {}
+const isGif = /image\/gif/i.test(f.type || '') || /\.gif$/i.test(f.name || '') || /^data:image\/gif;/i.test(src);
 if (isGif) {
 if (String(reader.result || '').length > CC_GIF_MAX_B64) {
 skipped++; done++;
-if (done === files.length) finishUpload(done - skipped, skipped);
+settleOne();
 toast('GIF「' + ((f && f.name) || '动图') + '」超过 380KB，已跳过');
 return;
 }
 gifSaved++;
-process(reader.result); return;
+process(src); return;
 }
 const isImg = cur === 'image';
-compressImage(reader.result, isImg ? 720 : 480, isImg ? 'image/jpeg' : 'image/png', isImg ? 0.85 : undefined).then((data) => {
-if (!data) { skipped++; done++; if (done === files.length) finishUpload(done - skipped, skipped); return; }
+compressImage(src, isImg ? 720 : 480, isImg ? 'image/jpeg' : 'image/png', isImg ? 0.85 : undefined).then((data) => {
+if (!data) { badResolve++; done++; settleOne(); return; }
 cmpSaved++;
 process(data);
 });
 }
 };
+reader.onerror = () => { badResolve++; done++; settleOne(); toast('有图片读取失败，已跳过（可换一张再试）'); };
 reader.readAsDataURL(f);
 });
-function finishUpload(ok, skip, skipNotAudio) {
+function finishUpload(ok, skip, skipNotAudio, bad) {
 scheduleSave();
 renderGroupsBar();
 render();
@@ -2928,10 +2992,37 @@ if (gifSaved > 0) msgs.push('动图无法压缩，「' + gifSaved + '」个按�
 if (cmpSaved > 0) msgs.push('已自动压缩 ' + cmpSaved + ' 个静态图');
 if (skip > 0) msgs.push('跳过 ' + skip + ' 个超大文件（' + (cur === 'voice' ? '音频>10MB' : '图片>20MB') + '）');
 if (skipNotAudio > 0) msgs.push('跳过 ' + skipNotAudio + ' 个视频/非音频（语音分类只支持音频）');
+if (bad > 0) msgs.push(bad + ' 个图片无法解析/已跳过（可能是格式不受支持或已损坏）');
 if (!msgs.length) msgs.push('没有可上传的文件');
 toast(msgs.join('，'));
 }
+}
+function syncCcImportSurface() {
+try {
+if (!impBtn) return;
+const media = !!IMG_TYPES[cur];
+const inp = impBtn.querySelector('input[data-file-pick-surface]');
+if (!media) { if (inp) try { inp.remove(); } catch (e) {} return; }
+if (inp) {
+try { inp.accept = cur === 'voice' ? '' : 'image/*'; inp.multiple = true; } catch (e) {}
+return; // 已铺，复用（幂等，不随 render 堆积节点）
+}
+if (window.mochiFilePickSurface) {
+var _ccSurf = window.mochiFilePickSurface(impBtn, {
+id: 'cc-import-media-surf',
+accept: cur === 'voice' ? '' : 'image/*',
+multiple: true,
+onFiles: ccImportMedia
 });
+try { if (_ccSurf) _ccSurf.accept = cur === 'voice' ? '' : 'image/*'; } catch (e) {}
+}
+} catch (e) {}
+}
+impBtn.__ccSyncSurface = syncCcImportSurface;
+syncCcImportSurface(); // 初始同步一次（打开页默认文本分类＝撤层）
+impBtn.addEventListener('click', () => {
+if (IMG_TYPES[cur]) {
+pickFiles(cur === 'voice' ? '' : 'image/*', true, (files) => { ccImportMedia(files); });
 return;
 }
 if (window.openModal) {
@@ -3676,6 +3767,7 @@ boot();
 });
 })();
 function hydrateCurScope() {
+try { if (window.__mochiPhase) window.__mochiPhase('cc-hydrate'); } catch (e0) {}
 if (!window.idbHydrateKey) return Promise.resolve(false);
 try { if (curStore().get(curKey())) return Promise.resolve(false); } catch (e) {}
 let fk = '';
@@ -3775,6 +3867,7 @@ staticText: '当前字卡库约 ' + mb + ' MB，过大时添加字卡容易让 i
 });
 }
 function openCcPage(scope, startTab) {
+try { if (window.__mochiPhase) window.__mochiPhase('cc-open'); } catch (e0) {}
 flushCcSave();
 ccScope = scope === 'public' ? 'public' : 'own';
 pubInvalidate();

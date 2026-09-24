@@ -16,11 +16,7 @@ resume: c['call-resume'] !== undefined ? c['call-resume'] : 1
 };
 }
 const CALL_BG_KEY = 'call-bg';
-function applyCallBg() {
-const bg = store.get(CALL_BG_KEY) || '';
-const panel = document.querySelector('.call-panel');
-const miniEl = document.getElementById('call-mini');
-[panel, miniEl].forEach(el => {
+function paintCallBg(el, bg) {
 if (!el) return;
 if (bg) {
 el.style.backgroundImage = 'url("' + bg + '")';
@@ -31,16 +27,30 @@ el.classList.add('has-bg');
 el.style.backgroundImage = '';
 el.classList.remove('has-bg');
 }
-});
-const val = document.getElementById('call-bg-val');
-if (val) val.textContent = bg ? '已设置' : '默认';
-const rm = document.getElementById('call-bg-remove');
-if (rm) rm.hidden = !bg;
-const evalVal = document.getElementById('call-bg-edit-val');
-if (evalVal) evalVal.textContent = bg ? '已设置' : '默认';
-const rmEdit = document.getElementById('call-bg-edit-remove');
-if (rmEdit) rmEdit.hidden = !bg;
 }
+function applyCallBgs() {
+const cbg = store.get(CALL_BG_KEY) || '';
+const hbg = store.get(CALL_HALF_BG_KEY) || '';
+paintCallBg(document.querySelector('.call-panel'), hbg || cbg);
+paintCallBg(document.getElementById('call-mini'), cbg);
+const val = document.getElementById('call-bg-val');
+if (val) val.textContent = cbg ? '已设置' : '默认';
+const rm = document.getElementById('call-bg-remove');
+if (rm) rm.hidden = !cbg;
+const evalVal = document.getElementById('call-bg-edit-val');
+if (evalVal) evalVal.textContent = cbg ? '已设置' : '默认';
+const rmEdit = document.getElementById('call-bg-edit-remove');
+if (rmEdit) rmEdit.hidden = !cbg;
+const hval = document.getElementById('call-half-bg-val');
+if (hval) hval.textContent = hbg ? '已设置' : '默认';
+const hrm = document.getElementById('call-half-bg-remove');
+if (hrm) hrm.hidden = !hbg;
+const hEditVal = document.getElementById('call-half-bg-edit-val');
+if (hEditVal) hEditVal.textContent = hbg ? '已设置' : '默认';
+const hEditRm = document.getElementById('call-half-bg-edit-remove');
+if (hEditRm) hEditRm.hidden = !hbg;
+}
+function applyCallBg() { applyCallBgs(); }
 function pickCallBg(key, msg) {
 const bgKey = key || CALL_BG_KEY;
 return window.mochiFilePick({
@@ -104,27 +114,7 @@ toast('已恢复默认通话背景');
 });
 }
 const CALL_HALF_BG_KEY = 'call-half-bg';
-function applyCallHalfBg() {
-const bg = store.get(CALL_HALF_BG_KEY) || '';
-const half = document.getElementById('chat-call-panel');
-if (half) {
-if (bg) {
-half.style.backgroundImage = 'url("' + bg + '")';
-half.style.backgroundSize = 'cover';
-half.style.backgroundPosition = 'center';
-} else {
-half.style.backgroundImage = '';
-}
-}
-const val = document.getElementById('call-half-bg-val');
-if (val) val.textContent = bg ? '已设置' : '默认';
-const rm = document.getElementById('call-half-bg-remove');
-if (rm) rm.hidden = !bg;
-const evalVal = document.getElementById('call-half-bg-edit-val');
-if (evalVal) evalVal.textContent = bg ? '已设置' : '默认';
-const evalRm = document.getElementById('call-half-bg-edit-remove');
-if (evalRm) evalRm.hidden = !bg;
-}
+function applyCallHalfBg() { applyCallBgs(); }
 const callHalfBgRow = document.getElementById('call-half-bg-row');
 if (callHalfBgRow) callHalfBgRow.addEventListener('click', () => pickCallBg(CALL_HALF_BG_KEY, '通话半框背景已设置'));
 const callHalfBgRm = document.getElementById('call-half-bg-remove');
@@ -167,7 +157,16 @@ setMaskBtns('none');
 }
 function previewCallPopup() {
 if (callPreviewOn) { closeCallPreview(); return; }
-if (currentCall) { toast('当前正在通话中'); return; }
+if (currentCall) {
+if (mask && mask.hidden) {
+mask.hidden = false;
+if (mini) mini.hidden = true;
+toast('通话中·已展开通话面板');
+} else {
+toast('通话中·通话面板已打开');
+}
+return;
+}
 const m = document.getElementById('call-mask');
 if (!m) { toast('通话弹窗暂不可用'); return; }
 fillAv(document.getElementById('call-av'), partnerAv());
@@ -753,6 +752,9 @@ if (mini) {
 let dragging = false, moved = false, pressOnHang = false, pressLX = 0, pressLY = 0, startLeft = 0, startTop = 0;
 function vpX(e) { const vv = window.visualViewport; return e.clientX + ((vv && vv.offsetLeft) || 0); }
 function vpY(e) { const vv = window.visualViewport; return e.clientY + ((vv && vv.offsetTop) || 0); }
+const stopPan = (ev) => { if (dragging && ev.cancelable) ev.preventDefault(); };
+const stopPanOn = () => document.addEventListener('touchmove', stopPan, { passive: false });
+const stopPanOff = () => document.removeEventListener('touchmove', stopPan);
 mini.addEventListener('pointerdown', (e) => {
 if (e.target.closest('#call-mini-hang')) { pressOnHang = true; return; } // 挂断按钮不触发拖动
 pressOnHang = false;
@@ -761,10 +763,11 @@ moved = false;
 const r = mini.getBoundingClientRect();
 pressLX = vpX(e); pressLY = vpY(e);
 startLeft = r.left; startTop = r.top; // 按下瞬间小框左上角的屏幕（布局）位
-mini.setPointerCapture && mini.setPointerCapture(e.pointerId);
+try { mini.setPointerCapture && mini.setPointerCapture(e.pointerId); } catch (err) {}
+stopPanOn();
 e.preventDefault();
 });
-mini.addEventListener('pointermove', (e) => {
+document.addEventListener('pointermove', (e) => {
 if (!dragging) return;
 if (!moved) {
 mini.style.bottom = 'auto';
@@ -783,19 +786,29 @@ ty = Math.max(Math.max(miniSafeTop(), voT), Math.min(voT + vh - mh - 4, ty));
 const c = mini.getBoundingClientRect();
 mini.style.left = ((mini.offsetLeft || 0) + (tx - c.left)) + 'px';
 mini.style.top = ((mini.offsetTop || 0) + (ty - c.top)) + 'px';
-});
-const endDrag = () => { dragging = false; };
-mini.addEventListener('pointerup', endDrag);
-mini.addEventListener('pointercancel', () => { dragging = false; pressOnHang = false; });
-mini.addEventListener('pointerup', () => {
+}, { passive: false });
+const persistPos = () => {
 if (moved && mini.style.left && mini.style.top) {
 if (miniPos) { miniPos.left = mini.style.left; miniPos.top = mini.style.top; }
 else miniPos = { left: mini.style.left, top: mini.style.top };
 store.set('call-mini-pos', JSON.stringify(miniPos));
 }
+};
+document.addEventListener('pointerup', () => {
+if (!dragging) return;
+persistPos();
 const tap = !moved && !pressOnHang;
 pressOnHang = false;
+dragging = false;
+stopPanOff();
 if (tap) openCallHalfFromMini();
+});
+document.addEventListener('pointercancel', () => {
+if (!dragging) return;
+persistPos();
+pressOnHang = false;
+dragging = false;
+stopPanOff();
 });
 }
 function toast(msg) {

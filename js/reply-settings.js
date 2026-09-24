@@ -5,6 +5,7 @@ const ls = window.activeStore();
 const DEFAULTS = {
 'rs-min': 1, 'rs-max': 40,
 'reply-min': 1, 'reply-max': 2,
+'rl-en': 0, 'rl-win': 5, 'rl-max': 15,
 'rn-prob': 20, 'touch-prob': 5,
 'sticker-prob': 10, 'emoji-prob': 5, 'image-prob': 5, 'voice-prob': 10,
 'kaomoji-prob': 5, 'quote-prob': 30,
@@ -13,8 +14,10 @@ const DEFAULTS = {
 'py-punct-en': 1,
 'py-punct-space': 1, 'py-punct-dou': 1, 'py-punct-per': 1, 'py-punct-ex': 1, 'py-punct-q': 1, 'py-punct-el': 1,
 'py-punct-dash': 1,
+'py-punct-nl': 0,
 'csp-cust': 50,
 'dcp-all': 100,
+'ic-freq': 0,
 'qs-en': 1, 'qs-prob': 25, 'qs-cc': 1, 'qs-one': 1, 'qs-multi': 1, 'qs-noLimit': 1,
 'mjf-en': 1, 'mjf-prob': 20, 'mjf-style': 1,
 'mjf-src-cc': 1, 'mjf-src-def': 1, 'mjf-src-dict': 1,
@@ -41,6 +44,7 @@ const DEFAULTS = {
 'ml-reply-prob': 80, 'ml-reply-min': 1, 'ml-reply-max': 480,
 'ml-kaomoji-en': 1, 'ml-emoji-en': 1, 'ml-sticker-en': 1,
 'ml-fish-week-en': 1,
+'ml-punct-en': 0,
 'fd-like-prob': 60, 'fd-like-speed-min': 1, 'fd-like-speed-max': 60,
 'fd-comment-prob': 70, 'fd-comment-speed-min': 1, 'fd-comment-speed-max': 60,
 'fd-reply-prob': 60, 'fd-reply-speed-min': 1, 'fd-reply-speed-max': 60,
@@ -52,6 +56,7 @@ const DEFAULTS = {
 'fd-min-cards-post': 4, 'fd-max-cards-post': 15,
 'fd-post-kaomoji': 10, 'fd-post-emoji': 10, 'fd-post-sticker': 30, 'fd-post-image': 30,
 'fd-kaomoji-en': 1, 'fd-emoji-en': 1, 'fd-sticker-en': 1, 'fd-image-en': 1,
+'fd-punct-en': 0,
 'call-incoming': 15, 'call-pickup': 70, 'call-busy': 15, 'call-reject': 15, 'call-hangup': 2,
 'call-resume': 1,
 'call-no-hangup': 0,
@@ -141,7 +146,7 @@ section.innerHTML = '<div class="gs-title">让对方继续说</div><div class="s
 '<div class="gs-sub">未开启时，点击后联系人立即回复</div>' +
 '<div class="gs-row"><span>点顶部昵称触发</span><label class="toggle"><input type="checkbox" id="gc-cs-trigger-name"><span class="tk"></span></label></div>' +
 '<div class="gs-row"><span>底部聊天栏按钮触发</span><label class="toggle"><input type="checkbox" id="gc-cs-trigger-bar"><span class="tk"></span></label></div>' +
-'<div class="gs-sub">点顶部昵称（群名）/底部按钮会触发新一轮回复，条数仍按上面设置抽取，会叠在正常回复之外。顶部设置左侧的继续说按钮始终可用，也遵循这里的回复时间；开启昵称触发后，切换群聊请用右上角菜单的「切换群聊」。</div></div>';
+'<div class="gs-sub">点顶部昵称（群名）/底部按钮会触发新一轮回复，条数仍按上面设置抽取，会叠在正常回复之外；顶部已无独立的继续说按钮（与单聊同口径，只看这两枚开关），开启昵称触发后，切换群聊请用右上角菜单的「切换群聊」。</div></div>';
 gcContinuePanel.insertBefore(section, gcContinuePanel.lastElementChild);
 }
 if (!document.getElementById('fish-grab-en')) {
@@ -212,7 +217,7 @@ val.value = str;
 val.setAttribute('value', str);
 }
 });
-['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'fd-post-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
 const el = document.getElementById(k);
 if (el) el.checked = cfg[k] === 1;
 });
@@ -307,6 +312,7 @@ const TOGGLE_NAMES = {
 'gc-py-en': '群聊多字卡回复', 'ai-rps-en': '猜拳邀请', 'ai-game-en': '游戏邀请', 'ai-cuddle-en': '贴贴邀请',
 'ai-cc-en': 'TA分享字卡', 'ckq-en': 'TA主动查岗', 'call-resume': '刷新恢复通话', 'call-no-hangup': '禁止联系人挂断',
 'ml-write-en': '联系人主动写信', 'fd-post-en': '联系人主动发朋友圈',
+'ml-punct-en': '信件拼接随机标点', 'fd-punct-en': '朋友圈拼接随机标点',
 'ml-fish-week-en': '摸鱼小结寄信',
 'fd-kaomoji-en': '朋友圈颜文字', 'fd-emoji-en': '朋友圈emoji', 'fd-sticker-en': '朋友圈表情包', 'fd-image-en': '朋友圈图片',
 'qs-en': '词典拼字', 'qs-cc': '混用自定义字卡', 'qs-one': '单气泡拼字', 'qs-multi': '多回复逐卡连发',
@@ -315,6 +321,7 @@ const TOGGLE_NAMES = {
 'mjf-mix': '造句混合模式',
 'mjf-punct': '造句句尾标点',
 'rc-en': '撤回后补发消息',
+'rl-en': 'TA 消息限流',
 'fish-en': '摸鱼值累计', 'work-en': '工作值累计', 'fish-grab-en': '摸鱼抓包浮字',
 'rp-thx-en': '红包领后捎一句话'
 };
@@ -335,7 +342,7 @@ d.className = 'cc-toast'; void d.offsetWidth; d.className = 'cc-toast show';
 clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, 1800);
 } catch (e) {}
 }
-['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'fd-post-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
 const el = document.getElementById(k);
 if (el) {
 el.addEventListener('change', () => {
@@ -348,8 +355,8 @@ try { if (window.applyContinueSayUI) window.applyContinueSayUI(); } catch (e) {}
 }
 });
 (function () {
-const POOL = [['py-punct-space', '空格'], ['py-punct-dou', '，'], ['py-punct-per', '。'], ['py-punct-ex', '！'], ['py-punct-q', '？'], ['py-punct-el', '......'], ['py-punct-dash', '——']];
-const BUILTIN_VALS = [' ', '，', '。', '！', '？', '......', '——'];
+const POOL = [['py-punct-space', '空格'], ['py-punct-dou', '，'], ['py-punct-per', '。'], ['py-punct-ex', '！'], ['py-punct-q', '？'], ['py-punct-el', '......'], ['py-punct-dash', '——'], ['py-punct-nl', '换行']];
+const BUILTIN_VALS = [' ', '，', '。', '！', '？', '......', '——', '\n'];
 const CUST_KEY = 'reply-py-punct-custom';
 const box = document.getElementById('ppy-chips');
 function ppyToast(msg, ms) {
@@ -921,6 +928,107 @@ document.addEventListener(ev, () => { try { dcpSyncUI(); } catch (e) {} });
 const genRow = document.getElementById('row-general');
 if (genRow) genRow.addEventListener('click', () => { try { dcpSyncUI(); } catch (e) {} });
 })();
+(function () {
+const IC_LABEL = { '0': '原频率', '1': '稍安静', '2': '安静', '3': '很安静' };
+const IC_PILLS = [
+{ label: '原频率', value: '0' }, { label: '稍安静', value: '1' },
+{ label: '安静', value: '2' }, { label: '很安静', value: '3' }
+];
+const IC_DETAIL = '聊天里 TA 主动发的卡与邀请多久来一次，按这一档整体往下调（没有比「原频率」更高的档）。'
++ '覆盖：五类提问卡（询问 / 小问题 / 好奇 / 吐槽 / 分享你的字卡）、邀请三类（猜拳 / 游戏 / 贴贴）、音乐「一起去听」邀请。'
++ '不影响查岗自己的开关 / 概率 / 冷却，也不影响你自己发的卡。'
++ '\n\n· 原频率：全部 ×1，完全保持现在的节奏（默认）；'
++ '\n· 稍安静：概率 ×0.6、提问卡冷却 ×1.5、跨类型间隔 ×1.5；'
++ '\n· 安静：概率 ×0.4、提问卡冷却 ×2、跨类型间隔 ×2；'
++ '\n· 很安静：概率 ×0.2、提问卡冷却 ×3、跨类型间隔 ×3。'
++ '\n\n「概率」是在各类型自己的触发概率（默认 5%，可在【字卡与概率】子面板或 字卡库 对应页单独调）与「整体概率（总档）」之上再乘一个倍数；'
++ '「跨类型间隔」＝任意一张提问卡发出后、其余类型多久内不再自动触发（基准 60 分钟）。'
++ '原值 ≥1% 时不会被档位抹成 0（选「很安静」也不会变成永不触发）。'
++ '\n\n按联系人桌面独立保存，选档后即时生效。想完全不触发：把【字卡与概率】里的四类概率或总档调到 0，或关掉 字卡库 里对应页的开关。';
+function icVal() {
+let v = 0;
+try { v = Number((window.replyCfg && window.replyCfg())['ic-freq']); } catch (e) {}
+return (v >= 0 && v <= 3) ? String(v) : '0';
+}
+function icSync() {
+const btn = document.getElementById('ic-freq-btn');
+if (!btn) return;
+const v = icVal();
+btn.textContent = IC_LABEL[v];
+btn.dataset.v = v;
+}
+function icToast(msg) {
+try {
+const d = ccToastEnsure();
+if (!d) return;
+d.textContent = msg; d.className = 'cc-toast'; void d.offsetWidth; d.className = 'cc-toast show';
+clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, 1800);
+} catch (e) {}
+}
+const rpsTabs = document.querySelector('#page-reply-settings .rps-tabs');
+const rpsHost = rpsTabs ? rpsTabs.parentNode : null;
+if (rpsTabs && rpsHost) {
+const tab = document.createElement('button');
+tab.type = 'button';
+tab.className = 'rps-tab';
+tab.setAttribute('data-rps', 'interact');
+tab.textContent = '互动频率';
+rpsTabs.appendChild(tab);
+const panel = document.createElement('div');
+panel.className = 'rps-panel';
+panel.setAttribute('data-rps', 'interact');
+panel.hidden = true;
+const group = document.createElement('div');
+group.className = 'set-group glass';
+group.id = 'ic-freq-group';
+const title = document.createElement('div');
+title.className = 'gs-title';
+title.textContent = '互动卡频率';
+group.appendChild(title);
+const row = document.createElement('div');
+row.className = 'gs-row';
+row.id = 'ic-freq-row';
+row.innerHTML = '<span>联系人主动发卡/邀请的频率<span class="tag" id="ic-freq-tag" role="button" tabindex="0" aria-haspopup="dialog">功能说明</span></span>'
++ '<div class="gs-pick" id="ic-freq-btn" data-v="0">原频率</div>';
+group.appendChild(row);
+const sub = document.createElement('div');
+sub.className = 'gs-sub';
+sub.id = 'ic-freq-sub';
+sub.textContent = 'TA 在聊天里主动发的卡与邀请（提问卡五类：询问/小问题/好奇/吐槽/分享你的字卡；邀请三类：猜拳/游戏/贴贴；音乐「一起去听」）整体频率；「原频率」＝完全保持现在的节奏，往右都是调低。各类互动卡的单项概率在【字卡与概率】里逐项调。点右侧档位切换。';
+group.appendChild(sub);
+panel.appendChild(group);
+rpsHost.insertBefore(panel, rpsTabs.nextSibling);
+const btn = document.getElementById('ic-freq-btn');
+if (btn && window.openModal) {
+btn.addEventListener('click', function () {
+window.openModal('互动卡频率', '', function (v) {
+const n = Number(v);
+if (!(n >= 0 && n <= 3)) return;
+window.saveReplyCfg('ic-freq', n);
+icSync();
+icToast('已设置：互动卡频率＝' + IC_LABEL[String(n)]);
+}, { noInput: true, pill: icVal(), pills: IC_PILLS });
+});
+}
+const tag = document.getElementById('ic-freq-tag');
+if (tag && window.openModal) {
+const showDetail = function (e) {
+if (e) { e.stopPropagation(); e.preventDefault(); }
+window.openModal('互动卡频率', '', function () {}, { noInput: true, staticText: IC_DETAIL });
+};
+tag.addEventListener('click', showDetail);
+tag.addEventListener('keydown', function (e) {
+if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showDetail(); }
+});
+}
+icSync();
+['contact-switched', 'mochi-restore-done', 'mochi-wrj-heal'].forEach(ev => {
+document.addEventListener(ev, () => { try { icSync(); } catch (e) {} });
+});
+const genRow2 = document.getElementById('row-general');
+if (genRow2) genRow2.addEventListener('click', () => { try { icSync(); } catch (e) {} });
+}
+})();
 function saveCurrentReplyPage() {
 try {
 document.querySelectorAll('#page-reply-settings .stepper, #page-call-settings .stepper').forEach(st => {
@@ -937,7 +1045,7 @@ v = Math.min(max, Math.max(min, v));
 window.saveReplyCfg(k, v);
 }
 });
-['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'fd-post-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
 const el = document.getElementById(k);
 if (el) window.saveReplyCfg(k, el.checked ? 1 : 0);
 });
