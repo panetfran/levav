@@ -626,17 +626,21 @@
   // 成片 onerror，随后 #802 自愈引擎（pwa.js）按波重注入多半又全部到位。此前每条都照常
   // pushErr，一次波动 18 条塞满 20 条错误环、把真错误整批顶出（vivo X200S+Edge 实报：
   // 同一秒 18 条「资源加载失败 <script> …/js/xxx.js」，健康检查 82/82 全到位＝已自愈）。
-  // 现改为：首拉失败只登记不记环，20s 静默窗（#802 三波 1.5/6/15s + 4s 落定）后汇总
-  // 一条——全自愈 → 一条「已自愈」如实留痕；仍有缺口 → 一条「真失败」点名文件
+  // 现改为：首拉失败只登记不记环，静默窗后汇总一条——全自愈 → 一条「已自愈」如实留痕；
+  // 仍有缺口 → 一条「真失败」点名文件
   //（#802 自身同时把 [ext-recovery] 写进 __jsErrors，报障双向可查）。判定口径与
   // #802 failList() 逐字一致：在 __mochiExtFail 且不在 __mochiLoaded 才算真没到位，
   // 名单外的「慢下载中」不算失败。零机型/零浏览器分支。
+  // #1035：窗口 20s → 34s。自愈阶梯在裸址三波（1.5/6/15s）之后接了「换址逃生」首波（26s＋4s
+  // 落定）——20s 汇总会在逃生波出手**之前**就写下「真失败」，而 a.seen 一经点名不再复核，
+  // 于是「其实 30s 后自己修好了」的机子照样在诊断列表/报障 docx 里挂着一条
+  // 「N 个功能包未加载成功」（iQOO Z7+Edge 实报的「一直出现」有一半就是这个）。
   function extFailNote(name) {
     try {
       var a = window.__mochiExtFailAgg;
       if (!a) a = window.__mochiExtFailAgg = { names: [], timer: 0, seen: {} };
       if (a.names.indexOf(name) < 0) a.names.push(name);
-      if (!a.timer) a.timer = setTimeout(extFailFlush, 20000);
+      if (!a.timer) a.timer = setTimeout(extFailFlush, 34000);
     } catch (e) {}
   }
   function extFailFlush() {
@@ -654,7 +658,7 @@
       if (still.length && !fresh.length) return;
       if (still.length) {
         still.forEach(function (f) { a.seen[f] = 1; });
-        pushErr('[外置包·真失败] ' + still.length + ' 个功能包未加载成功: ' + still.slice(0, 6).join('、') + (still.length > 6 ? ' 等' : '') + '（网络持续异常，#802 自愈重试三波仍未到位；可刷新页面或稍后重进）');
+        pushErr('[外置包·真失败] ' + still.length + ' 个功能包未加载成功: ' + still.slice(0, 6).join('、') + (still.length > 6 ? ' 等' : '') + '（网络持续异常，#802 裸址三波＋#1035 换址逃生到点仍未到位；可点顶部「点此重试」或稍后重进）');
       } else {
         pushErr('[外置包·已自愈] ' + names.length + ' 个功能包首拉失败（网络波动），自愈重试后已全部到位，功能不受影响');
       }
@@ -1273,6 +1277,22 @@
         + '  :has()=' + (cssSupports('selector(:has(a))') ? 'ok' : '不支持(未用)'));
     } catch (e) {}
     L.push('安卓输入框已转 ce-box=' + !!document.querySelector('.ce-box'));
+    // #1014：文件选择取证——「导入点了没反应」与「选完文件没导入进去」是两条完全不同的断点，
+    // 这里把最近 6 笔「入口 + 走的是哪条腿（原生层/程序化） + 有没有换回文件」直接带进报告。
+    try {
+      var _pl = window.__mochiPickLog || [];
+      if (_pl.length) {
+        var _ps = [];
+        for (var _pi = 0; _pi < _pl.length; _pi++) {
+          var _pd = new Date(_pl[_pi].t || 0);
+          _ps.push(('0' + _pd.getHours()).slice(-2) + ':' + ('0' + _pd.getMinutes()).slice(-2) + ':' + ('0' + _pd.getSeconds()).slice(-2)
+            + ' ' + _pl[_pi].e + '/' + _pl[_pi].s);
+        }
+        L.push('文件选择取证（旧→新）：' + _ps.join(' · '));
+      } else {
+        L.push('文件选择取证（旧→新）：(无——本页还没点过「选择文件」类入口)');
+      }
+    } catch (e) {}
     // #260：保活现场——「后台保活失败/收不到通知」类报障直接出证据，不再靠口述猜。
     // 心跳 = bg-keep.js 在页面隐藏期每 30s 写 IDB 的计数/时间戳轨迹：相邻拍间隔
     // >90s = 心跳断流 = 页面被冻结的实锤（保活豁免失效）；30s 连续节奏 = 后台未被冻结。
@@ -1285,6 +1305,15 @@
         else kpParts.push('音频=无（保活未起）');
         if (kp.ms) kpParts.push('媒体条=' + (kp.ms.metadata ? '有' : '无') + ' ' + kp.ms.state);
         kpParts.push('WebRTC=' + kp.pc);
+        // FIX 2026-09-22 #1017：把「通知这一侧」的现场也摊开——开关/权限在开头那行早就有了，但
+        //   「后台服务有没有接管本页」与「最近一次通知实际走的哪条通道」从来没进诊断，而这两项正是
+        //   「测试说发了、系统没弹」的分层判据（用户每次报「后台弹窗没了」都缺这两行）。
+        try {
+          const ctrl = ('serviceWorker' in navigator && navigator.serviceWorker && navigator.serviceWorker.controller)
+            ? '已接管（可发系统通知）' : '未接管（SW 尚未生效或刚被系统回收）';
+          const lc = (typeof window.bgNotifyLastChannel === 'function') ? (window.bgNotifyLastChannel() || '本会话还没发过') : '未接入';
+          kpParts.push('后台服务=' + ctrl + ' · 最近通知通道=' + lc + '（sw＝切后台也能弹 / page＝仅前台可见 / none＝没发出去）');
+        } catch (e) {}
         // #780：WebRTC 停在 new 时把采集状态一起打出——本次真机取证就是「WebRTC=new」
         // 却看不出卡在 SDP 还是 ICE（实为候选 flush 早于 gather 完成，第二豁免恒死）。
         if (kp.pc && kp.pc !== 'connected' && kp.pc !== 'off' && kp.pcGathering) {
@@ -1303,7 +1332,11 @@
           // #960：终止次数高＝iOS 内存压力反复回收本页（回前台白一下/重新加载的实锤），
           // 数字升级成可行动建议——三条都不是「坏了」，是数据量/保活/标签多叠加出来的
           if (kp.ev.died >= 5) {
-            kpParts.push('⚠ 本页被系统回收过 ' + kp.ev.died + ' 次（内存压力）：建议①不用时关掉后台保活（更省内存）②按 设置→查看存储 清掉最占地方的一项 ③别同开太多标签页/网页应用');
+            // #1199：原来给的「Chrome 设置→性能→内存节省程序／始终保持活动」是**标签页**开关，
+            // 桌面快捷方式与独立 PWA 进程不受它约束，安卓端真正收回后台的是系统省电与后台管控
+            // ——用户照做没用（实报「上面写的方法也没有用」）。换成按得到的几条，并说明这个计数
+            // 连「自己从最近任务划掉」也算，别当成纯内存压力。
+            kpParts.push('⚠ 本页被系统回收过 ' + kp.ev.died + ' 次（累计：系统在后台收回网页、省电管控、从最近任务划掉都会算进来）：①别从最近任务划掉本站，改为在系统设置→应用→本浏览器→省电里选「无限制/允许后台活动」，最近任务里再把它「锁定」②不用时关掉后台保活（更省内存）③按 设置→查看存储 清掉最占地方的一项。注意：Chrome/Edge 的「内存节省程序 / 睡眠标签页」只管浏览器标签页，桌面快捷方式与独立 PWA 不受它约束，改那里没用。数据不会丢：回到本页自动重载，保活碰一下页面即接上');
           }
         }
         if (kp.hb) {
@@ -1414,6 +1447,34 @@
       }
     } catch (e) { try { L.push('电量：读取失败'); } catch (e2) {} }
     L.push('');
+    // #961 内存体检——iOS 不提供 JS 堆读数（本段上方「JS 内存：不支持」即此），
+    // 「本页被系统回收 N 次」只能靠「谁在内存里占位」推断。本段把可测的占位项列清：
+    // DOM 节点、img 元素（data:/blob:/坏图）、内存里的聊天条数、内存驻留键与近似体积。
+    try {
+      const nodes = document.getElementsByTagName('*').length;
+      let imgs = 0, dataImgs = 0, blobImgs = 0, brokenImgs = 0;
+      try {
+        const list = document.images || [];
+        imgs = list.length;
+        for (let i = 0; i < list.length; i++) {
+          const src = list[i].currentSrc || list[i].src || '';
+          if (src.indexOf('data:') === 0) dataImgs++;
+          else if (src.indexOf('blob:') === 0) blobImgs++;
+          if (list[i].complete && list[i].naturalWidth === 0) brokenImgs++;
+        }
+      } catch (e) {}
+      let chatN = 0;
+      try { if (typeof window.getChatMsgs === 'function') chatN = (window.getChatMsgs() || []).length; } catch (e) {}
+      L.push('【内存体检】DOM 节点=' + nodes + ' · img 元素=' + imgs + '（data: ' + dataImgs + ' / blob: ' + blobImgs + (brokenImgs ? ' / 坏图 ' + brokenImgs : '') + '）' + (chatN ? ' · 内存聊天条数=' + chatN : ''));
+      const memo = (typeof window.idbMemoStats === 'function') ? window.idbMemoStats(6) : null;
+      if (memo && memo.n) {
+        L.push('· 内存驻留键 ' + memo.n + ' 个 ≈' + Math.round(memo.bytes / 1024) + 'KB（字符串按长度、数组按写入时估算；iOS 无堆读数，这是近似账）');
+        if (memo.top && memo.top.length) L.push('· 驻留最大：' + memo.top.map(function (e) { return e.k.replace('xy-home-v2:', '') + ' ' + (e.len > 0 ? Math.round(e.len / 1024) + 'KB' : '体量未知'); }).join('、'));
+      } else {
+        L.push('· 内存驻留键：采样未启用（idbMemoStats 缺席）');
+      }
+      L.push('· 判读：内存三巨头＝img 位图解码（一张 720px 图解码约 1.5MB）、常驻结构（聊天数组/表情包数组/字卡池）、DOM 节点；回收次数见【保活现场】');
+    } catch (e) {}
     L.push('【数据】');
     const G = 'xy-home-v2:';
     const usageStr = function (u) {
@@ -2609,6 +2670,7 @@
 //（无 DOM/存储），tools/verify-viewport-form.mjs 按真机台账直接单测。
 window.mochiViewportForm = function (sig) {
   const envTop = sig.envTop || 0;
+  const envBottom = sig.envBottom || 0;
   const innerH = sig.innerH || 0;
   const screenH = sig.screenH || 0;
   const iosMajor = sig.iosMajor || 0;
@@ -2664,6 +2726,21 @@ window.mochiViewportForm = function (sig) {
   // 钳 [20,40]；估不准的部分留给 屏幕位置设置·顶部轴 本机精调（#707 双层包装照常叠加）。
   else safeTop = ((standalone || coverBrowser) && envTop >= 20 && envTop <= 160) ? envTop
     : (e2eBrowser ? Math.min(40, Math.max(20, Math.round(e2eZ > 0 ? 28 / e2eZ : 28))) : 0);
+  // #1048：env-top 说谎矛盾检测——standalone 全出血（diff≤2）时页面画进了系统状态栏区，
+  // 任何有底部手势条 inset（env-bottom≥20）的设备顶部必然有刘海/灵动岛 inset（iPhone X 起
+  // 硬件事实），env-top 仍报 <20 只能是内核没把顶部安全区透传给网页（iPhone17 + Edge 独立
+  // 应用实测：--mochi-safe-top 恒未设、模拟状态栏整行（Mochi/时钟/信号/电量图标）钻进灵动岛/
+  // 系统状态栏底下＝用户报「灵动岛这里不显示图标了」，#114 同根因复发；诊断 docx 实证
+  // vv=874=screen、var 未设）。按 bottom 折算顶部避让下限（bottom+18，钳 [40,72]），写入
+  // 既有 var(--mochi-safe-top) 全链（普通态 .statusbar / 全屏态 .phone padding-top 消费方
+  // 不动）；已避让（diff≥20）/健康覆盖（env-top≥20）/无 inset 设备（bottom=0，SE 家族）
+  // 均不触发＝零回归。env-top/env-bottom 一起说谎的内核无法程序反证，留给既有
+  // 【顶部避让修正】手动开关（__safe-top-force）。
+  let envTopFallback = false;
+  if (safeTop === 0 && standalone && envTop < 20 && envBottom >= 20 && diff <= 2) {
+    safeTop = Math.min(72, Math.max(40, envBottom + 18));
+    envTopFallback = true;
+  }
   // 期望 .phone 底边 / 全屏期望屏高：保留/iPad/浏览器壳贴 inner（超 inner=文档
   // 滚动量=与自愈 pin 对打）；#186 force 声明=屏高（safeTop+inner 补满屏底，修
   // 18.3 底部白边的正确期望，原实现误写 innerH）；覆盖形态=envTop+inner、min 屏高
@@ -2683,7 +2760,7 @@ window.mochiViewportForm = function (sig) {
   // 期望状态栏顶位（诊断 ③）：保留形态系统已避让=12 兜底；其余=max(env,12)。
   // force 时 resStand=false → forced 设备（如 14 Pro/26.6 sbTop≈73）不再被
   // expect=12+60 误判「顶部双倍避让」；#719 e2e=自动避让估式自身。
-  const expTop = resStand ? 12 : (e2eBrowser ? safeTop : Math.max(envTop, 12));
+  const expTop = envTopFallback ? (safeTop + 14) : resStand ? 12 : (e2eBrowser ? safeTop : Math.max(envTop, 12));
   // #537：iOS 独立应用·覆盖形态（非保留/非 iPad/非 force 的 standalone + env∈[20,160]；
   // 16Pro/26.1、17/26.6 等实测均落此支）= 执行器要让模拟状态栏自身抬升到系统状态栏下方
   // （base.css html.ios-cover-top 规则消费）+ 非全屏高度须含顶部安全区（expBase=整屏）。
@@ -2697,6 +2774,7 @@ window.mochiViewportForm = function (sig) {
     : (envTop >= 20 ? 'covered' : (diff >= 20 ? 'avoided' : 'plain'));
   return { form: form, resStand: resStand, ipadForm: ipadForm, coverBrowser: coverBrowser,
     forceCover: forceCover, iosCover: iosCover, needEnvProbe: needEnvProbe, safeTop: safeTop,
+    envTopFallback: envTopFallback, envBottom: envBottom,
     // #719：e2e 底部避让估式（手势条高 16/z，钳 [12,28]）——安卓执行器
     // syncSafeBottomA 键盘收起回落时消费；非 e2e 恒 0（零回归）。
     safeBottom: e2eBrowser ? Math.min(28, Math.max(12, Math.round(e2eZ > 0 ? 16 / e2eZ : 16))) : 0,
@@ -2763,8 +2841,39 @@ window.mochiViewportForm = function (sig) {
     const F = [];
     const add = (ok, name, detail) => F.push({ ok: !!ok, name: name, detail: detail || '' });
     // ① 页面缩放：scale<0.95 = 页面被整体缩小（#174，顶部露白/UI 变小）
+    // #971：被缩小时先做「横向溢出体检」——页面被自动缩小（scale<1）的典型成因是内容横向溢出
+    // （长 URL／超宽卡片／固定宽面板把文档撑宽，iOS 为容纳它把整页缩到能装下）。只报现场、不猜：
+    // 找出右缘超出视口的元素 top3，让下一次反馈直接指名，避免「多机型同现、逐个机型打补丁」。
+    let _ovf = '';
+    try {
+      const de = document.documentElement;
+      const wide = de.scrollWidth - de.clientWidth;
+      if (wide > 1 || (inp.scale && inp.scale < 0.95)) {
+        const iw = window.innerWidth || de.clientWidth;
+        const off = [];
+        const all = document.querySelectorAll('body *');
+        for (let i = 0; i < all.length; i++) {
+          const el = all[i];
+          try {
+            if (el.hidden || el.offsetParent === null) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.right > iw + 2) {
+              const cls = (typeof el.className === 'string' && el.className.trim()) ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+              off.push({ t: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + cls, right: Math.round(r.right), w: Math.round(r.width) });
+            }
+          } catch (e2) {}
+        }
+        off.sort(function (a, b) { return b.right - a.right; });
+        _ovf = '文档横向溢出 ' + wide + 'px' + (off.length
+          ? '；超宽元素 top3：' + off.slice(0, 3).map(function (o) { return o.t + '（右缘 ' + o.right + '、宽 ' + o.w + '）'; }).join('、')
+          : '（未定位到超宽元素：多为系统/手势残留的缩放，非内容撑宽）');
+      }
+    } catch (e) {}
     add(inp.scale >= 0.95 || !inp.scale, '页面缩放 scale=' + (inp.scale || 1).toFixed(2),
-      (inp.scale && inp.scale < 0.95) ? '✗ 页面被缩小（#174：meta minimum-scale=1 + 自愈应已恢复；若仍<0.95 请连本条反馈）' : '✓ 正常');
+      (inp.scale && inp.scale < 0.95)
+        ? '✗ 页面被缩小：先两指捏合放大回 100%（或从后台切回来再试）；本条同时体检横向溢出——' + (_ovf || '（未检出溢出）')
+        : '✓ 正常');
+    if (_ovf) add(false, '横向溢出体检', _ovf);
     // ② 顶部安全区三源 → 形态判定走共享判定器（#209 单一事实源，执行器 syncVvFit
     // 同源，新形态只改判定器一处）。force 现场由 collectFitInp 传入——#186 曾漏传，
     // 「用户已声明覆盖形态」分支在真实采集路径永不命中（死分支）
@@ -2811,7 +2920,7 @@ window.mochiViewportForm = function (sig) {
       // 改由 html.ios-cover-top 规则抬 .statusbar 自身 padding；仍按「元素顶」判会
       // 恒报 ✗顶部重叠（修好也红），故与浏览器壳一并取有效顶位；#719 e2e 同理
       // （mochi-cover-top 类已挂、避让在状态栏自身 padding）。
-      const sbEffTop = (Fm.coverBrowser || Fm.iosCover || Fm.e2eBrowser) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;
+      const sbEffTop = (Fm.coverBrowser || Fm.iosCover || Fm.e2eBrowser || Fm.envTopFallback) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;
       // #917：顶部避让轴非 0＝用户手动加过顶部留白（该轴唯一用途），有效顶位偏大是
       // 用户所求，不再判「双倍避让」；顶部重叠（顶位偏小）与手调方向相反，照常判。
       if (adjTop && sbEffTop > expect + 60) add(true, '顶部避让·已手动微调 top=' + adjTop + 'px', '跳过「顶部双倍避让」判定（该轴即用于手动加顶部留白；实测有效顶位 ' + sbEffTop + 'px / 自动期望 ' + expect + 'px，如需恢复自动判定请在 屏幕位置设置 里把「顶部避让」归零）');
@@ -3238,7 +3347,7 @@ window.mochiViewportForm = function (sig) {
       const Fm = window.mochiViewportForm({ standalone: !!inp.standalone, envTop: inp.envTop, innerH: inp.innerH, screenH: inp.screenH, innerW: inp.innerW || 0, screenW: inp.screenW || 0, iosMajor: inp.iosMajor || 0, safMajor: inp.safMajor || 0, andr: !!inp.andr, safeTopForce: !!inp.force }) || {};
       const cur = (window.mochiScreenAdj && window.mochiScreenAdj.all()) || {};
       // 顶部：状态栏有效顶位（浏览器壳/独立覆盖/e2e 形态含状态栏自身 padding，与判定器 ③ 同口径）
-      const sbEffTop = (Fm.coverBrowser || Fm.iosCover || Fm.e2eBrowser) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;
+      const sbEffTop = (Fm.coverBrowser || Fm.iosCover || Fm.e2eBrowser || Fm.envTopFallback) ? inp.sbTop + (parseFloat(inp.sbPadTop) || 0) : inp.sbTop;
       if (inp.sbTop != null && cur.top === 0) {
         if (!Fm.resStand && inp.envTop >= 20 && inp.diff >= inp.envTop - 8 && sbEffTop < inp.envTop - 5) {
           out.push({ axis: 'top', delta: Math.min(80, Math.round(inp.envTop - sbEffTop)), why: '顶部重叠 ' + Math.round(inp.envTop - sbEffTop) + 'px' });
@@ -3771,6 +3880,10 @@ window.mochiFilePickGuard = function (input, onMiss) {
   setTimeout(function () {
     if (settled) return;
     if (window.__mochiPickArmed.opened !== openedAt) { cleanup(); settled = true; return; } // label 路径已生效
+    // FIX 2026-09-21 #991（第九波）：本次手势若是「手指物理点按铺在入口上的真 input」（surface 层，
+    // 见 mochiFilePickSurface），浏览器已按原生默认动作弹了选择器——此时再补 JS 腿会在另一个
+    // input 上二次激活（双开），故判定「已弹出」直接让路。判据＝同一手势的时间戳，零机型分支。
+    if (window.mochiFilePickSurfaceTap && window.mochiFilePickSurfaceTap()) { cleanup(); settled = true; return; }
     cleanup();
     finish(false); // 没等到任何信号 → 判定「这次没弹出」，走兜底
   }, 60);
@@ -3787,10 +3900,232 @@ window.mochiFilePickLabel = function (btn, input) {
       label = document.createElement('label');
       label.setAttribute(mark, input.id);
       label.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;margin:0;padding:0;border:0;opacity:0;cursor:pointer;';
-      btn.appendChild(label);
+      // FIX 2026-09-21 #1002：本按钮若已铺「真·可点 input 层」（#991/#1002），label 必须**插在它前面**
+      // ——两者都是 absolute 覆盖层，画序由 DOM 顺序决定；后插的 label 会盖在 surface 上，手指点中的
+      // 就成了 label（国产内核里 label 转发被静默吞掉＝回到「点了没反应」）。插在 surface 之前＝
+      // label 退回原来的兜底角色（surface 才是主路径）；surface 与入口内可点元素（如 .lbl）的相对
+      // 层级不变（#821 仍成立）。
+      var surf = btn.querySelector('input[data-file-pick-surface]');
+      if (surf) btn.insertBefore(label, surf); else btn.appendChild(label);
     }
     label.htmlFor = input.id;
   } catch (e) { /* 兼容助手绝不能成为错误源 */ }
+};
+
+// ===== 文件选择取证（FIX 2026-09-22 #1014）=====
+// 本族（#603/#677/#717/#738/#753/#755/#756/#813/#877/#920/#991/#1002）九轮的共同难点：
+// 报障只有「点了没反应 / 选完文件也导入不进去」两句，而这两句对应完全不同的断点——
+// 是入口没收到点按、是激活腿没弹选择器、还是选完文件没回到回调。历史上只能靠猜。
+// 这里记最近 6 笔「入口 + 走了哪条腿 + 有没有换回文件」，随诊断报告输出（零机型分支、纯取证）。
+window.__mochiPickLog = window.__mochiPickLog || [];
+window.mochiPickLog = function (entry, step) {
+  try {
+    var arr = window.__mochiPickLog;
+    arr.push({ t: Date.now(), e: String(entry || '').slice(0, 22), s: String(step || '').slice(0, 22) });
+    if (arr.length > 6) arr.splice(0, arr.length - 6);
+  } catch (e) {}
+};
+
+// ===== 第十波 #1014：弹窗「确定」＝真·可点 input 层 =====
+// 用户（iOS Safari 实报「导入不了字卡文件和数据」，明说其他设备型号也有、要求不要覆盖式修补）。
+// 「数据导入 / 字卡库导入数据 / 字卡库完整导入」这类入口的第一下必须落在弹窗的「确定」上，
+// 而「确定」此前只是普通按钮，选文件全靠点按之后的程序化激活（showPicker / click）——
+// 第九波 #991 已实锤：三条程序化腿都得指望内核「乐意执行我们的 JS」，被静默无视时用户看到的
+// 就是「点了确定，什么都没发生」（不报错、不弹窗、不提示）；#1002 当时正因为这两个入口
+// 「要先弹确认、铺层会跳过确认步骤」而有意留白。
+// 本波把层铺在**确定按钮的兄弟位**（不是子节点：按钮内的 input 会被部分内核把点击重定向给按钮）：
+// 手指物理点按真 file input ⇒ 选择器由浏览器**原生默认动作**弹出，不走 label 转发、不走合成事件、
+// 不走 showPicker；模式胶囊仍在弹窗里先选（弹窗与确认步骤一字未改）。
+//   cfg.okBtn        确定按钮（层按它的盒对齐；弹窗固定居中、打开期间几何不变）
+//   cfg.accept / cfg.multiple
+//   cfg.mode()       取当前模式（弹窗内胶囊的当前值），在点按与选完文件两刻各读一次
+//   cfg.skipWhen(mode)  true＝该模式本来就不需要文件（取消 / 粘贴文本导入）→ 撤掉默认动作、
+//                       把这次点按交回确定按钮原有的处理器（普通按钮不需要任何手势授权）
+//   cfg.onFiles(files, mode)
+//   cfg.entry        取证用的入口名
+// 零机型分支：所有内核同一条原生路径，无 UA/机型判断。撤层＝弹窗关闭/换届时移除（绝不残留）。
+window.mochiModalPickOk = function (cfg) {
+  var o = cfg || {};
+  var okBtn = o.okBtn;
+  var host = okBtn && okBtn.parentNode;
+  if (!okBtn || !host) return null;
+  var input = document.getElementById('mochi-modal-pick');
+  if (!input) {
+    input = document.createElement('input');
+    input.type = 'file';
+    input.id = 'mochi-modal-pick';
+    input.className = 'mochi-pick-surface';
+    input.setAttribute('data-file-pick-surface', '1');
+    input.setAttribute('data-modal-pick', '1');
+    // 与 #991 的入口层同口径：元素本身可见（有真实尺寸、可命中），只是没有可见外观。
+    // 绝不写成 display:none / opacity:0 / 1px clip——那正是 #717/#738 那族「不可见 input
+    // 被内核拒绝激活」的写法，而本层存在的意义就是「手指能物理点到真 input」。
+    input.style.cssText = 'position:absolute;margin:0;padding:0;border:0;outline:none;background:transparent;color:transparent;font-size:0;appearance:none;-webkit-appearance:none;cursor:pointer;z-index:2;';
+  }
+  // 宿主（.modal-btns）必须是定位祖先，否则这层的坐标会以初始包含块为基准（＝整屏透明 input）
+  try {
+    var hp = getComputedStyle(host).position || '';
+    if (hp !== 'absolute' && hp !== 'fixed' && hp !== 'relative' && hp !== 'sticky') host.style.position = 'relative';
+  } catch (e1) {}
+  try { input.accept = o.accept || ''; } catch (e2) {}
+  input.multiple = !!o.multiple;
+  // 置为宿主最后一个子节点＝画在「确定」之上（画序由 DOM 顺序决定）
+  try { host.appendChild(input); } catch (e3) { return null; }
+  // 按确定按钮的盒对齐：宿主是定位祖先 → 两个 rect 之差就是按钮在宿主内的偏移（与弹窗内滚动无关）
+  try {
+    var r = okBtn.getBoundingClientRect(), pr = host.getBoundingClientRect();
+    input.style.left = Math.round(r.left - pr.left) + 'px';
+    input.style.top = Math.round(r.top - pr.top) + 'px';
+    input.style.width = Math.max(24, Math.round(r.width)) + 'px';
+    input.style.height = Math.max(24, Math.round(r.height)) + 'px';
+  } catch (e4) {}
+  input.onclick = function (ev) {
+    var mode = (typeof o.mode === 'function') ? o.mode() : null;
+    if (typeof o.skipWhen === 'function' && o.skipWhen(mode)) {
+      // preventDefault 取消「弹出选择器」这个默认动作（#1002 已实证该默认动作可被取消），
+      // 再把点按交回确定：与以前点确定完全同一条路径，不多一次选择器。
+      try { ev.preventDefault(); } catch (e5) {}
+      try { ev.stopPropagation(); } catch (e6) {}
+      window.mochiModalPickOkClear();
+      try { okBtn.click(); } catch (e7) {}
+      return;
+    }
+    if (window.mochiPickLog) window.mochiPickLog(o.entry || 'modal-ok', 'leg:modal-ok');
+  };
+  input.onchange = function () {
+    var files = Array.prototype.slice.call(input.files || []);
+    try { input.value = ''; } catch (e8) {} // 允许重选同一文件
+    var mode = (typeof o.mode === 'function') ? o.mode() : null;
+    if (window.mochiPickLog) window.mochiPickLog(o.entry || 'modal-ok', files.length ? ('files=' + files.length) : 'files=0');
+    if (files.length && typeof o.onFiles === 'function') { try { o.onFiles(files, mode); } catch (e9) {} }
+    // 延后一拍撤层：撤层发生在 change 派发过程中会连带撤掉刚武装好的下一次选择
+    var tok = input.__armTok = (input.__armTok || 0) + 1;
+    setTimeout(function () { if (input.__armTok === tok) window.mochiModalPickOkClear(); }, 0);
+  };
+  return input;
+};
+// 撤层：弹窗开/关都调用（openModal 侧），保证同一时刻只有本弹窗的那一层、绝不残留到下一个弹窗
+window.mochiModalPickOkClear = function () {
+  try {
+    var input = document.getElementById('mochi-modal-pick');
+    if (input && input.parentNode) input.parentNode.removeChild(input);
+  } catch (e) {}
+};
+// ===== 第九波 #991：把「真·可点 file input」铺在入口上（物理点按＝浏览器原生行为，零转发、零合成事件）=====
+// 立项（用户 2026-09-21 红米 Note 9 Pro + 手机自带浏览器 MiuiBrowser 20.23 / Android12 / Chrome135 内核
+// 实报「导入图片点不了、一直换不了头像」，并明说其他设备型号也有出现、要求不要覆盖式修补）：
+// 前八波（#677 input 要挂文档 → #717 去掉 display:none → #738 加原生 label → #753 accept 前置 →
+// #755 统一入口 → #756 label 早退把两条路一起掐掉 → #813 回调武装时机 → #877 showPicker 第三腿 →
+// #920 三腿单点）修的一直是「怎么把那个 1px、看不见的 sr-only input 激活起来」，三条腿都得指望内核
+// 配合执行我们的代码：①label 转发（#756 实测 vivo SP-engine 既不转发也不报错）；②JS 合成 click()
+// （#738 实测小米系静默无视）；③showPicker()（小米系仍可能不弹）。三条腿全被无视时＝点了彻底没反应
+// （不报错、不弹窗、不提示），这正是用户反复看到的形状。
+// 本波换掉问题本身：**不再让代码去「激活」一个看不见的 input**，而是在入口节点内铺一层有真实尺寸、
+// 手指能直接落在上面的 file input（透明但占位，不是 sr-only clip）——手指物理点按 input 本身，选择器
+// 由浏览器的**原生默认动作**弹出，不经过 label 转发、也不经过任何 JS 合成事件。这是本族唯一不依赖
+// 「内核乐意执行我们的 JS」的路径（中文移动端「透明 input 覆盖按钮」的通吃写法）。
+// 零机型分支：所有内核都是同一个元素、同一条原生路径，无任何 UA/机型判断。
+// 与既有三腿并存互不干扰：三腿在 mochiFilePickGuard / mochiFilePickFire 里会探测「本次手势正是
+// surface 点按」并主动让路（见上方 #991 判定），因此绝不会两个 input 各弹一次＝不双开。
+// 调用口径：只在**单一用途的常驻入口**（该元素内没有别的按钮）上铺一次，长期有效；不要在点击时临时创建。
+//   opts.id       该 input 的稳定 id（同一 id 复用，绝不随点按堆积节点）
+//   opts.accept   默认 'image/*'（必须在任何激活之前生效，#753 判据；此处是常驻设置，天然先于点按）
+//   opts.multiple 多选（与宿主入口一致）
+//   opts.owner    宿主 input（老路径那个 sr-only input）——选完文件后把 FileList 转交它并派发 change，
+//                 于是**入口自己的压缩/落库管线一字不用改**（同一入口只有一条管线＝不会两边走偏）
+//   opts.onFiles  可选：直接回调（不给 owner 时用；tap 时由 mochiFilePick 登记最新回调，见下）
+// #1002：owner 转发是「一行接入」的关键——各入口的 mochiFilePick({btn,onFiles}) 点击路径与
+// 自建 input 的 onchange 管线都保持原样，surface 只负责「让手指点到真 input」。
+window.mochiFilePickSurface = function (btn, opts) {
+  try {
+    var o = opts || {};
+    if (!btn || !btn.appendChild) return null;
+    var id = o.id || ('mochi-pick-surface-' + Date.now().toString(36));
+    var input = document.getElementById(id);
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'file';
+      input.id = id;
+      input.className = 'mochi-pick-surface';
+      input.setAttribute('data-file-pick-surface', '1');
+      // 元素本身**可见**（opacity:1、有真实尺寸、可命中），只是没有可见外观：原生 file input 的
+      // 大小/内边距/边框/前景色全清掉、字号 0、外观交给 CSS 里的 ::file-selector-button 规则藏按钮。
+      // 这样既不落进「不可见 input 被内核拒绝激活」那族启发式（#717/#738 的 display:none/opacity:0），
+      // 又能让手指物理落在 input 上——本路径要的正是「浏览器原生默认动作」，不靠任何 JS 激活。
+      // z-index:0 ＝ 入口内自己的可点元素（如桌面昵称 .lbl 的 z-index:1，见 #821）仍在其上，
+      // 点昵称＝改昵称、点圆圈/其余区域＝换头像，两条路径各归各。
+      input.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;margin:0;padding:0;border:0;outline:none;background:transparent;color:transparent;font-size:0;appearance:none;-webkit-appearance:none;cursor:pointer;z-index:0;';
+      // 入口必须是定位祖先，否则这层 100%×100% 的覆盖层会以**初始包含块**（＝整屏）为基准
+      // ⇒ 变成一张全屏透明 input 把页面所有点击都吃掉（实测：页面背景行是先在游离态创建、
+      // 之后才挂进文档的，此时 getComputedStyle().position 拿到的是空串而不是 'static'，
+      // 只判 === 'static' 会漏掉这一形态）。故这里改成「非绝对/非固定/非相对/非粘性就补 relative」，
+      // 游离节点与已挂载节点一视同仁。
+      var _pos = '';
+      try { _pos = getComputedStyle(btn).position || ''; } catch (e3) {}
+      if (_pos !== 'absolute' && _pos !== 'fixed' && _pos !== 'relative' && _pos !== 'sticky') btn.style.position = 'relative';
+      btn.appendChild(input);
+      // 记「本次手势点到了 surface」——供 guard/Fire 让路（同一手势内的时间戳判定，非机型分支）
+      input.addEventListener('click', function () {
+        window.__mochiSurfaceTapAt = Date.now();
+        // #1002：再校一次入口定位——若入口在「装层之后」被 cssText 整体覆盖过 inline 样式
+        //（position:relative 被抹掉），这一层会退回以初始包含块（＝整屏）为基准的形态。
+        // 点击这一刻节点必然已挂进文档，这里能拿到真实计算值；补回定位＝下一次点按仍然命中这层。
+        try {
+          var bp = getComputedStyle(btn).position;
+          if (bp === 'static' || bp === '') btn.style.position = 'relative';
+        } catch (e4) {}
+      }, true);
+      input.__mochiSurface = { owner: null, onFiles: null };
+    }
+    try { input.accept = o.accept || 'image/*'; } catch (e) {}
+    input.multiple = !!o.multiple;
+    var rec = input.__mochiSurface = input.__mochiSurface || { owner: null, onFiles: null };
+    if (o.owner) rec.owner = o.owner;
+    if (typeof o.onFiles === 'function') rec.onFiles = o.onFiles;
+    input.onchange = function () {
+      var files = Array.prototype.slice.call(input.files || []);
+      try { input.value = ''; } catch (e) {} // 允许重选同一文件
+      if (!files.length) return;
+      // ① 直接回调（入口自建管线的入口 / tap 时由 mochiFilePick 登记的最新回调）
+      if (typeof rec.onFiles === 'function') { try { rec.onFiles(files); } catch (e) {} return; }
+      // ② 转交宿主 input：沿用入口原有 onchange 管线（零改动接入）。
+      //    owner 允许写成 id 字符串 —— 统一入口（mochiFilePick）的 input 是点按时才建的，
+      //    接入侧在绑定/渲染时只能知道它的 id，故到这里再解析（选完文件时它必然已存在）。
+      var owner = rec.owner;
+      if (typeof owner === 'string') { try { owner = document.getElementById(owner); } catch (e2) { owner = null; } }
+      if (!owner) return;
+      try {
+        var dt = new DataTransfer();
+        for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
+        owner.files = dt.files;
+        owner.dispatchEvent(new Event('change'));
+      } catch (e) {
+        if (window.toast) { try { toast('浏览器不支持这种方式选择图片，请改用 Chrome 或 Edge 打开'); } catch (x) {} }
+      }
+    };
+    return input;
+  } catch (e) { return null; }
+};
+// 供 guard/Fire 判定「本次手势是一次 surface 点按」：一次性消费（读到即清），窗口 400ms＝同一手势，
+// 避免上一次点按的残留把下一次点按的补腿误吞。
+window.mochiFilePickSurfaceTap = function () {
+  var at = window.__mochiSurfaceTapAt || 0;
+  window.__mochiSurfaceTapAt = 0;
+  return (Date.now() - at) < 400;
+};
+// #1002：按宿主 input 找它已经铺好的所有 surface（同一宿主可能对应多个触发按钮，例如
+// 聊天壁纸在「设置页面板」和「边看边调抽屉」各一个按钮）——mochiFilePick 在点击路径里用它把
+// 本次的 onFiles 接到全部同宿主的层上，任一按钮被点都能拿到正确的回调。
+window.mochiFilePickSurfaceAll = function (input) {
+  var out = [];
+  try {
+    var all = document.querySelectorAll('input[data-file-pick-surface]');
+    for (var i = 0; i < all.length; i++) {
+      var rec = all[i].__mochiSurface;
+      if (rec && (rec.owner === input || (typeof rec.owner === 'string' && rec.owner === input.id))) out.push(all[i]);
+    }
+  } catch (e) {}
+  return out;
 };
 
 // ===== 激活腿统一实现（FIX 2026-09-20 #920 第八波）——showPicker → click → 可反馈提示 =====
@@ -3809,6 +4144,11 @@ window.mochiFilePickLabel = function (btn, input) {
 // 零机型分支：所有内核同一顺序尝试三条腿，判据全是可观测事实（无机型/UA 判断）。
 window.mochiFilePickFire = function (input, opts) {
   var o = opts || {};
+  // #1014 取证：走到这里＝本次手势走的是程序化两腿（showPicker → click）
+  if (window.mochiPickLog) window.mochiPickLog((input && input.id) || 'pick', 'leg:fire');
+  // FIX 2026-09-21 #991（第九波）：本次手势若是「手指物理点按入口上铺的真 input」（surface 层），
+  // 那台选择器已由浏览器原生默认动作弹出——这里只登记、不再补腿（补＝另一个 input 再弹一次＝双开）。
+  if (window.mochiFilePickSurfaceTap && window.mochiFilePickSurfaceTap()) return true;
   var fired = false;
   if (input && typeof input.showPicker === 'function') {
     try { input.showPicker(); fired = true; } catch (e) {}
@@ -3857,11 +4197,21 @@ window.mochiFilePick = function (opts) {
   input.onchange = function () {
     var files = Array.prototype.slice.call(input.files || []);
     try { input.value = ''; } catch (e) {} // 允许重选同一文件
+    if (window.mochiPickLog) window.mochiPickLog((input && input.id) || 'pick', files.length ? ('files=' + files.length) : 'files=0');
     if (o.onFiles) { try { o.onFiles(files); } catch (e) {} }
   };
   // 原生 label 激活层（部分分叉内核忽略 JS 合成 click；注意 #756 实测：label 在国产内核上
   // 也可能既不转发也不报错，故它只是「加速路径」，真正的兜底见下方 activate()）
   if (o.btn && window.mochiFilePickLabel) window.mochiFilePickLabel(o.btn, input);
+  // FIX 2026-09-21 #1002：若这个入口已经铺过 surface（真·可点 input 层），把**本次点击路径产出的
+  // onFiles 回调登记到那层上**——surface 收到文件时直接调它，于是入口侧「点击时才算出来的管线」
+  // （列表/索引/时长等闭包变量）与 surface 选中的文件严丝合缝，接入侧仍只需在绑定/渲染处铺一行。
+  if (o.btn && window.mochiFilePickSurfaceAll && typeof o.onFiles === 'function') {
+    try {
+      var surfs = window.mochiFilePickSurfaceAll(input);
+      for (var si = 0; si < surfs.length; si++) { surfs[si].__mochiSurface.onFiles = o.onFiles; }
+    } catch (e) {}
+  }
   // ★ 激活：不再「有 label 就跳过 JS click」（那是 #738~#755 整族复发的根源，见上方 #756 说明）。
   // 统一走 mochiFilePickGuard —— 先给原生转发一个窗口期，只有确认「没弹出选择器」才补 JS click。
   // FIX 2026-09-20 #920：兜底腿由「裸 click()」换成全站统一的 mochiFilePickFire（showPicker→click
@@ -3869,9 +4219,17 @@ window.mochiFilePick = function (opts) {
   var activate = function () {
     window.mochiFilePickFire(input, { onFail: function () { if (o.onError) { try { o.onError(); } catch (x) {} } } });
   };
+  // #1002：本次手势若正是点在这层 surface 上（入口已铺），远端已由浏览器原生弹出选择器——
+  // 不再补腿，避免与 surface 各弹一次。判据同上（同一手势时间戳，一次性消费）。
+  if (!o.noClick && window.mochiFilePickSurfaceTap && window.mochiFilePickSurfaceTap()) {
+    if (window.mochiFilePickGuard) window.mochiFilePickGuard(input, function () {}); // 仍登记一次武装（诊断口径 seq 不变）
+    return input;
+  }
   if (!o.noClick) {
     if (o.btn && window.mochiFilePickGuard) window.mochiFilePickGuard(input, activate);
     else activate();
   }
   return input;
 };
+
+// ===== 统一文件选择入口（FIX 2026-09-18 #755）——同族第五波根治 =====

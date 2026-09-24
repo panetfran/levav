@@ -80,21 +80,37 @@
     try { if (document.visibilityState === 'hidden') return true; } catch (e) {}
     return !_userActTs;
   }
+  // FIX 2026-09-21 #992：后台换版不得打断「后台保活 / 后台通知」（用户实报「浏览器网页没多久就
+  //   自动刷新了，后台保活功能失效」）——这两个开关的存在意义就是页面在后台继续运行，而 #965 的
+  //   待换版落地时刻恰好选在「页面转入后台那一刻」⇒ 一开保活、切走就被重载。无头实证：重载把
+  //   运行中的保活音频拆掉（__kaProbe().ev.died +1）、页面重新回到开屏问答门，后台期间消息与
+  //   通知全停，用户回来只看到「页面自己刷新了」。修法：换版落地前先看这两个开关——开着就只弹
+  //   更新条、后台不落地，等用户哪次把开关关掉再切后台（或下次冷启动，开屏版本检查每次都会跑）
+  //   自然换版；手动点「刷新使用新版」不受此限（与 #279 同口径）。
+  function bgLivenessOn() {
+    try {
+      if (!window.xyStore) return false;
+      const st = window.xyStore('xy-home-v2');
+      return st.get('bg-keepalive') === '1' || st.get('bg-notify') === '1';
+    } catch (e) { return false; }
+  }
   // #965 自动升级「不放弃、也不打断」——待换版登记：页面前台且用户已交互时不再退回更新条
   // 收工（旧行为＝多数用户不会点更新条＝长期停在旧版、拿旧版 bug 反馈），改为先登记，等页面
   // 下一次转入后台（切走/回桌面/锁屏）时 reload 落地。iOS 上隐藏期的 reload 常被系统冻结到
   // 回前台才真正执行＝用户回到前台即新版、全程零打断。reload 会卸载页面，监听无需移除
   //（若极端内核忽略了隐藏期 reload，监听仍在，下次转后台会再试，不会卡死）。
+  // #992：转后台那一刻若保活/通知开着则跳过——监听常挂，等关掉开关后那次转后台再落地。
   let _pendingAutoReload = false;
   function armAutoReloadWhenHidden() {
     if (_pendingAutoReload) return;
     _pendingAutoReload = true;
     const onHide = function () {
       try { if (document.visibilityState !== 'hidden') return; } catch (e) { return; }
+      if (bgLivenessOn()) return; // #992：后台保活/后台通知开着＝后台要活着，不在后台换版
       try { location.reload(); } catch (e) {}
     };
     try { document.addEventListener('visibilitychange', onHide); } catch (e) {}
-    // 登记这一刻若已不在前台（刚被切走/冻结），直接落地
+    // 登记这一刻若已不在前台（刚被切走/冻结），直接落地（同上闸门）
     try { if (document.visibilityState === 'hidden') onHide(); } catch (e) {}
   }
   // 无头验证专用探针（tools/verify-auto-upgrade-guard.mjs 使用，只读；#965 追加 pending/arm）
@@ -119,6 +135,7 @@
   let _prMsg = null;
   let _prBusy = false; // 手动下载进行中（防重复点击叠监听/叠计时器）
   const VER_DL_WAIT = 180000; // 手动通道等 PRECACHE_DONE 的上限（弱网慢路径实测 50~130s，取宽裕值）
+  let _prPing = 0, _prPingN = 0; // #1047：下载通道重发循环（见 refreshNow 手动分支注释）
   function refreshNow(auto, autoTs, ackTs) {
     const doReload = function () {
       // #279/#965：自动升级（auto=true）落地前复核——用户已操作且在前台时绝不打断会话，
@@ -126,6 +143,9 @@
       // 页面下一次转后台时自动落地（切走/回桌面/锁屏），用户回来即新版。更新条照弹，
       // 想立刻升级的用户仍可手动点。
       if (auto && !autoReloadAllowed()) { armAutoReloadWhenHidden(); showVerBar(autoTs); return; }
+      // #992：自动通道 + 保活/通知开着 ⇒ 就算此刻已经在后台也不换版（页面一重载＝后台保活/通知
+      //   当场失效、还要回开屏重过问答门）。登记待换版并弹更新条，让用户自己挑时机手动刷。
+      if (auto && bgLivenessOn()) { armAutoReloadWhenHidden(); showVerBar(autoTs); return; }
       try { location.reload(); } catch (e) {}
     };
     // #944：手动通道的过程反馈（自动通道静默，行为与 #273 时代一致）
@@ -144,6 +164,7 @@
         _prMsg = function (e) {
           if (e.data && e.data.type === 'PRECACHE_DONE') {
             done = true; _prBusy = false;
+            if (_prPing) { clearInterval(_prPing); _prPing = 0; }
             try { window.__mochiVerDlBusy = false; } catch (x) {}
             // #944：新版已确认落进缓存，此刻才写 ack（下载失败不写＝本版本还会再次提醒）
             if (!auto && ackTs > 0) verMarkAck(ackTs);
@@ -158,7 +179,23 @@
           setUi('正在下载新版…网络慢时可能需要一两分钟，请保持页面打开', '正在下载…');
         }
         // PERF-PLAN 阶段 1：带上外置 js/ 清单——弱网点「刷新使用新版」时 ext 一并预取落新缓存，防旧 index 配新 ext 的混合版本（SW 侧零改动，urls 数组本就支持）
-        navigator.serviceWorker.controller.postMessage({ type: 'PRECACHE_NOW', urls: ['./index.html', './version.json'].concat(window.__mochiExtFiles || []) });
+        const prUrls = ['./index.html', './version.json'].concat(window.__mochiExtFiles || []);
+        navigator.serviceWorker.controller.postMessage({ type: 'PRECACHE_NOW', urls: prUrls });
+        if (!auto) {
+          // #1047：「点更新没反应」根治——手动通道原来只在点击那一刻发一次 PRECACHE_NOW；
+          // iOS WebKit 会把空闲的 SW 实例整只冻结（controller 引用还在），那一刻的消息可能
+          // 没人收，PRECACHE_DONE 永不到来 ⇒ 按钮顶着「正在下载…」、_prBusy 把后续点击全部
+          // 静默吞掉，最长干等 180s＝用户所见「点更新还点不动」。改 12s 一发重发同一条消息
+          // （投递到已停实例＝浏览器先唤醒它；SW 侧重复收到只是重复回执，幂等）；DONE 即停、
+          // 12 发封顶与 VER_DL_WAIT 对齐，超时路径一并清。自动通道不加（2.5s 兜底口径不变）。
+          _prPingN = 0;
+          if (_prPing) clearInterval(_prPing);
+          _prPing = setInterval(function () {
+            if (done || !navigator.serviceWorker || !navigator.serviceWorker.controller) { clearInterval(_prPing); _prPing = 0; return; }
+            if (++_prPingN > 12) { clearInterval(_prPing); _prPing = 0; return; }
+            try { navigator.serviceWorker.controller.postMessage({ type: 'PRECACHE_NOW', urls: prUrls }); } catch (e) {}
+          }, 12000);
+        }
         if (auto) {
           setTimeout(function () { if (!done) doReload(); }, 2500); // 自动通道保持 2.5s 兜底（#273 时代行为）
         } else {
@@ -168,6 +205,7 @@
           setTimeout(function () {
             if (done) return;
             _prBusy = false;
+            if (_prPing) { clearInterval(_prPing); _prPing = 0; }
             try { window.__mochiVerDlBusy = false; } catch (x) {}
             if (_prMsg) navigator.serviceWorker.removeEventListener('message', _prMsg);
             try {
@@ -463,11 +501,17 @@
     // 兜底顶部提醒条（弹窗组件不可用、或被别的弹窗长期占用时）：渲染成功返回 true 才允许写冷却
     function showBar(days, everBacked) {
       const txt = document.getElementById('backup-remind-txt');
+      // #980：iOS 标签页（没装到主屏幕）是本提醒的高危场景——条上也点明「装到主屏幕再打开」，
+      // 不指望用户点进弹窗才看到第 ④ 条；非 iOS 一字不变（零回归面）。
+      const iosTab = !!(window.mochiIosTabRisk && window.mochiIosTabRisk());
       if (txt) {
-        txt.textContent = everBacked
+        txt.textContent = (everBacked
           ? '⚠ 手机和浏览器都会自动清空数据（设备限制，躲不掉）· 距上次备份已 ' + days + ' 天，快导出备份'
-          : '⚠ 手机和浏览器都会自动清空数据，一清就全没 · 你还没导出过完整备份';
+          : '⚠ 手机和浏览器都会自动清空数据，一清就全没 · 你还没导出过完整备份')
+          + (iosTab ? '｜iPhone：导出后请「添加到主屏幕」，改用桌面图标打开' : '');
       }
+      // #980：iOS 时文案变长，窄屏（320px 级）允许按钮换行，防「去备份」被挤出屏外（#939 续二同款处理）
+      if (iosTab) { bar.style.flexWrap = 'wrap'; bar.style.rowGap = '6px'; }
       bar.hidden = false;
       return bar.getClientRects().length > 0;
     }
@@ -780,10 +824,13 @@
   }
   setInterval(function () {
     try {
-      const n = document.getElementById('splash-notice');
+      // v8.29 #976：必读卡组前移后，查找放宽到整个开屏滚动容器、补回锚点＝必读卡组最顶
+      // （#splash-mustread 缺失的旧副本回退 #splash-notice，二传副本照常兜住）
+      const n = document.getElementById('splash-mustread') || document.getElementById('splash-notice');
+      const scope = document.getElementById('splash-box') || document;
       if (!n) return;
-      // #613/#621：合并置顶声明卡（免费 · 署名 · 防倒卖，原防骗卡+署名卡并成一张）补回锚点 = 公告区最顶
-      if (!n.querySelector('.splash-alert[data-anti-scam="1"]')) {
+      // #613/#621：合并置顶声明卡（免费 · 署名 · 防倒卖，原防骗卡+署名卡并成一张）补回锚点 = 必读区最顶
+      if (!scope.querySelector('.splash-alert[data-anti-scam="1"]')) {
         n.insertBefore(mkWatchBar('1', '免费 · 署名 · 防倒卖', W), n.firstChild);
       }
     } catch (e) { /* 静默：看门狗绝不能成为错误源 */ }
@@ -799,13 +846,24 @@
 // 进 __mochiExtFail（error 是终态、原标签绝不会再执行 ⇒ 按这份清单重注入不会双执行；「没在
 // __mochiLoaded」的还可能只是仍在慢下载中，不重注入）；② load 后 1.5s/6s/15s 三波自动重注入
 // （s.src 保持裸路径，同 URL 才能命中 SW 预缓存/HTTP 缓存；同一文件两次尝试间隔 ≥4s，防对仍在
-// 途的上一发重复补枪）；③ 三波后仍有缺口 → 顶部恢复条（复用 ver-update-bar 样式），点＝立即再试，
-// 全部到位自动撤条，诊断环补一条（设备兼容诊断可见）便于远程排查。执行期异常（script onload 而
+// 途的上一发重复补枪）；③ 三波后仍有缺口 → 顶部恢复条（复用 ver-update-bar 样式），点＝换址再试，
+// 全部到位自动撤条，诊断环补一条（设备兼容诊断可见）便于远程排查；条上带「知道了」，本次会话可关。执行期异常（script onload 而
 // IIFE 抛错）不归这里管：那类在 __jsErrors 有记录，重注入同一份代码只会再抛一次，双绑定风险大于收益。
 (function () {
   if (!window.__mochiExtFiles || !window.__mochiExtFiles.length) return;
-  let waves = 0, bar = null, barTxt = null, reported = false;
+  let waves = 0, bar = null, barTxt = null, reported = false, barOff = 0;
   const lastTry = {};
+  // #1035（iQOO+Edge 实报「功能包未加载成功」永挂，其他机型同现；零机型/零内核分支）：
+  // 三波重注入刻意用「同一个裸地址」（同 URL 才命中 SW 预缓存/HTTP 缓存）——代价是一旦失败原因
+  // 按 URL 生效（浏览器 HTTP 缓存 / CDN 边缘节点 / 中间代理里的一条坏响应），每波重注入、每次
+  // 点「点此重试」、甚至下次开页都取回同一份坏响应＝永远修不好，顶部条还会因无法关闭而常驻。
+  // 故裸址三波之后改走「换址逃生」：地址带一次一变与会话一变的戳（?mb=<会话戳>.<第几次>）＋
+  // cache:'reload'，绕开所有按 URL 命中的缓存层；字节先验真（防代理塞回的 HTML 错误页被当真代码跑）
+  // 再就地执行，sw.js 把取回的好字节按裸路径写回缓存＝一次修好、下次开页直接命中、离线也在。
+  const HEAL_NS = Date.now().toString(36);
+  const HEAL_MAX = 3;
+  const bust = {}, healing = {};
+  try { barOff = sessionStorage.getItem('mochi-ext-bar-off') === '1' ? 1 : 0; } catch (e0) {}
   function failList() {
     const fail = window.__mochiExtFail || [], loaded = window.__mochiLoaded || [], out = [];
     for (let i = 0; i < fail.length; i++) if (loaded.indexOf(fail[i]) < 0 && out.indexOf(fail[i]) < 0) out.push(fail[i]);
@@ -824,19 +882,65 @@
       document.head.appendChild(s);
     }
   }
+  // 外置产物一律是 build.mjs 包的 `(function () { try {` 开头；代理/门户的坏响应是 HTML
+  // （`<!doctype`/`<html`）或以状态文案开头的裸文本，长度也对不上——验真不过就当没取到。
+  function looksLikeJs(txt) {
+    return typeof txt === 'string' && txt.length > 64 && !/^\s*<\w/.test(txt);
+  }
+  function healByBypass(list) {
+    const now = Date.now();
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (healing[f] || (bust[f] || 0) >= HEAL_MAX) continue;
+      if (lastTry[f] && now - lastTry[f] < 4000) continue;
+      lastTry[f] = now;
+      healing[f] = 1;
+      bust[f] = (bust[f] || 0) + 1;
+      fetch('js/' + f + '?mb=' + HEAL_NS + '.' + bust[f], { cache: 'reload' }).then(function (res) {
+        if (!res || !res.ok) throw new Error('status');
+        return res.text();
+      }).then(function (txt) {
+        healing[f] = 0;
+        if (!looksLikeJs(txt)) throw new Error('bad-body');
+        // 等字节这段时间里原标签可能只是慢、终于跑完了（或前一次换址已成功）＝不再执行第二遍
+        if ((window.__mochiLoaded || []).indexOf(f) >= 0) return;
+        const s = document.createElement('script');
+        s.textContent = txt;
+        s.onerror = function () { try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {} };
+        document.head.appendChild(s);
+      }).catch(function () {
+        healing[f] = 0;
+        try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {}
+      });
+    }
+  }
   function syncBar(miss) {
     if (!miss.length) { if (bar) bar.hidden = true; return; }
-    if (waves < 3) return; // 前三波静默自动重试，不打扰
+    if (waves < 3 || barOff) return;
     if (!bar) {
       bar = document.createElement('div');
       bar.className = 'ver-update-bar';
       bar.id = 'ext-recovery-bar';
       bar.style.cursor = 'pointer';
-      bar.innerHTML = '<span class="vub-txt"></span><b>点此重试</b>';
+      // #1035：两条按钮＝窄屏（320px 级）一行放不下会被截出屏外「知道了点不到」——#939f/#980f
+      // 同款处置，只在本条内联换行，共用样式零影响。
+      bar.style.cssText += 'flex-wrap:wrap;row-gap:6px;';
+      bar.innerHTML = '<span class="vub-txt"></span><b>点此重试</b><b class="vub-act" id="ext-heal-off">知道了</b>';
       bar.addEventListener('click', function () {
         const miss2 = failList();
-        if (miss2.length) reinject(miss2);
+        if (miss2.length) {
+          // 手动重试＝用户主动要求，放开换址次数上限再试一轮（自动波只用 HEAL_MAX 次）
+          for (let i = 0; i < miss2.length; i++) bust[miss2[i]] = 0;
+          healByBypass(miss2);
+        }
         setTimeout(function () { syncBar(failList()); }, 4000);
+      });
+      const x = bar.querySelector('#ext-heal-off');
+      if (x) x.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        barOff = 1;
+        try { sessionStorage.setItem('mochi-ext-bar-off', '1'); } catch (e6) {}
+        bar.hidden = true;
       });
       document.body.appendChild(bar);
       barTxt = bar.querySelector('.vub-txt');
@@ -857,10 +961,21 @@
       syncBar(left);
     }, 4000);
   }
+  // #1035 换址波：裸址三波（1.5/6/15s）全灭后的第四波起，间隔逐步拉开（26/55/100s）——
+  // 既给「按 URL 生效的坏响应」换一个取不到的键，也给弱网留出「上一发其实还在途」的余量。
+  function healPass() {
+    waves++;
+    const miss = failList();
+    if (miss.length) healByBypass(miss);
+    setTimeout(function () { syncBar(failList()); }, 4000);
+  }
   function boot() {
     setTimeout(pass, 1500);
     setTimeout(pass, 6000);
     setTimeout(pass, 15000);
+    setTimeout(healPass, 26000);
+    setTimeout(healPass, 55000);
+    setTimeout(healPass, 100000);
   }
   if (document.readyState === 'complete') boot();
   else window.addEventListener('load', boot);

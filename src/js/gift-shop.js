@@ -18,6 +18,15 @@
     clearTimeout(t._timer); t._timer = setTimeout(function () { t.className = 'cc-toast'; }, 2000);
   }
   function closeTc() { const m = document.getElementById('tc-mask'); if (m) m.hidden = true; }
+  // FIX 2026-09-21 #983 用户要求：在聊天里送礼物（聊天页「心意集市」面板挑一件）时，成交不再弹
+  // 黑色提示浮层（#cc-toast 黑底白字，见 chat-pages.css 的 #cc-toast / 本文件 toast()）；从聊天
+  // 「TA 的心愿」卡片点【送 TA】同理。口径与 #517「领取联系人红包不再弹黑色浮层」一致——礼物卡
+  // 就是回执：卡片就地转「已送出」、礼物气泡同时飞进聊天，黑色浮层只是重复打扰。
+  // 判据取「聊天页此刻是否在眼前」（市集/心意柜/桌面点进来时 openPage 隐藏全部 .page，看不到
+  // 那张卡，那里照旧保留「已送出」提示）。勿改成无条件删 toast：市集页面上没有任何回执。
+  function chatOnScreen() {
+    try { const p = document.getElementById('page-chat'); return !!(p && !p.hidden); } catch (e) { return false; }
+  }
   function fmtTime(tm) { const d = new Date(tm); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
   function fenToYuan(fen) { const y = fen / 100; if (y >= 100000) return (y / 10000).toFixed(1) + '万'; if (y >= 1000) return y.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ','); return y.toFixed(2); }
 
@@ -783,6 +792,59 @@
   function boxLoad() { try { const s = store(); if (!s) return []; return JSON.parse(s.get(BOX_KEY) || '[]'); } catch (e) { return []; } }
   function boxSave(a) { const s = store(); if (s) s.set(BOX_KEY, JSON.stringify(a)); }
 
+  // #985：聊天礼物卡上的「领取态 / 追加回复」以**心意柜记录为单一事实源**，卡片只存 giftBoxId 指针。
+  // 为什么不写回聊天记录本身：心意柜是同步小键写入（可靠），而聊天大包对「改已有记录的字段」表达
+  // 不出增量——实测无头连回两条后记录里只剩后一条、甚至第一条当场从卡片上消失（基线合并把修改盖
+  // 回去），用户视角就是「我的回复自己消失了」。渲染侧按 id 查这张记忆化表（同 #588 taWishIds 口径，
+  // 每件礼物一次 JSON.parse 变成每轮一次），所有写入路径都 invalidate。
+  let _boxMeta = null;
+  function boxMetaInvalidate() { _boxMeta = null; }
+  // #1029：同一条回复被写两遍留下的**历史脏数据**清理（用户 2026-09-22 实报「送礼物后联系人追加
+  // 回复，同样的回复内容，礼物卡片里会重复变成两次」，红米 K70 Via 浏览器）。旧实现同一拍里连写
+  // 两次（同 who、同文本、ts 差 0~1ms），存量心意柜记录里就留着这样的成对条目；本批已修写入侧，
+  // 但**已经写进去的那一对**不会自己消失，卡片与心意柜仍会显示两行。判据收得很紧：只吞「相邻、
+  // 同 who、同文本、时间差 ≤1s」的条目——用户自己连回两句一样的话、TA 两次独立回话（间隔都以秒
+  // 计）都不会被吞。读侧（卡片经 giftGiftMeta、心意柜经 boxReplies）过滤；写侧 boxAttachReply 顺
+  // 手归一化，所以存量数据一旦再有新回复就彻底干净了。
+  // 判据按 who 分档（#1029 附4 收紧：用户实报「卡片里回复变成两条内容且重复」，而旧版那次双写的
+  // 第二笔走的是跨桌面异步链，实测可能隔几秒才落，1 秒窗口会漏）：
+  //  · who='ta'：TA 对**这件礼物**的自动回话设计上只有一条 ⇒ 同文本相邻即视为同一次投递的重复，
+  //    窗口放到 10 分钟（覆盖任何延迟写入），不再要求「1 秒内」。
+  //  · who='me'：我自己写的回复可能有意重复（同一句写两遍）⇒ 只吞 1 秒内的双提交。
+  const GIFT_REPLY_DUP_MS = 1000;
+  const GIFT_REPLY_TA_DUP_MS = 10 * 60 * 1000;
+  function boxReplyDupWindow(who) { return who === 'me' ? GIFT_REPLY_DUP_MS : GIFT_REPLY_TA_DUP_MS; }
+  function boxDedupeReplies(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      if (!r) continue;
+      const prev = out.length ? out[out.length - 1] : null;
+      if (prev && prev.who === r.who && String(prev.text) === String(r.text) &&
+          Math.abs((Number(prev.ts) || 0) - (Number(r.ts) || 0)) <= boxReplyDupWindow(r.who)) continue;
+      out.push(r);
+    }
+    return out;
+  }
+  function boxMetaMap() {
+    if (_boxMeta) return _boxMeta;
+    const m = {};
+    try {
+      const list = boxLoad();
+      if (Array.isArray(list)) list.forEach(function (it) {
+        if (!it || !it.id) return;
+        m[it.id] = { claimed: it.claimed === 0 ? 0 : (it.claimed === 1 ? 1 : null), replies: boxDedupeReplies(it.replies) };
+      });
+    } catch (e) {}
+    _boxMeta = m;
+    return m;
+  }
+  window.giftGiftMeta = function (boxId) {
+    if (!boxId) return null;
+    try { return boxMetaMap()[boxId] || null; } catch (e) { return null; }
+  };
+
   // v3.26.x 心愿单：市集「许愿—实现」闭环——我加心愿，TA 按概率买下送我；TA 也会把想要的
   // 加进自己的心愿单（我可买下送 TA），还能自己买礼物收进自己的心意柜（giftbox side 'self'）。
   // 心愿数据 per-cid（与心意柜同 namespace）；设置全局（GSTORE，与 market-custom 同 namespace）
@@ -956,13 +1018,25 @@
     return wish;
   }
 
+  // #985（用户 2026-09-21 直派「这个回复没有加到联系人领取礼物的卡片里，也没有加到心意柜的
+  // 卡片里」＋「新增联系人送我礼物时的礼物卡片，我可以点击领取…同样可以点击这个卡片追加回复，
+  // 这条回复可以在我领取卡片里和发送到聊天消息里，同样可以添加到心意柜的卡片里」）：
+  // 心意柜记录新增 replies（这件礼物上的回复，双方都能追加）与 claimed（仅 side:'in' 的真礼物：
+  // 0=待领取、1=已领取）。**存量记录没有 claimed 字段＝旧版自动收下的，一律当已领取**（渲染侧
+  // 只认 `claimed === 0` 才显示待领取），绝不把历史礼物翻成待领取。
   function boxEntry(gift, side, wish) {
-    return { id: 'gb_' + Date.now() + '_' + Math.floor(Math.random() * 1000), giftId: gift.id, name: gift.name, emoji: gift.emoji, img: gift.img || '', price: gift.price, cat: gift.cat, wish: wish, side: side, tm: Date.now() };
+    const e = { id: 'gb_' + Date.now() + '_' + Math.floor(Math.random() * 1000), giftId: gift.id, name: gift.name, emoji: gift.emoji, img: gift.img || '', price: gift.price, cat: gift.cat, wish: wish, side: side, tm: Date.now(), replies: [] };
+    if (side === 'in') e.claimed = 0;
+    return e;
   }
   function recordBox(gift, side, wish) {
     const box = boxLoad();
-    box.unshift(boxEntry(gift, side, wish));
+    const entry = boxEntry(gift, side, wish);
+    box.unshift(entry);
     boxSave(box);
+    boxMetaInvalidate();
+    // #985：把记录本身回给调用方——聊天里那张礼物卡要靠它的 id 与心意柜互指（回复/领取两处同步）
+    return entry;
   }
   window.recordGiftBox = recordBox;
   // #585：向【指定联系人】的心意柜写记录。用途在「TA 送我」礼物的投递延迟窗（1.5~4s）里
@@ -992,9 +1066,63 @@
     let box = [];
     try { box = JSON.parse(s.get(BOX_KEY) || '[]'); } catch (e) { box = []; }
     if (!Array.isArray(box)) box = [];
-    box.unshift(boxEntry(gift, side, wish));
+    const entry = boxEntry(gift, side, wish);
+    box.unshift(entry);
     s.set(BOX_KEY, JSON.stringify(box));
+    boxMetaInvalidate();
+    return entry;
   }
+  // #985：往「某件心意柜礼物」上追加一条回复。cid 允许跨桌面——TA 收礼回话有 0.9~2.4s 延迟窗，
+  // 用户可能已切桌面，而礼物与心意柜都绑在原桌面（同 #585 投递延迟窗的跨桌面口径）。
+  // who='ta'（TA 收礼后的回话）/ 'me'（我在卡片上回的一句）。找不到那件礼物就静默返回 false。
+  function boxAttachReply(cid, boxId, who, text) {
+    if (!boxId || !text) return false;
+    const s = boxStoreFor(cid);
+    let box = [];
+    try { box = JSON.parse(s.get(BOX_KEY) || '[]'); } catch (e) { box = []; }
+    if (!Array.isArray(box)) return false;
+    for (let i = 0; i < box.length; i++) {
+      const it = box[i];
+      if (it && it.id === boxId) {
+        if (!Array.isArray(it.replies)) it.replies = [];
+        // #1029：写入前顺手把旧版「同拍双写」留下的成对重复归一化——存量记录借这一次追加自我愈合
+        it.replies = boxDedupeReplies(it.replies);
+        it.replies.push({ who: who === 'me' ? 'me' : 'ta', text: String(text), ts: Date.now() });
+        try { s.set(BOX_KEY, JSON.stringify(box)); } catch (e2) {}
+        boxMetaInvalidate();
+        return true;
+      }
+    }
+    return false;
+  }
+  window.giftBoxAttachReply = function (boxId, who, text, cid) {
+    try { return boxAttachReply(cid || (window.__activeCid || 'default'), boxId, who, text); } catch (e) { return false; }
+  };
+  // #985：聊天卡片上点了【领取】→ 心意柜那件同步记「已领取」（跨桌面按 cid 写回）
+  function boxMarkClaimed(cid, boxId) {
+    if (!boxId) return false;
+    const s = boxStoreFor(cid);
+    let box = [];
+    try { box = JSON.parse(s.get(BOX_KEY) || '[]'); } catch (e) { box = []; }
+    if (!Array.isArray(box)) return false;
+    for (let i = 0; i < box.length; i++) {
+      const it = box[i];
+      if (it && it.id === boxId) {
+        it.claimed = 1;
+        try { s.set(BOX_KEY, JSON.stringify(box)); } catch (e2) {}
+        boxMetaInvalidate();
+        return true;
+      }
+    }
+    return false;
+  }
+  window.giftBoxMarkClaimed = function (boxId, cid) {
+    try { return boxMarkClaimed(cid || (window.__activeCid || 'default'), boxId); } catch (e) { return false; }
+  };
+  // #985：卡片上的领取/回复落库后，心意柜页开着就地重画（现读现画、幂等；没开着什么都不做）
+  window.giftBoxLiveRefresh = function () {
+    try { if (giftboxPage && !giftboxPage.hidden) renderBox(); } catch (e) {}
+  };
 
   // #848：我送礼后 TA 的回应话术池（0 档/混合档用）。心愿兑现那套单独拎出来——
   // 「你把我许的愿买了」比普通「谢谢」更贴场景，命中时优先走这一套。
@@ -1005,7 +1133,61 @@
   // + giftReplyMode 内容来源（0=系统预设话术 / 1=和正常聊天一样回复 / 2=混合，默认 1）。
   // 聊天式那一档走 window.genChatStyleReply（与互动卡「接聊天字卡」同一管线：字卡→兜底→词典拼字），
   // 生成失败回落到预设池，绝不发空气泡。
-  function giftReplyFeedback(gift) {
+  // #1029 附3：同一次回话只投一次。写入（礼物卡＋心意柜）与**聊天里那条消息**算同一次投递，
+  // 重复投递一律整条吞掉、只留第一条。为什么要再加这层：boxDedupeReplies 只管记录侧（卡片与心意
+  // 柜），聊天气泡不在它的范围内——这条链一旦被触发两次（旧版同拍双写、内核上点按/定时器重复触发），
+  // 聊天里就会出现两条一模一样的气泡（用户实报「联系人是直接追加回复了两条，而且是一模一样的，
+  // 就是消息重复了啊」）。判据＝同一件礼物（同一个 giftBoxId）、同 who、同文本，窗口见 boxReplyDupWindow。
+  function boxReplyDup(cid, boxId, who, text) {
+    if (!boxId || !text) return false;
+    try {
+      const s = boxStoreFor(cid);
+      let box = []; try { box = JSON.parse(s.get(BOX_KEY) || '[]'); } catch (e) { return false; }
+      if (!Array.isArray(box)) return false;
+      const want = who === 'me' ? 'me' : 'ta';
+      for (let i = 0; i < box.length; i++) {
+        const it = box[i];
+        if (!it || it.id !== boxId) continue;
+        const list = boxDedupeReplies(it.replies);
+        const last = list.length ? list[list.length - 1] : null;
+        if (last && last.who === want && String(last.text) === String(text) &&
+            Math.abs(Date.now() - (Number(last.ts) || 0)) <= boxReplyDupWindow(want)) return true;
+        return false;
+      }
+    } catch (e) {}
+    return false;
+  }
+  function deliverGiftReply(cid, chatRec, txt, useChatStyle) {
+    if (!txt) return false;
+    const boxId = chatRec && chatRec.giftBoxId;
+    const sameDesk = (window.__activeCid || 'default') === cid;
+    if (boxId && boxReplyDup(cid, boxId, 'ta', txt)) return false;   // 这次投递已经投过 → 连聊天那条一起吞
+    var wrote = false;
+    if (sameDesk && window.chatGiftAttachReplyTo && chatRec) {
+      try { wrote = window.chatGiftAttachReplyTo(cid, chatRec.ts, 'ta', txt, chatRec) === true; } catch (eRA) {}
+    }
+    try { if (!wrote && boxId) wrote = boxAttachReply(cid, boxId, 'ta', txt) === true; } catch (eRB) {}
+    if (!wrote && !sameDesk && window.chatGiftAttachReplyTo && chatRec) {
+      try { window.chatGiftAttachReplyTo(cid, chatRec.ts, 'ta', txt, chatRec); } catch (eRD) {}
+    }
+    try { if (boxId && sameDesk && window.giftBoxLiveRefresh) window.giftBoxLiveRefresh(); } catch (eRC) {}
+    if (sameDesk) {
+      // 聊天式那档带「正在输入…」过渡，观感与普通回复一致（同红包领后捎话）
+      if (useChatStyle && window.chatAddInTyped) window.chatAddInTyped(txt, { silent: true });
+      else if (window.chatAddIn) window.chatAddIn(txt, { silent: true });
+    } else if (window.chatAppendDeskRec) {
+      // 投递延迟窗里切了桌面：回应属于原桌面的聊天，切回即可见（同 deliverInGift 跨桌面补投口径）
+      window.chatAppendDeskRec(cid, { side: 'in', text: txt });
+    }
+    return true;
+  }
+  // 回归脚本入口（同 window.chatAddInTyped 口径）：产品里没有任何入口能对同一件礼物重复投递，
+  // 所以「同一次只发一次」这条只能从这里驱动验证。
+  window.__giftDeliverReply = function (cid, chatRec, txt, useChatStyle) {
+    try { return deliverGiftReply(cid || (window.__activeCid || 'default'), chatRec, txt, useChatStyle); } catch (e) { return false; }
+  };
+
+  function giftReplyFeedback(gift, chatRec) {
     const st = wlSettings();
     if (!st.giftReplyOn) return;
     if (Math.random() * 100 >= clampPct(st.giftReplyPct, 60)) return;
@@ -1022,14 +1204,14 @@
         if (useChatStyle && window.genChatStyleReply) txt = String(window.genChatStyleReply() || '').trim();
         if (!txt) txt = preset();
         if (!txt) return;
-        if ((window.__activeCid || 'default') === cid) {
-          // 聊天式那档带「正在输入…」过渡，观感与普通回复一致（同红包领后捎话）
-          if (useChatStyle && window.chatAddInTyped) window.chatAddInTyped(txt, { silent: true });
-          else if (window.chatAddIn) window.chatAddIn(txt, { silent: true });
-        } else if (window.chatAppendDeskRec) {
-          // 投递延迟窗里切了桌面：回应属于原桌面的聊天，切回即可见（同 deliverInGift 跨桌面补投口径）
-          window.chatAppendDeskRec(cid, { side: 'in', text: txt });
-        }
+        // #985：这句回话不只是聊天里的一条消息——同时贴到「我送出」那张礼物卡与心意柜那件礼物上
+        // （用户直派「这个回复没有加到联系人领取礼物的卡片里，也没有加到心意柜的卡片里」）。
+        // #1029：这句回话**只落一份**——旧实现先走 chatGiftAttachReplyTo（它内部已经写过心意柜）
+        // 又紧跟一次 boxAttachReply，实测心意柜记录里出现两条一模一样的回复、重进聊天后卡片上也是
+        // 同样的两行（用户视角＝「一句话被记了两遍」）。现在：同一桌面交给 chatGiftAttachReplyTo
+        // （写柜＋就地补卡片），它认不出那张卡时才按已知的 giftBoxId 兜底写柜；已切桌面时直接用
+        // giftBoxId 写柜（卡片下次渲染从柜里读，照样看得见），不再多走一趟跨桌面读改写。
+        deliverGiftReply(cid, chatRec, txt, useChatStyle);
       } catch (e) {}
     }, randInt(900, 2400));
   }
@@ -1042,11 +1224,15 @@
     else { w.systemBalance -= priceFen; }
     walletSet(w);
     const rec = { side: side, special: 'gift', giftId: gift.id, giftName: gift.name, giftEmoji: gift.emoji, giftImg: gift.img || '', giftPrice: gift.price, giftWish: wish, giftCat: gift.cat, ts: Date.now() };
+    // #985：先落心意柜记录再发卡片，并把记录 id 写进卡片——两处靠 giftBoxId 互指（卡片上追加的
+    // 回复要同步到心意柜那件礼物，反之亦然）
+    const entry = recordBox(gift, side, wish);
+    if (entry && entry.id) rec.giftBoxId = entry.id;
     if (window.chatAddGift) window.chatAddGift(rec); else if (window.chatAddIn) window.chatAddIn('', { special: 'gift' });
-    recordBox(gift, side, wish);
     if (window.logFish) window.logFish();
     // #848：我送出给 TA 的这一刻起，TA 有概率回一句（走当前桌面的聊天，延迟里切桌面则补投）
-    if (side === 'out') giftReplyFeedback(gift);
+    // #985：这句回话拿到之后同时贴到「我送出」那张礼物卡与心意柜那件礼物上（传 rec 给它认领）
+    if (side === 'out') giftReplyFeedback(gift, rec);
     return true;
   }
 
@@ -1069,13 +1255,19 @@
   function deliverInGift(cid, gift, wish, delayMs) {
     setTimeout(function () {
       try {
+        // #985：联系人送我的礼物卡只带 giftBoxId（与心意柜那件互指）——**领取态与追加回复都存在
+        // 心意柜记录里**（单一事实源，见 giftGiftMeta 的注释），卡片渲染时按这个 id 查。礼物本身
+        // 照旧立刻进心意柜：用户选定「数据不丢＋状态仪式」，没点领取只是卡片/柜子上标「待领取」，
+        // 绝不因为没点而丢礼物。
         const rec = { side: 'in', special: 'gift', giftId: gift.id, giftName: gift.name, giftEmoji: gift.emoji, giftImg: gift.img || '', giftPrice: gift.price, giftWish: wish, giftCat: gift.cat, ts: Date.now() };
         if ((window.__activeCid || 'default') === cid) {
+          const entry = recordBox(gift, 'in', wish);
+          if (entry && entry.id) rec.giftBoxId = entry.id;
           if (window.chatAddGift) window.chatAddGift(rec);
-          recordBox(gift, 'in', wish);
         } else {
+          const entryAt = recordBoxAt(cid, gift, 'in', wish);
+          if (entryAt && entryAt.id) rec.giftBoxId = entryAt.id;
           if (window.chatAppendDeskRec) window.chatAppendDeskRec(cid, rec);
-          recordBoxAt(cid, gift, 'in', wish);
         }
         if (window.logFish) window.logFish();
       } catch (e) {}
@@ -1087,6 +1279,9 @@
   // 设置有「心意集市和心意柜设置」里可开关/自定义概率
   // ⓪ 总开关「TA 送我礼物」（giftInOn）：关闭时 ①④ 都不触发（TA 给自己买 ②、加自己心愿单 ③ 不受限）
   window.maybeAutoGift = function () {
+    // #1015 夜间静默：TA 自动送礼（扣 TA 余额发生在投递前）必须在源头拦，总闸拦消息会造成
+    // 「扣了钱没礼物」；心愿单兑现/自买/加心愿同链一并停。周期计数不推进，7:00 后照常。
+    if (window.nightModeActive && window.nightModeActive()) return;
     const st = wlSettings();
     const myCid = window.__activeCid || 'default';
     const giftCapped = dayCount(AUTO_DAILY_PREFIX) >= 3;
@@ -1119,12 +1314,14 @@
         // 带 giftSelf 标记让 chat.js 渲染成「XX 自己买的」；心意柜记录不变（仍进 TA 自己买的）。
         const chatRec = { side: 'in', special: 'gift', giftId: gift0.id, giftName: gift0.name, giftEmoji: gift0.emoji, giftImg: gift0.img || '', giftPrice: gift0.price, giftWish: wish0, giftCat: gift0.cat, giftSelf: 1, ts: Date.now() };
         if ((window.__activeCid || 'default') === myCid) {
-          recordBox(gift0, 'self', wish0);
+          const entrySelf = recordBox(gift0, 'self', wish0);
+          if (entrySelf && entrySelf.id) chatRec.giftBoxId = entrySelf.id; // #985：卡片与心意柜互指（同 buyAndSend）
           if (st.selfChatOn && window.chatAddGift) window.chatAddGift(chatRec);
           else toast(partnerName() + ' 给自己买了「' + gift0.name + '」，收进了 TA 的心意柜');
         } else {
           // 已切桌面：记录与聊天卡仍回原桌面（不弹 toast，避免串到别的联系人脸上）
-          recordBoxAt(myCid, gift0, 'self', wish0);
+          const entrySelfAt = recordBoxAt(myCid, gift0, 'self', wish0);
+          if (entrySelfAt && entrySelfAt.id) chatRec.giftBoxId = entrySelfAt.id;
           if (st.selfChatOn && window.chatAppendDeskRec) window.chatAppendDeskRec(myCid, chatRec);
         }
       }, randInt(1500, 4000));
@@ -1199,12 +1396,17 @@
       wishBtn.textContent = '✓ 已在心愿单';
       toast('已加入我的心愿单');
     });
+    // #1029 附3：一记点按只送一件——部分国产内核/触屏上同一次点按会派发两次 click（同 #1017 实测
+    // 一记点按触发两次的口径），那会送出两件一模一样的礼物、顺带换来两句一模一样的 TA 回话。
+    let sentOnce = false;
     if (okBtn) okBtn.addEventListener('click', function () {
+      if (sentOnce) return;
       const wish = (wishEl && wishEl.value || '').trim() || (gift.wish || '心意');
+      sentOnce = true;
       if (buyAndSend(gift, 'out', wish)) {
         // 任何途径买下 TA 正许愿的礼物都算心愿兑现：送出即从 TA 心愿单移除（礼物进 TA 的心意柜「收到的」）
         wishTaRemove(gift.id);
-        closeTc(); toast('已送出');
+        closeTc(); if (!chatOnScreen()) toast('已送出');
         // #660：从聊天「TA 的心愿」卡片点进来的，成交后让聊天把那张卡就地转「已送出」
         if (opts.onDone) { try { opts.onDone(); } catch (e) {} }
       }
@@ -1505,6 +1707,7 @@
   }
   // #797：回填完成补渲——只重画当前开着的两个礼物面（giftPanelRerender/renderMarket 均现读现画幂等）
   if (window.mochiOnDataReady) window.mochiOnDataReady(function () {
+    try { boxMetaInvalidate(); } catch (e) {}   // #985：导入回填后卡片状态按新存储重读
     try { const gp = document.getElementById('chat-gift-panel'); if (gp && !gp.hidden) giftPanelRerender(); } catch (e) {}
     try { if (marketPage && !marketPage.hidden) renderMarket(); } catch (e) {}
   });
@@ -1747,6 +1950,22 @@
     const gwBtn = document.getElementById('gift-wish-ta');
     if (gwBtn) gwBtn.textContent = '看看 ' + pn + ' 的心愿单';
   }
+  // #985：心意柜侧的回复与领取状态（卡片与心意柜共用同一批渲染口径，见下方 giftReplRows/boxReplies）
+  // who='ta' 显示联系人名、who='me' 显示「我」；只认有正文字段的项，脏数据不渲染。
+  function boxReplies(it) {
+    if (!it || !Array.isArray(it.replies)) return [];
+    // #1029：心意柜侧同样过一遍去重（与卡片侧 giftGiftMeta 共用 boxDedupeReplies＝同一口径）
+    return boxDedupeReplies(it.replies.filter(function (r) { return r && typeof r.text === 'string' && r.text; }));
+  }
+  function boxWhoLabel(who) { return who === 'me' ? '我' : partnerName(); }
+  function boxReplyRows(it) {
+    return boxReplies(it).map(function (r) {
+      return '<div class="giftbox-repl-row"><span class="giftbox-repl-who">' + esc(boxWhoLabel(r.who)) + '</span><span class="giftbox-repl-tx">' + esc(r.text) + '</span></div>';
+    }).join('');
+  }
+  // 待领取只认显式 claimed===0（存量记录没有该字段＝旧版自动收下，不显示待领取）
+  function boxPending(it) { return !!(it && it.side === 'in' && it.claimed === 0); }
+
   function renderBox() {
     syncGiftNames();
     const list = boxLoad();
@@ -1777,6 +1996,10 @@
           '<div class="giftbox-name">' + esc(it.name) + '</div>' +
           '<div class="giftbox-price">¥' + Number(it.price || 0).toFixed(2) + '</div>' +
           '<div class="giftbox-wish">"' + esc(it.wish || '心意') + '"</div>' +
+          // #985：心意柜卡片上也能看到「这件礼物上的回复」与领取状态（用户要求回复同样要加到心意柜
+          // 的卡片里；卡片与柜子共用同一份 replies 数据，聊天里追加的回复立刻反映到这里）
+          (boxPending(it) ? '<div class="giftbox-pending">待领取</div>' : '') +
+          (boxReplies(it).length ? '<div class="giftbox-repls">' + boxReplyRows(it) + '</div>' : '') +
           '<div class="giftbox-meta">' + esc(from) + ' · ' + esc(fmtTime(it.tm)) + '</div>' +
         '</div>' +
       '</div>';
@@ -1793,6 +2016,11 @@
             '<div class="gb-detail-price">¥' + Number(it.price || 0).toFixed(2) + '</div>' +
             '<div class="gb-detail-wish">"' + esc(it.wish || '心意') + '"</div>' +
             '<div class="gb-detail-meta">' + esc(from) + ' · ' + esc(fmtTime(it.tm)) + '</div>' +
+            // #985：详情里给回复一个完整段落（不截断），并标出待领取状态
+            (boxPending(it) ? '<div class="giftbox-pending gb-detail-pending">待领取</div>' : '') +
+            (boxReplies(it).length
+              ? '<div class="gb-detail-repl-title">这件礼物上的回复</div><div class="gb-detail-repls">' + boxReplyRows(it) + '</div>'
+              : '') +
           '</div>';
         window.openTCPanel('心意柜', html);
       });
@@ -1876,7 +2104,7 @@
         '<div class="market-hero">' +
 
           '<div class="market-hero-title">心意市集</div>' +
-          '<div class="market-hero-sub">挑一份心意，跨越两个世界送给你</div>' +
+          '<div class="market-hero-sub">挑一份心意，跨越两个世界送给 TA</div>' +
           '<div class="market-balance" id="market-balance"></div>' +
         '</div>' +
         '<div class="market-mine" id="market-mine"></div>' +
@@ -1989,6 +2217,7 @@
     // FIX 2026-09-15 #540：切联系人后立即重写心意市集/心意柜里写死过名字的静态文案；
     // 页面若正开着顺带重渲（数据列表走动态 store 已隔离，重渲只为文案与列表同时落到新桌面）。
     document.addEventListener('contact-switched', function () {
+      try { boxMetaInvalidate(); } catch (e) {}   // #985：切桌面后卡片状态按新桌面重读
       try { syncGiftNames(); } catch (e) {}
       try { if (giftboxPage && !giftboxPage.hidden) renderBox(); } catch (e) {}
       try { if (marketPage && !marketPage.hidden) renderMarket(); } catch (e) {}

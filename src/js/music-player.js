@@ -186,6 +186,18 @@
         if (isSeed) { try { if (window.idbDelete) window.idbDelete(MUSIC_PREFIX + ':music-file:' + m.id); } catch (e) {} }
       }
     });
+    // FIX 2026-09-22 #1036：存量自愈——所有非网易云的 http:// 直链升级为 https。
+    // https 页面（GitHub Pages）下 http 音频被混合内容拦截＝「上传的歌曲会自己失效」
+    // 的主因（诊断包实锤 q4.v2i.cc / c1.zhuanwenzi.com 的 http 直链全部加载失败）；
+    // 导入侧已同口径收口，这里负责旧库/备份恢复后的存量清洗。
+    {
+      let httpsUpgraded = false;
+      library.forEach(m => {
+        if (!m || m.neteaseId || m.source !== 'url' || !m.url) return;
+        if (/^http:\/\//i.test(m.url)) { m.url = m.url.replace(/^http:\/\//i, 'https://'); httpsUpgraded = true; }
+      });
+      if (httpsUpgraded) saveLibrary();
+    }
     // v3.9.x：移除内置种子歌——旧版本自动放入的默认歌曲（id 以 sm_seed_ 开头）在
     // 升级后自动删除；原「种子歌自愈补回」逻辑同步移除，默认歌单不再自动补任何歌曲
     {
@@ -1481,6 +1493,9 @@
               url = neteaseMetingUrl(neteaseId);
               if (!nm) nm = '网易云音乐-' + neteaseId;
             }
+            // FIX 2026-09-22 #1036：http:// 直链入库前先升 https——https 页面下 http 资源
+            // 必被混合内容拦截永久「自己失效」，原链若不支持 https 也只是从必死变试一把
+            if (!neteaseId && /^http:\/\//i.test(url)) url = url.replace(/^http:\/\//i, 'https://');
             if (!/^(https?:\/\/|file:\/\/|data:|\/)/i.test(url)) return;
             const id = 'sm_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6) + '_' + li;
             const item = { id: id, neteaseId: neteaseId || '', name: nm, artist: batchMode ? '' : artist, url: url, source: 'url', duration: 0, playlistId: targetPl || 'default', addedAt: Date.now() };
@@ -1637,6 +1652,8 @@
             name = fn || '链接音乐';
           }
           if (!/^(https?:\/\/|file:\/\/|data:|\/)/i.test(url)) return;
+          // FIX 2026-09-22 #1036：批量导入同样先升级 http→https（与单条链接添加同口径）
+          if (!neteaseId && /^http:\/\//i.test(url)) url = url.replace(/^http:\/\//i, 'https://');
           const nid = 'sm_batch_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6) + '_' + ui;
           const item = { id: nid, neteaseId: neteaseId || '', name: name, artist: artist, url: url, source: 'url', duration: 0, playlistId: targetPl || 'default', addedAt: Date.now() };
           library.push(item);
@@ -1926,8 +1943,9 @@
             ? '<path d="M7 5.5h3.5v13H7zM13.5 5.5H17v13h-3.5z"/>'
             : '<path d="M8 5.5v13l11-6.5z"/>';
           // #700：导入时探测解不动的本地歌出「放不了」徽标（真播出来过一次就自动消失）
+          // FIX 2026-09-22 #1036：点播时确认文件已从存储丢失 → 持久「文件丢失」徽标
           const badge = m.source === 'local'
-            ? '<span class="sm-src sm-src-local">本地</span>' + (m.probeFail ? '<span class="sm-src sm-src-bad">放不了</span>' : '')
+            ? '<span class="sm-src sm-src-local">本地</span>' + (m.fileLost ? '<span class="sm-src sm-src-bad">文件丢失</span>' : m.probeFail ? '<span class="sm-src sm-src-bad">放不了</span>' : '')
             : '<span class="sm-src">网络</span>';
           const checked = musicBatch && batchSel.has(m.id) ? ' sel' : '';
           const chk = musicBatch ? '<span class="sm-batch-chk"></span>' : '';
@@ -3036,11 +3054,16 @@
     if (m.source === 'local' || (!m.url && m.source !== 'url')) {
       // 本地文件：从 IndexedDB 读取 Blob（新版）或 dataURL 字符串（旧版数据）
       const key = MUSIC_PREFIX + ':music-file:' + m.id;
+      // FIX 2026-09-22 #1036：本地文件确认丢失时在条目上打标并落库——列表徽标持久显示
+      // 「文件丢失」（原仅一次性 toast，刷完仍显示「本地」，用户反复点播误判为歌曲自己坏了）
+      const markFileLost = () => { try { if (!m.fileLost) { m.fileLost = 1; saveLibrary(); } } catch (e) {} };
       const loadLocal = (v) => {
         // v3.5.129：守卫——异步加载期间用户已切到别的歌（currentId 变了）→ 丢弃本次结果，
         // 否则旧歌的 audio 会继续创建播放，出现两首歌同时响
         if (currentId !== m.id) return;
         if (plausibleLocalValue(v)) {
+          // 曾误标/文件又回来了：播成功即清标（自愈）
+          if (m.fileLost) { m.fileLost = 0; try { saveLibrary(); } catch (e) {} }
           // v3.6.x：统一转 Blob + 对象 URL 播放（兼容旧 dataURL 字符串 / 新 Blob 存储）
           playLocal(m, v);
           return;
@@ -3054,6 +3077,7 @@
           playDemoFor(m, idx);
           return;
         }
+        markFileLost();
         toast('音乐文件加载失败，可能已被清理'); wantPlay = false; clearBgResume(); currentId = null; updatePlayerBar(); renderLibrary();
       };
       // v3.29.x：优先同步查内存缓存/localStorage——idbGet 异步丢用户手势上下文，play()
@@ -3088,7 +3112,7 @@
               if (v2 !== undefined && v2 !== null && v2 !== '') loadLocal(v2);
               else failLocal();
             };
-            const failLocal = () => { toast('音乐文件加载失败，可能已被清理'); wantPlay = false; clearBgResume(); currentId = null; updatePlayerBar(); renderLibrary(); };
+            const failLocal = () => { markFileLost(); toast('音乐文件加载失败，可能已被清理'); wantPlay = false; clearBgResume(); currentId = null; updatePlayerBar(); renderLibrary(); };
             const oldLs = localStorage.getItem(legacyKey);
             if (oldLs) { legacyFallback(oldLs); return; }
             if (MUSIC_PREFIX !== 'xy-home-v2') {
@@ -3646,11 +3670,40 @@
       return !!(w && w.offsetParent !== null);
     } catch (e) { return false; }
   }
+  // ================= 悬浮小框位置钳制 =================
+  // #994：小框恢复位置必须钳回当前视口。保存的 music-float-pos 是上一形态（竖屏/横屏/窄窗/
+  //   全屏）的读数，横竖屏切换或视口尺寸变化后原样套用会把小框摆到视口外——音乐在播、
+  //   hidden 也是 false，但用户屏幕上什么都看不到＝「没出现悬浮小框」。无头实测：
+  //   保存 left:900px/top:1200px 于 390×844 视口，小框整体落在视口外（inView=false）。
+  //   恢复后与视口尺寸变化后各钳一次（同尺寸只钳一次，不做逐帧几何读）。
+  let floatClampSig = '';
+  function clampFloatPos() {
+    try {
+      const el = document.getElementById('sm-float');
+      if (!el || el.hidden) return; // 隐藏时量不到尺寸，等可见那一次再钳
+      const sig = window.innerWidth + 'x' + window.innerHeight;
+      if (floatClampSig === sig) return;
+      floatClampSig = sig;
+      const w = el.offsetWidth, h = el.offsetHeight;
+      if (!w || !h) return;
+      const r = el.getBoundingClientRect();
+      const maxX = Math.max(4, window.innerWidth - w - 4);
+      const maxY = Math.max(4, window.innerHeight - h - 4);
+      let x = r.left, y = r.top;
+      if (x < 4) x = 4; else if (x > maxX) x = maxX;
+      if (y < 4) y = 4; else if (y > maxY) y = maxY;
+      if (Math.abs(x - r.left) < 1 && Math.abs(y - r.top) < 1) return;
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      store.set('music-float-pos', JSON.stringify({ left: el.style.left, top: el.style.top }));
+    } catch (e) {}
+  }
   function renderFloat() {
     const el = document.getElementById('sm-float');
     if (!el) return;
     const m = findTrack(currentId);
     el.hidden = !(settings.floatEn && !floatClosed && currentId && audio && m) || floatHideByWidget || floatOwnSurfaceShown();
+    if (!el.hidden) clampFloatPos(); // #994：可见这一次确保位置在当前视口内
     applyFloatMin();
     if (!m) return;
     document.getElementById('sm-f-name').textContent = m.name || '未知歌曲';
@@ -3761,7 +3814,7 @@
   //   「播放导入的本地歌时出现消息提示音，音乐没法正常听」），其中「TA 暂停再播放」还会把
   //   音乐真的停 3.5 秒。silent 只影响音效与桌面横幅：字卡照常进聊天、未读角标照常 +1
   //   （与小游戏口径完全一致），也不影响 TA 找你说话的正常消息。
-  function taMusicSys(text) { try { if (window.chatAddSystem) window.chatAddSystem(text, { silent: true }); } catch (e) {} }
+  function taMusicSys(text) { try { if (window.chatAddSystem) window.chatAddSystem(text, { silent: true, nightAllow: true }); } catch (e) {} }
   function taMusicSay(text) { try { if (window.chatAddIn) window.chatAddIn(text, { silent: true }); } catch (e) {} }
 
   // ================= 联系人的收藏 =================
@@ -3965,6 +4018,12 @@
       const pos = JSON.parse(store.get('music-float-pos') || 'null');
       if (pos && pos.left && pos.top) { el.style.left = pos.left; el.style.top = pos.top; }
     } catch(e) {}
+    // #994：视口尺寸变化（旋转/窗口变化）后重钳一次——小框不可见时零开销（clampFloatPos 先判 hidden）
+    let _fpClampT = null;
+    window.addEventListener('resize', function () {
+      if (_fpClampT) clearTimeout(_fpClampT);
+      _fpClampT = setTimeout(function () { _fpClampT = null; floatClampSig = ''; clampFloatPos(); }, 300);
+    });
   }
 
   // ================= 梦角邀请听歌记录 =================
@@ -4123,29 +4182,144 @@
   // document.hidden 分支，前台被停的歌永远没人拉起来。修法＝同意后 4 秒校验一次：
   // 还在正常播放/正常缓冲（mediaStillLoading 口径，弱网网易云 10~30s 缓冲不误伤）就不动；
   // 被外部打停（paused）就 muted 解锁补播，仍被拒挂 armAutoResume 手势恢复并如实提示。
+  // #994（同一症状第二次实报）：上面这段校验的第一行原来是「拿不到 currentId 或 audio 就直接
+  //   return」——它把「本地音频还没读回来／读取失败」整段静默掉了。本地歌冷启动后 music-file
+  //   键不在内存/LS（idb.js 的 idbRestore 明确不回填该键），playTrack 只能异步读 IDB，且读失败
+  //   要 4s+4s 才回 undefined；这段时间没有 audio、没有小框、没有提示，正是用户看到的
+  //   「点了同意什么都没发生」。现在按阶段盯：4s 无 audio（本地读还没回）→ 盯到 9s（越过
+  //   idbGet 最坏 8s）；仍无 audio 就如实告知 + 自动重跑一次起播（IDB 连接级错误重开后
+  //   常当场成功）；有 audio 仍停在暂停态则照原口径补播。
   let invitePlayCheckTimer = null;
+  let inviteCheckStage = 0;
   function armInvitePlayCheck() {
     try {
       if (invitePlayCheckTimer) clearTimeout(invitePlayCheckTimer);
-      invitePlayCheckTimer = setTimeout(function () {
-        invitePlayCheckTimer = null;
-        try {
-          if (!currentId || !audio) return; // 曲目加载失败等路径已有各自的 toast，不重复打扰
-          if (!audio.paused) return;        // 在播或在缓冲＝健康，交给停滞守卫盯
-          // 走到这里＝同意后 4 秒音频停在暂停态且没人管：主动拉起
-          const p = audio.play();
-          if (p && p.catch) p.catch(function () {
-            if (!audio) return;
-            try { audio.muted = true; } catch (e) {}
-            const p2 = audio.play();
-            if (p2 && p2.then) p2.then(
-              function () { try { if (audio) audio.muted = false; } catch (e) {} },
-              function () { try { if (audio) audio.muted = false; } catch (e) {} armAutoResume(); try { toast('音乐没能自动播出来，点一下屏幕任意位置即可开始'); } catch (e) {} }
-            );
-          });
-        } catch (e) {}
-      }, 4000);
+      inviteCheckStage = 0;
+      invitePlayCheckTimer = setTimeout(invitePlayCheckStep, 4000);
     } catch (e) {}
+  }
+  function invitePlayCheckStep() {
+    invitePlayCheckTimer = null;
+    try {
+      if (!currentId) return; // 曲目加载失败等路径已有各自的 toast，不重复打扰
+      if (!audio) {
+        // 没有 audio ＝ 起播根本没建起来（本地音频异步读未回/读失败）。#994：不再静默返回。
+        if (inviteCheckStage === 0) { inviteCheckStage = 1; invitePlayCheckTimer = setTimeout(invitePlayCheckStep, 5000); return; }
+        if (inviteCheckStage === 1) {
+          inviteCheckStage = 2;
+          const retryId = currentId;
+          try { toast('本地音乐读取较慢，正在重试…'); } catch (e) {}
+          try { playTrack(retryId); } catch (e) {}
+          invitePlayCheckTimer = setTimeout(invitePlayCheckStep, 5000);
+          return;
+        }
+        try { armAutoResume(); toast('音乐没能播放出来：点一下屏幕任意位置再试，或在播放列表换一首'); } catch (e) {}
+        return;
+      }
+      if (!audio.paused) return;        // 在播或在缓冲＝健康，交给停滞守卫盯
+      // 走到这里＝同意后 4 秒音频停在暂停态且没人管：主动拉起
+      const p = audio.play();
+      if (p && p.catch) p.catch(function () {
+        if (!audio) return;
+        try { audio.muted = true; } catch (e) {}
+        const p2 = audio.play();
+        if (p2 && p2.then) p2.then(
+          function () { try { if (audio) audio.muted = false; } catch (e) {} },
+          function () { try { if (audio) audio.muted = false; } catch (e) {} armAutoResume(); try { toast('音乐没能自动播出来，点一下屏幕任意位置即可开始'); } catch (e) {} }
+        );
+      });
+    } catch (e) {}
+  }
+  // ================= 听歌邀请面板（唯一实现，聊天邀请与诊断入口共用） =================
+  // #994：邀请面板的「渲染」与「按钮接线」必须成对出现。历史上聊天邀请与音乐设置
+  //   「诊断邀请 → 强制触发一次」各抄了一份 HTML，诊断那份只渲染没接线＝用户点「一起听」
+  //   完全没反应（小框不出、音乐不播、连提示都没有）——同族静默死亡的另一种形态。
+  //   收成唯一实现，两个入口共用；以后新增入口只调它，不再手抄面板（手抄必漏）。
+  // #994：跨桌面失效不再静默——用户点的是这份邀请，必须告诉他为什么没反应（原实现
+  //   reqData = null 后直接 return，界面上零反馈）。防串写行为不变（仍不写新桌面）。
+  function inviteStaleToast(name) {
+    reqData = null;
+    try { toast('已切换联系人，这份听歌邀请已失效，可以让 ' + name + ' 再邀一次'); } catch (e) {}
+  }
+  // #994：本地歌预热——把「同意那一刻的音频值」提前读进内存缓存。
+  //   本地歌冷启动后 music-file 键不在内存/LS（idb.js 的 idbRestore 明确不回填该键），
+  //   此时起播只能等异步 IDB 读：读得慢＝点了同意几秒内没小框没声音，读失败＝整条静默。
+  //   邀请弹窗到用户点按之间有真实空档，用它把值读进 localBlobCache；同意时同步命中
+  //   ⇒ 音频元素在手势内建起（小框当场出现，play() 也落在用户手势上下文里）。
+  //   只预热、不播放、不改任何播放状态；读到脏值/失败什么都不做（playTrack 原链路照旧兜底）。
+  function prewarmLocalAudio(id) {
+    try {
+      const m = findTrack(id);
+      if (!m || !(m.source === 'local' || (!m.url && m.source !== 'url'))) return;
+      if (localBlobCache[id]) return;
+      const lsV = store.get('music-file:' + id);
+      if (plausibleLocalValue(lsV)) { localBlobCache[id] = lsV; return; }
+      if (!window.idbGet) return;
+      window.idbGet(MUSIC_PREFIX + ':music-file:' + id).then(function (v) {
+        if (plausibleLocalValue(v) && !localBlobCache[id]) localBlobCache[id] = v;
+      });
+    } catch (e) {}
+  }
+  function openMusicInvitePanel(trackId, switching) {
+    const track = findTrack(trackId);
+    if (!track) return false;
+    const myCid = window.__activeCid || 'default'; // 多桌面：弹窗期间切换联系人后点按钮不得写到新桌面
+    const name = partnerName();
+    const trackName = track.name || '未知歌曲';
+    const artist = track.artist ? ' - ' + track.artist : '';
+    reqData = { trackId: trackId, switching: !!switching };
+    taActive = true;
+    taMusicSys(switching
+      ? name + ' 想邀请你切换到《' + trackName + '》' + artist
+      : name + ' 想和你一起听《' + trackName + '》' + artist);
+    if (!window.openTCPanel) return false;
+    window.openTCPanel('音乐', '' +
+      '<div class="sm-req">' +
+      '<div class="sm-req-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>' +
+      '<div class="sm-req-hint">' + (window.taFit ? window.taFit(name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：')) : (name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：'))) + '</div>' +
+      '<div class="sm-req-name">《' + esc(trackName) + '》</div>' +
+      '</div>' +
+      '<div class="mail-actions"><button class="cc-tool" id="sm-req-no">稍后</button><button class="cc-tool" id="sm-req-yes">' + (switching ? '切过去' : '一起听') + '</button></div>');
+    const noBtn = document.getElementById('sm-req-no');
+    const yesBtn = document.getElementById('sm-req-yes');
+    // 面板没渲染出按钮＝不假装成功（调用方据此提示），而不是静默留一个点不动的面板
+    if (!noBtn || !yesBtn) return false;
+    noBtn.addEventListener('click', () => {
+      document.getElementById('tc-mask').hidden = true;
+      if ((window.__activeCid || 'default') !== myCid) { inviteStaleToast(name); return; }
+      reqData = null;
+      // 记录：TA 邀请听歌（拒绝）
+      history.push({ id: 'smh_' + Date.now(), trackId: '', trackName: '', triggerType: '拒绝了 TA 的听歌邀请《' + esc(trackName) + '》', rejected: true, ts: Date.now() });
+      if (history.length > 500) history = history.slice(-500);
+      saveHistory(); renderHistory();
+      taMusicSys('你拒绝了 ' + name + ' 的听歌邀请');
+    });
+    yesBtn.addEventListener('click', () => {
+      document.getElementById('tc-mask').hidden = true;
+      if ((window.__activeCid || 'default') !== myCid) { inviteStaleToast(name); return; }
+      if (!reqData) return; // 连点两次只认第一次
+      const switchNow = !!reqData.switching;
+      reqData = null;
+      if (!findTrack(trackId)) {
+        // #994：邀请到同意之间这首歌被删掉＝playTrack 会 findTrack 静默 return（没框没声没提示），
+        //   这里如实告知，不再让用户对着空气等
+        try { toast('《' + trackName + '》已不在音乐库里，无法播放'); } catch (e) {}
+        return;
+      }
+      // #904：来电/去电 hold 的残留状态会让 startPlayback 在 callHoldPending 门上静默 return
+      //（没声、没提示、被 hold 藏起的悬浮小框也不回来＝用户「点了同意，小框消失也没播放」）。
+      // 这是用户亲手点下的新播放意图，任何 stale hold 都不得吞掉——先清场再起播。
+      callHoldPlaying = false; callHoldPending = false; // #904a
+      playTrack(trackId);
+      addRecord(trackId, '接受了 TA 的听歌邀请');
+      taMusicSys(switchNow
+        ? '你接受了邀请，已切换到《' + trackName + '》'
+        : '你接受了 ' + name + ' 的听歌邀请，一起听《' + trackName + '》');
+      toast('开始播放');
+      armInvitePlayCheck(); // #904b
+      renderFloat(); // #904a：hold 藏起的小框随新播放意图立刻恢复（本地歌异步起播由 onplay 再刷新）
+    });
+    return true;
   }
   // ================= TA 互动：请求一起听歌 =================
   // 聊天回复完成后由 chat.js 调用（延后 2 秒，仿星言）
@@ -4163,70 +4337,23 @@
       // v3.x：「一起去听」请求（弹窗）——触发后直接 return，同一次调用不再判断「预订下一首」
       if (!cooling) {
         const prob = (typeof settings.reqProb === 'number' ? settings.reqProb : 5);
-        if (Math.random() * 100 < prob) {
+        // #1153：「一起去听」邀请同属聊天里 TA 主动发的卡，随「互动卡频率」档缩放概率
+        //（档位表/倍数在 ta-ask.js 的 IC_MODES，键 reply-ic-freq；原频率档 ×1＝原值直通）。
+        // 冷却仍按音乐设置里的档位（那是用户在音乐设置里明确选的显示值，不随档缩放）。
+        const effProb = window.icProb ? window.icProb(prob) : prob;
+        if (Math.random() * 100 < effProb) {
           console.log('[music-req] TRIGGER');
           cooldownAt = now;
-      const candidates = library.slice();
-      if (!candidates.length) return;
-      const track = candidates[Math.floor(Math.random() * candidates.length)];
-      // 多桌面：弹窗期间切换联系人后点按钮会把接受/拒绝写到新桌面 → 捕获 cid 校验
-      const myCid = window.__activeCid || 'default';
-      // v3.x：正有音乐在播时，邀请语义＝「切换去听这首歌」；无播放时＝「开始一起听这首歌」
-      const switching = !!currentId;
-      reqData = { trackId: track.id, switching: switching };
-      taActive = true;
-      const name = partnerName();
-      const trackName = track.name || '未知歌曲';
-      const artist = track.artist ? ' - ' + track.artist : '';
-      const askMsg = switching
-        ? name + ' 想邀请你切换到《' + trackName + '》' + artist
-        : name + ' 想和你一起听《' + trackName + '》' + artist;
-      taMusicSys(askMsg);
-      if (window.openTCPanel) {
-        window.openTCPanel('音乐', '' +
-          '<div class="sm-req">' +
-          '<div class="sm-req-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>' +
-          '<div class="sm-req-hint">' + (window.taFit ? window.taFit(name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：')) : (name + (switching ? ' 想邀请你切到这首歌：' : ' 想和你一起听：'))) + '</div>' +
-          '<div class="sm-req-name">《' + esc(trackName) + '》</div>' +
-          '</div>' +
-          '<div class="mail-actions"><button class="cc-tool" id="sm-req-no">稍后</button><button class="cc-tool" id="sm-req-yes">' + (switching ? '切过去' : '一起听') + '</button></div>');
-        document.getElementById('sm-req-no').addEventListener('click', () => {
-          document.getElementById('tc-mask').hidden = true;
-          if ((window.__activeCid || 'default') !== myCid) { reqData = null; return; }
-          reqData = null;
-          // 记录：TA 邀请听歌（拒绝）
-          history.push({ id: 'smh_' + Date.now(), trackId: '', trackName: '', triggerType: '拒绝了 TA 的听歌邀请《' + esc(trackName) + '》', rejected: true, ts: Date.now() });
-          if (history.length > 500) history = history.slice(-500);
-          saveHistory(); renderHistory();
-          taMusicSys('你拒绝了 ' + name + ' 的听歌邀请');
-        });
-        document.getElementById('sm-req-yes').addEventListener('click', () => {
-          document.getElementById('tc-mask').hidden = true;
-          if ((window.__activeCid || 'default') !== myCid) { reqData = null; return; }
-          if (!reqData) return;
-          document.getElementById('tc-mask').hidden = true;
-          if ((window.__activeCid || 'default') !== myCid) { reqData = null; return; }
-          if (!reqData) return;
-          const switchNow = !!reqData.switching;
-          // #904：来电/去电 hold 的残留状态会让 startPlayback 在 callHoldPending 门上静默 return
-          //（没声、没提示、被 hold 藏起的悬浮小框也不回来＝用户「点了同意，小框消失也没播放」）。
-          // 这是用户亲手点下的新播放意图，任何 stale hold 都不得吞掉——先清场再起播。
-          callHoldPlaying = false; callHoldPending = false; // #904a
-          playTrack(reqData.trackId);
-          addRecord(reqData.trackId, '接受了 TA 的听歌邀请');
-          const accMsg = switchNow
-            ? '你接受了邀请，已切换到《' + (track.name || '未知歌曲') + '》'
-            : '你接受了 ' + name + ' 的听歌邀请，一起听《' + (track.name || '未知歌曲') + '》';
-          taMusicSys(accMsg);
-          reqData = null;
-          toast('开始播放');
-          armInvitePlayCheck(); // #904b：同意后 4 秒还没声＝被外部打停，自动补播并兜手势恢复
-          renderFloat(); // #904a：hold 藏起的小框随新播放意图立刻恢复（本地歌异步起播由 onplay 再刷新）
-        });
-      }
+          const candidates = library.slice();
+          if (!candidates.length) return;
+          const track = candidates[Math.floor(Math.random() * candidates.length)];
+          // v3.x：正有音乐在播时，邀请语义＝「切换去听这首歌」；无播放时＝「开始一起听这首歌」
+          // #994：面板走唯一实现（渲染+接线成对），并在弹窗期间预热本地音频
+          if (!openMusicInvitePanel(track.id, !!currentId)) { console.log('[music-req] panel open failed'); return; }
+          prewarmLocalAudio(track.id);
+        }
         return; // 「一起去听」已触发，本次调用不再判断「预订下一首」
       }
-    }
     // v3.x：「预订下一首」——聊天中 TA 按独立概率把一首歌排进播放队列并发系统消息；
     // 与「一起去听」共用冷却（同一冷却窗内互斥，任一生效即进入冷却，不会同一条消息里同时发生）
     // v3.24.x：只有正在播放时才允许「预订下一首」——没播放时预订下一首无意义，
@@ -4514,15 +4641,11 @@
         document.getElementById('tc-mask').hidden = true;
         if (!library.length) { toast('library 为空，无法触发'); return; }
         const track = library[Math.floor(Math.random() * library.length)];
-        reqData = { trackId: track.id };
-        taActive = true;
-        const name = partnerName();
-        const trackName = track.name || '未知歌曲';
-        const artist = track.artist ? ' - ' + track.artist : '';
-        taMusicSys(name + ' 想和你一起听《' + trackName + '》' + artist);
-        if (window.openTCPanel) {
-          window.openTCPanel('音乐', '<div class="sm-req"><div class="sm-req-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div><div class="sm-req-hint">' + name + ' 想和你一起听：</div><div class="sm-req-name">《' + esc(trackName) + '》</div></div><div class="mail-actions"><button class="cc-tool" id="sm-req-no">稍后</button><button class="cc-tool" id="sm-req-yes">一起听</button></div>');
-        }
+        // #994：与聊天邀请共用同一面板实现（渲染+按钮接线成对）。这里原先是手抄的一份
+        //   只有渲染、没给 sm-req-no/sm-req-yes 挂点击处理器＝用户点「一起听」完全没反应
+        //   （小框不出、音乐不播、连提示都没有）——正是同族「静默死亡」的另一种形态。
+        if (!openMusicInvitePanel(track.id, false)) { toast('邀请面板没能打开，请重进音乐页再试'); return; }
+        prewarmLocalAudio(track.id);
       });
     });
     const clearBtn = document.getElementById('sm-clear-cache');

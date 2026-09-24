@@ -119,6 +119,117 @@
     requestAnimationFrame(tick);
   }
 
+  // ===== #989 桌面页竖向滚动护栏（用户实报「桌面的第一页和第二页的图标按钮和文字没有完全
+  // 对齐，第二页和第三页是完全对齐的」，随后追报「第三页也没有对齐了」＝错位会换页出现）=====
+  // 现象/根因（无头实证，零机型分支）：桌面页内容高 636px（含页底 18px 留白 + 图标组尾部
+  // 6+8px），而浏览器模式（非全屏，地址栏占高）下桌面区只有 ~610px ⇒ 每页都成了**可竖向
+  // 滚动容器**，而超出的那 26px **全是不可见尾垫**（标签下沿之上再没有别的内容，滚下去
+  // 什么也看不到）。于是：①翻页时手指的斜滑被内核轴锁判成竖向 ⇒ 滚动量落在「起手那一页」
+  // 上（起手页常是第一页，故症状先在 1/2 页间出现；用户在第三页起手翻页后第三页也错开）；
+  // ②滚动量没有任何东西复位，永久留在那一页 ⇒ 该页图标+文字整块上移几像素，与另两页错开
+  //（无头实证：第一页 scrollTop=20 ⇒ 行 y 427.3/537.3 vs 另两页 447.3/557.3，Δ=20 精确等于
+  // 残留滚动量）。旧验证全跑 390×844（桌面区 714 > 内容 636）⇒ 桌面页根本不可滚，本 bug 在
+  // 验证里结构性不可见，所以「每次都验 Δ=0、用户每次依旧错位」。
+  // 修法（纯判据，无机型/无 UA 分支）：只要**翻下去看不到任何东西**（溢出全部来自容器自身的
+  // 内边距/外边距——实测该页 scrollHeight 636 vs clientHeight 610，而最深「实心盒」下沿只有
+  // 604），该页就设 overflow-y:hidden 并把 scrollTop 归零：被裁掉的是不可见留白，零视觉变化，
+  // 而该页从此不可能再被斜滑/内核几何风暴顶出滚动量；**真溢出**（用户往页里加了组件、或桌面
+  // 区矮到标签都放不下）时保持 auto 照旧可滚，绝不吞掉用户真正要看的内容。任何滚动（含斜滑）
+  // 落定后复核一次，残留滚动量最迟 300ms 内自愈。
+  const pageScrollGuard = (function () {
+    // 页内最深「实心盒」下沿（相对页顶）＝真正看得见的内容底：
+    // 只取没有子元素的叶子盒（容器的 padding 不是内容），跳过隐藏项与绝对/固定定位装饰
+    // （角标 .app-badge、连击 .we-combo 这类负偏移装饰不参与，免得把「没内容」误判成「有内容」）
+    function inkBottom(sl, pageTop) {
+      const stopAt = sl.clientHeight + 1; // 与调用方那句比较共用同一阈值，早退才等价
+      let maxB = 0;
+      const all = sl.querySelectorAll('*');
+      for (let i = 0; i < all.length; i++) {
+        const el = all[i];
+        if (el.firstElementChild) continue;
+        const r = el.getBoundingClientRect();
+        const b = r.bottom - pageTop;
+        if (r.height <= 0 || b <= maxB) continue;
+        const c = getComputedStyle(el);
+        if (c.display === 'none' || c.visibility === 'hidden') continue;
+        if (c.position === 'absolute' || c.position === 'fixed') continue;
+        maxB = b;
+        if (maxB > stopAt) return maxB; // 已经证明「有看得见的内容越过可视底」＝不用再扫
+      }
+      return maxB;
+    }
+    // FIX 2026-09-24 #1201（iPhone 17 / iOS 26.4 实报「切页面、滑动时最卡」，perfcheck：桌面翻页
+    //   平均 91ms·最慢 1513ms、切回桌面 p90 702ms）：这条护栏挂在桌面每一次「滚动落定 / 切回桌面 /
+    //   回前台」上，旧写法每次都要把三页子树整个走一遍（默认小桌面实测一次 run＝380 次
+    //   getComputedStyle ＋ 356 次 getBoundingClientRect；用户桌面越满越贵）。而它要的结论只随
+    //   **该页自身几何**变化——scrollHeight 与 clientHeight 都不变，溢出量和「内容有没有越过可视底」
+    //   就不变。于是按页记忆化裁决：几何没变＝照抄上次结论、不碰子树；组件增删/图标注入/图片解码
+    //   完成/restore/resize 这些**内容真的到位**的触发点带 force 强制重扫（见下方接线）。
+    //   #989（残留滚动量复位）与 #1013（真溢出一律可滚）的判据一字未动。
+    const verdicts = new WeakMap();
+    let timer = null, retries = 0;
+    function later(ms, force) { clearTimeout(timer); timer = setTimeout(function () { run(force); }, ms); }
+    function run(force) {
+      const slides = getSlides();
+      let skipped = false;
+      for (let i = 0; i < slides.length; i++) {
+        const sl = slides[i];
+        // 桌面页整体隐藏（切到聊天/设置）时 clientHeight=0；开屏期 .phone 被 visibility:hidden
+        // 盖住时页内每个盒子都算「不可见」＝量出来的 inkBottom 恒 0，会被误判成「翻下去什么也
+        // 看不到」而错误裁掉真溢出——两种都跳过（读数何时可得见下方的有界重试）。
+        if (!sl.clientHeight || getComputedStyle(sl).visibility === 'hidden') { skipped = true; continue; }
+        const sh = sl.scrollHeight, ch = sl.clientHeight, over = sh - ch;
+        const seen = verdicts.get(sl);
+        let blind;
+        if (!force && seen && seen.sh === sh && seen.ch === ch) {
+          blind = seen.blind; // 几何没变＝裁决没变，省掉整棵子树
+        } else {
+          // #960 取证口径：只有真扫了子树才打点——下份 perfcheck 里「desk-guard ×N」的 N
+          // 就是全量遍历次数，能直接分辨「护栏还在咬人」与「不是它」。
+          try { if (window.__mochiPhase) window.__mochiPhase('desk-guard'); } catch (e0) {}
+          // FIX 2026-09-22 #1013（回拉）：基准必须是**未滚动**的内容坐标——pageTop 减掉 scrollTop，
+          // 否则页滚到越靠下、量到的「最深实心盒下沿」越浅（每个盒子都被整体上移了 scrollTop），
+          // 真溢出页滚到底时必然落进 ch+1 以内＝误判成「翻下去什么也看不到」→ 归零滚动量。
+          // 用户所见＝「在桌面滑动屏幕会回拉，无法滑到下面」（vivo S30/Edge 实报，同族多机型）。
+          blind = over > 0 && inkBottom(sl, sl.getBoundingClientRect().top - sl.scrollTop) <= sl.clientHeight + 1;
+          verdicts.set(sl, { sh: sh, ch: ch, blind: blind });
+        }
+        if (blind) {
+          if (sl.style.overflowY !== 'hidden') sl.style.overflowY = 'hidden';
+          if (sl.scrollTop) sl.scrollTop = 0;
+        } else {
+          if (sl.style.overflowY) sl.style.overflowY = '';   // 回落到 CSS 的 auto
+          if (over <= 0 && sl.scrollTop) sl.scrollTop = 0;
+        }
+      }
+      // 开屏收起那一刻不派发任何事件（开屏是 #desktop-pages 的兄弟节点，MutationObserver 收不到），
+      // 而开屏在位期间整页不可见、量不出读数 ⇒ 量不到就自己重试，最多 8 次（≈6.4s，覆盖各设备
+      // 开屏快慢），一旦拿到读数即停；真读得到时把计数清零，供下一次开屏/隐藏复用。
+      if (skipped && retries < 8) { retries++; later(800); } else if (!skipped) retries = 0;
+    }
+    return { run: run, later: later };
+  })();
+  pageScrollGuard.run(true);
+  // 页自身的竖向滚动事件不冒泡，捕获相才能收到（外层 #desktop-pages 的横向翻页不受影响）
+  pages.addEventListener('scroll', () => pageScrollGuard.later(300), true);
+  // FIX 2026-09-22 #1013（锁死）：护栏按「当下量到的几何」裁决，而桌面图片组件
+  // （.desk-image-widget img 是 width:100% / height:auto）在解码完成前高 0px——那一拍整页
+  // 「翻下去什么也看不到」成立 ⇒ 被设成 overflow-y:hidden；图片随后撑开真溢出，可 load 既不改
+  // #desktop-pages 的子节点（上面那个 MutationObserver 只收 childList）也不派 scroll ⇒ 没人复核，
+  // 该页就永久停在「有内容在下方却滚不动」＝用户说的「无法滑到下面」。资源 load 同样不冒泡，走捕获相。
+  pages.addEventListener('load', () => pageScrollGuard.later(400), true);
+  window.addEventListener('resize', () => pageScrollGuard.later(120, true));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) pageScrollGuard.later(80); });
+  // 组件增删/图标注入/切桌面重建都会动 DOM，统一在这里复核（拖动组件期间每帧多次也只在停手后跑一次）
+  try {
+    new MutationObserver(() => pageScrollGuard.later(400, true)).observe(pages, { childList: true, subtree: true });
+  } catch (e) {}
+  // 开屏消失/数据回填/图标注入都不动 #desktop-pages 的子节点（开屏是它的兄弟），补两个启动期
+  // 复核点：数据就绪事件 + 两次定时（开屏收起后各设备快慢不一，早跑那次会因整页不可见被跳过）
+  try { document.addEventListener('mochi-restore-done', () => pageScrollGuard.later(400, true)); } catch (e) {}
+  pageScrollGuard.later(900, true);
+  setTimeout(() => pageScrollGuard.run(true), 2600);
+
   // ===== #884：切回桌面帧耗时现场采样 =====
   // 用户主诉「聊天返回主页面卡、主页面切换卡」（iPhone 15 Pro / 16 Pro 实报，iOS 18.7 PWA），
   // 而诊断里「实测帧率」是静态页读数、「桌面翻页帧耗时」只采左右滑——切页现场没尺子。
@@ -163,12 +274,19 @@
   // v3.27.x（#580）：滚动中每帧跟随——手指滑到哪，圆点跟到哪（原来只在松手后 120ms 才动）
   let rafId = 0;
   let settleTimer = null;
+  let swipeBlurTimer = null; // #976：滑页暂停壁纸模糊的收尾计时
   function syncFrame() {
     rafId = 0;
     sync();
   }  pages.addEventListener('scroll', () => {
     if (!rafId) rafId = requestAnimationFrame(syncFrame);
     perfSample(); // #690：翻页现场记一段帧耗时（静止时不跑）
+    // #976：滑页期间挂 desk-swiping（暂停壁纸全屏模糊，见 home.css 注释），停下 150ms 后摘
+    try {
+      document.documentElement.classList.add('desk-swiping');
+      clearTimeout(swipeBlurTimer);
+      swipeBlurTimer = setTimeout(function () { document.documentElement.classList.remove('desk-swiping'); }, 150);
+    } catch (e0) {}
     // 吸附/回弹终点再校一次：末次 scroll 事件与 snap 终点可能差一帧亚像素；
     // 对不派 rAF 的内核（后台标签页/被节流）也是兜底。跟随本身由上面的 rAF 负责。
     clearTimeout(settleTimer);
@@ -197,6 +315,7 @@
         refreshCache();
         pages.scrollLeft = idx * pageStep();
         sync();
+        pageScrollGuard.later(60); // #989：回桌面复核一次（残留滚动量在进桌面当帧就修掉）
         swSample(); // #884：从聊天/其他页切回桌面那一刻现场采一段帧耗时
       }
     });

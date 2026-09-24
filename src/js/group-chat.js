@@ -1292,7 +1292,7 @@
         // chat.js getPool / mail.js mailCardPool 同批修复）
         if (/^https?:\/\//i.test(c)) return; // 图链卡不进群聊文字池
         if (/[\uD800-\uDBFF]/.test(c) || /^[😀-🙏🌀-🫿]/u.test(c)) emoji.push(c);
-        else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c)) kaomoji.push(c);
+        else if (window.chatIsBracketedKaomojiCard ? window.chatIsBracketedKaomojiCard(c) : (/[\(（｡◕(◕)(づ｡(¬)]/.test(c) && /[\)）】)]/.test(c))) kaomoji.push(c); // FIX #1152 与单聊同一判据
         else text.push(c);
       });
     } catch (e) {}
@@ -1315,7 +1315,7 @@
               if (isOff && isOff('main', card)) return;
               if (typeof card !== 'string' || !card) return;
               if (/[\uD800-\uDBFF]/.test(card)) emoji.push(card);
-              else if (/[\(（｡◕(◕)(づ｡(¬)]/.test(card) && /[\)）】)]/.test(card)) kaomoji.push(card);
+              else if (window.chatIsBracketedKaomojiCard ? window.chatIsBracketedKaomojiCard(card) : (/[\(（｡◕(◕)(づ｡(¬)]/.test(card) && /[\)）】)]/.test(card))) kaomoji.push(card); // FIX #1152 默认字卡兜底同判据
               else text.push(card);
             });
           });
@@ -1352,8 +1352,9 @@
         t = pick(pool.text) || FALLBACK_REPLIES[Math.floor(Math.random() * FALLBACK_REPLIES.length)];
       }
     }
-if (type === 'text' && pool.kaomoji.length && hit(c['gc-kaomoji-prob'])) {
-t += ' ' + pick(pool.kaomoji);
+// #1203 同单聊口径：群聊「多字卡回复」总开关关闭＝每个成员每条消息只用一张字卡，颜文字卡不再追加
+if (type === 'text' && c['gc-py-en'] === 1 && pool.kaomoji.length && hit(c['gc-kaomoji-prob'])) {
+t += '\n' + pick(pool.kaomoji); // #1051 同单聊 genReplyText：末尾颜文字卡改硬换行相接（\n→<br>），软换行点部分内核不拆行＝末尾显示不全
 }
 // v3.26.x #163：文本回复按成员所在桌面混入默认字卡（同聊天页 genOneReply 的
 // getDefaultCards 覆盖语义，dc-overall-chat 概率+分类占比+各开关内部同源生效）——
@@ -1427,13 +1428,17 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
   }
   // 投递一条回复到指定群：同群走原路径（渲染+音效），跨群只落存储。返回该消息在
   // 来源群数组中的下标（供撤回定时器定位），失败返回 -1
-  function gcDeliverReply(gid, rec, sfx) {
+  // forceFollow：用户当刻主动要的回应（#1023 点「继续说」）——本函数是群聊侧「成员回复落地」
+  //   的唯一出口，跟底在此收口；该传参加工成 followGcBottom(true)，绕过「用户已接管滚动就不
+  //   打扰」的闸（gcUserGcScrollTouched），落地即贴底并把接管标记清掉（后续成员回复照常跟底）。
+  //   与单聊 #492 的 chatUserFollowScroll 同一语义；TA 自发回复不传，闸语义零改动。
+  function gcDeliverReply(gid, rec, sfx, forceFollow) {
     if (!gcGroupAlive(gid)) return -1;
     if (gid === curGid) {
       msgs.push(rec);
       saveMsgs();
       renderMsg(rec, msgs.length - 1);
-      followGcBottom();
+      followGcBottom(!!forceFollow);
       if (sfx && window.playSfxGc) window.playSfxGc(sfx);
       return msgs.length - 1;
     }
@@ -1557,7 +1562,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       // 拍一拍分支（同聊天页：命中则不回文字，直接拍）
       if (hit(c['gc-touch-prob'])) {
         const rec = { side: 'in', cid: cid, name: name, text: gcPokeText(cid), special: 'poke', ts: Date.now() };
-        gcDeliverReply(gid, rec, 'in'); // FIX 串群 #242：落回来源群
+        gcDeliverReply(gid, rec, 'in', continuation); // FIX 串群 #242：落回来源群 · #1023 continuation＝用户点「继续说」要的回应，落地强制贴底
         return;
       }
       // 回复条数（min/max 调反时兜底至少 1 条）
@@ -1590,7 +1595,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
               if (window.addChatCount) window.addChatCount();
             } catch (e) {}
           }
-          const myIdx = gcDeliverReply(gid, rec, 'in'); // FIX 串群 #242：落回来源群
+          const myIdx = gcDeliverReply(gid, rec, 'in', continuation); // FIX 串群 #242：落回来源群 · #1023 continuation＝用户点「继续说」要的回应，落地强制贴底（上翻态也滑过来）
           if (i < count - 1 && gid === curGid) showTyping(name);
           // 撤回 + 撤回补发
           if (hit(c['gc-rc-prob'])) {
@@ -2007,7 +2012,11 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>' +
       '</div><span class="gc-mp-name">新建群聊</span>';
     newRow.addEventListener('click', startCreateGroup);
-    el.appendChild(newRow);
+    // FIX 2026-09-22 #1016（用户直派「添加群聊功能图层的位置不对，在最底下，不在最上面」）：
+    // 「新建群聊」行置顶（原为末尾 appendChild）——fillGroupsList 是三点菜单列表面板与设置面板
+    // 「群聊」tag 内嵌段共用的同一份渲染，两处一起置顶。
+    // 同 #1016 的菜单项接线：本行也是 #1018 批从产物回填到 src（原批只提了产物，src 缺失）。
+    el.insertBefore(newRow, el.firstChild);
   }
   function renderGroupsPanel() {
     if (gpBody) { gpBody.innerHTML = ''; fillGroupsList(gpBody); }
@@ -2154,6 +2163,17 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     showMoreMenu(moreMenu.hidden);
   });
   document.addEventListener('click', () => showMoreMenu(false));
+  // FIX 2026-09-22 #1016（用户直派「添加群聊…没有放在点击群聊右上角 群聊设置 tag 的并列」）：
+  // 三点菜单里与「群聊设置」并列补一项「新建群聊」（静态锚点 #gc-more-newgroup，位次在其之前），
+  // 走的就是设置面板里那条同一个 startCreateGroup()——不新开第二条建群链。
+  // 本代码块是 2026-09-22 #1018 批从产物回填到 src 的：#1016 当时只把产物（index.html /
+  // js/group-chat.js）与 build.mjs 提了，src 侧缺失 ⇒ 任何一次从 src 的重新构建都会静默删掉
+  // 这个入口（它的哨兵 #1016a~c 也因此常红）。回填内容逐字对齐产物行为（见 WORKLOG）。
+  const moreNewGroup = document.getElementById('gc-more-newgroup');
+  if (moreNewGroup) moreNewGroup.addEventListener('click', () => {
+    showMoreMenu(false);
+    startCreateGroup();
+  });
   const moreSettings = document.getElementById('gc-more-settings');
   if (moreSettings) moreSettings.addEventListener('click', () => {
     showMoreMenu(false);
@@ -2813,7 +2833,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     liveBtn.style.cssText = 'display:flex;align-items:center;gap:10px;width:calc(100% - 24px);margin:10px 12px 0;padding:11px 14px;border:1px solid var(--btn-bg,#111);border-radius:12px;background:color-mix(in srgb, var(--btn-bg,#111) 10%, transparent);color:var(--ink,#111);text-align:left;cursor:pointer;-webkit-tap-highlight-color:transparent;flex-shrink:0';
     liveBtn.innerHTML = '<span style="flex:1;min-width:0">' +
       '<span style="display:block;font-size:15px;font-weight:700;line-height:1.25">边看边调</span>' +
-      '<span style="display:block;font-size:11.5px;font-weight:400;opacity:.85;margin-top:2px">打开调色条：群聊在上、控件在下，改哪看哪、即时生效</span>' +
+      '<span style="display:block;font-size:11.5px;font-weight:400;opacity:.85;margin-top:2px">打开调色条：群聊在上、控件在下，改哪看哪、即时生效；标题行可按住往上拖让位</span>' +
       '</span><span style="flex:none;font-size:12px;font-weight:700;padding:7px 10px;border:1px solid var(--btn-bg,#111);border-radius:999px;background:var(--btn-bg,#111);color:var(--btn-ink,#fff);white-space:nowrap">点击开启 ›</span>';
     liveBtn.addEventListener('click', openGcBeautyDrawer);
     rootEl.insertBefore(liveBtn, rootEl.firstChild);
@@ -3092,10 +3112,18 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     if (t.closest('.tab') || t.closest('#gc-back') || t.closest('.app[data-app]')) hideGcBeautyDrawer();
   }, true);
   let gcDrawerSec = 'bubble';
+  // v8.29 #1008：群聊抽屉此前完全没有拖动（单聊 #760 实现时没有同步过来——同族只改一半，
+  // 用户「托标题行可上移」在群聊里点不着），这里补齐：会话内记忆、不落盘（纯 UI 位置）。
+  let gcDockBot = null;
+  function gcDrawerApplyBottom() {
+    const d = document.getElementById('gc-beauty-drawer');
+    if (!d) return;
+    d.style.bottom = (gcDockBot || 0) + 'px';
+  }
   function openGcBeautyDrawer() {
     try { if (settingsPanel) settingsPanel.hidden = true; } catch (e) {}
     const d = gcDrawerEl();
-    d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
+    d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;transition:bottom .16s ease;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
     d.innerHTML = '';
     const grip = document.createElement('div');
     grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 0;flex:none';
@@ -3108,11 +3136,47 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       b.addEventListener('click', fn);
       return b;
     };
+    // v8.29 #1008：grip 与标题行可竖向拖动（口径与单聊 #760 / 桌面 #1008 逐字一致：pointer 事件
+    // + setPointerCapture，否则触摸序列会被内核抢成滚动＝「抖一下拖不动」；标题行里的按钮让行）。
+    const bindGcDockDrag = (el) => {
+      el.style.touchAction = 'none';
+      el.style.cursor = 'grab';
+      let sy = 0, sb = 0, drag = false;
+      el.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('button')) return;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        drag = true; sy = e.clientY; sb = gcDockBot || 0;
+        d.style.transition = 'none'; // 拖动期间关掉 bottom 过渡，保证跟手
+        try { el.setPointerCapture(e.pointerId); } catch (er) {}
+        e.preventDefault();
+      });
+      el.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        gcDockBot = Math.max(0, Math.min(Math.round(window.innerHeight * 0.6), Math.round(sb + sy - e.clientY)));
+        gcDrawerApplyBottom();
+        e.preventDefault();
+      });
+      const up = () => {
+        if (!drag) return;
+        drag = false;
+        d.style.transition = 'bottom .16s ease';
+        if ((gcDockBot || 0) < 24) gcDockBot = null; // 接近底部＝吸附回贴底
+        gcDrawerApplyBottom();
+      };
+      el.addEventListener('pointerup', up);
+      el.addEventListener('pointercancel', up);
+    };
+    bindGcDockDrag(grip);
     const hd = document.createElement('div');
     hd.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none';
     const hdTxt = document.createElement('span');
     hdTxt.textContent = '边看边调（即时生效）';
-    hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:none';
+    // v8.29 #1008：把「标题行可拖动」写出来（用户直派「用户并不知道有这个功能」）——提示挂在
+    // 标题行里，收起正文区后仍看得见。
+    const hdHint = document.createElement('span');
+    hdHint.textContent = '按住标题行上下拖 · 让开看群聊';
+    hdHint.style.cssText = 'font-size:11px;color:var(--muted,#888);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const panelBody = document.createElement('div');
     panelBody.style.cssText = 'display:flex;flex-direction:column;gap:8px;flex:none';
     const body = document.createElement('div');
@@ -3128,8 +3192,9 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       // 不回就成了「浮层一关只能在群聊页干瞪眼」
       try { gcSetTab = 'beauty'; renderSettingsPanel(); if (settingsPanel) settingsPanel.hidden = false; } catch (e) {}
     }, ';padding:4px 8px');
-    hd.appendChild(hdTxt); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
+    hd.appendChild(hdTxt); hd.appendChild(hdHint); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
     d.appendChild(hd);
+    bindGcDockDrag(hd); // grip 只有 4px 高，标题行才是主拖拽把手
     const chipsRow = document.createElement('div');
     chipsRow.style.cssText = 'display:flex;gap:6px;flex:none';
     panelBody.appendChild(chipsRow);
@@ -3365,14 +3430,21 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
         return wrap;
       } }
     ];
-    const renderSec = (key) => {
-      gcDrawerSec = key;
+    const paintGcChips = (key) => {
       Array.prototype.forEach.call(chipsRow.children, c => {
         const on = c.dataset.sec === key;
-        c.style.background = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
-        c.style.color = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
-        c.style.borderColor = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+        const bg = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
+        if (c.style.background !== bg) c.style.background = bg;
+        const fg = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
+        if (c.style.color !== fg) c.style.color = fg;
+        const bd = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+        if (c.style.borderColor !== bd) c.style.borderColor = bd;
       });
+    };
+    const renderSec = (key) => {
+      // v8.29 #1008：点亮态只在真变化时写（同单聊口径；重建控件区的行为保留，见单聊注释）。
+      gcDrawerSec = key;
+      paintGcChips(key);
       body.innerHTML = '';
       paletteHost = null;
       colorItems = [];
@@ -3387,6 +3459,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       chipsRow.appendChild(c);
     });
     renderSec(gcDrawerSec);
+    gcDrawerApplyBottom();
     d.style.display = 'flex';
   }
 
@@ -4053,13 +4126,20 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     gcImgInput = fi;
     // 原生 label 激活层（等 input 挂进文档、id/accept 就位后才接）
     if (window.mochiFilePickLabel && gcImgBtn) window.mochiFilePickLabel(gcImgBtn, fi);
+    // FIX 2026-09-21 #1002（第九波续）：群聊输入栏「插入图片」同样铺「真·可点 input」层——手指物理落在
+    // 真 input 上，选择器由浏览器原生默认动作弹出，不再依赖 label 转发 / JS 合成 click / showPicker。
+    if (window.mochiFilePickSurface && gcImgBtn) window.mochiFilePickSurface(gcImgBtn, { id: 'gc-img-tap', accept: 'image/*', multiple: true, owner: fi });
     return fi;
   }
+  // FIX 2026-09-21 #1002：**绑定时**就铺一次真·可点 input 层（放在点按处理器里＝第一次点按赶不上）
+  try { if (window.mochiFilePickSurface && gcImgBtn) window.mochiFilePickSurface(gcImgBtn, { id: 'gc-img-tap', accept: 'image/*', multiple: true, owner: gcImgPicker() }); } catch (err) {}
   if (gcImgBtn) gcImgBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     const fi = gcImgPicker();
     // 输入栏整段重建后按钮是新节点、label 层会丢 ⇒ 每次点按幂等补挂（只在缺失时补）
     try { if (window.mochiFilePickLabel) window.mochiFilePickLabel(gcImgBtn, fi); } catch (err) {}
+    // #1002：按钮被整段重建过也把 surface 层幂等补回来
+    try { if (window.mochiFilePickSurface) window.mochiFilePickSurface(gcImgBtn, { id: 'gc-img-tap', accept: 'image/*', multiple: true, owner: fi }); } catch (err) {}
     // FIX 2026-09-18 #756：原 fromLabel 早退在国产内核（label 存在但不转发）时连 JS 兜底
     // 一起跳过＝「插图片点了完全没反应」；改由 guard 事后确认真未弹出再补 click
     // FIX 2026-09-20 #920：兜底腿改走全站统一三腿（showPicker→click；小米系对合成 click 静默不弹）
@@ -4288,36 +4368,76 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
   const gcPokeCloseBtn = document.getElementById('gc-poke-close');
   let gcPokeCid = null;
   const GC_POKE_PRESETS = ['拍了拍你', '戳了戳你的脸蛋', '弹了一下你的额头', '揉了揉你的头发', '捏了捏你的脸颊', '拍了拍你的肩膀'];
-  function gcPokeActions() {
-    const out = GC_POKE_PRESETS.slice();
-    // FIX 2026-09-17 #648g 拍一拍短语池媒体守卫（与 chat.js pokeTextOnly 同口径）——
-    // 自建分组/字卡库【拍一拍】里混入的令牌/图链/||| 卡不进面板、不被发出
-    const _pkOk = function (x) {
-      if (typeof x !== 'string' || !x.trim()) return false;
-      if (x.indexOf('data:') === 0 || x.indexOf('|||') >= 0 || x.indexOf('@@m:') >= 0) return false;
-      if (/^https?:\/\//i.test(x)) return false;
-      return true;
+  // FIX 2026-09-17 #648g 拍一拍短语池媒体守卫（与 chat.js pokeTextOnly 同口径）——
+  // 自建分组/字卡库【拍一拍】里混入的令牌/图链/||| 卡不进面板、不被发出
+  function gcPokeTextOnly(x) {
+    if (typeof x !== 'string' || !x.trim()) return false;
+    if (x.indexOf('data:') === 0 || x.indexOf('|||') >= 0 || x.indexOf('@@m:') >= 0) return false;
+    if (/^https?:\/\//i.test(x)) return false;
+    return true;
+  }
+  // #1027 分组条：原面板把「预设 + 字卡库【拍一拍】各分组 + 我的自建分组」摊平成一条
+  // 长列表，分组名在群聊里整个丢失（用户反馈「群聊的拍一拍功能没有分组 tag」）。改为与单聊
+  // 同款 .poke-groups chip 条按分组筛选——chip 与暗色样式复用聊天页现成规则，零 CSS 新增。
+  // 合集口径不变：同一批卡、同样全局去重（先到先得），只是按来源拆开摆。
+  const gcPokeBar = document.createElement('div');
+  gcPokeBar.className = 'poke-groups';
+  if (gcPokeCard && gcPokeList) gcPokeCard.insertBefore(gcPokeBar, gcPokeList);
+  let gcPokeCur = '';
+  function gcPokePrefGet() { try { return window.activeStore().get('gc-poke-group') || ''; } catch (e) { return ''; } }
+  function gcPokePrefSet(k) { try { window.activeStore().set('gc-poke-group', k); } catch (e) {} }
+  function gcPokeJson(key) {
+    try {
+      const v = JSON.parse(window.activeStore().get(key) || 'null');
+      return Array.isArray(v) ? v : [];
+    } catch (e) { return []; }
+  }
+  function gcPokeGroups() {
+    const seen = new Set();
+    const out = [];
+    const push = (scope, label, cards) => {
+      const list = (cards || []).filter(x => {
+        if (!gcPokeTextOnly(x) || seen.has(x)) return false;
+        seen.add(x);
+        return true;
+      });
+      if (list.length) out.push({ key: scope + '|' + label, label, cards: list });
     };
-    try { (window.getPokeCards() || []).forEach(x => { if (_pkOk(x) && out.indexOf(x) < 0) out.push(x); }); } catch (e) {}
-    [['poke-groups-mine', false], ['poke-user-mine', true]].forEach(([k, flat]) => {
-      try {
-        const v = JSON.parse(window.activeStore().get(k) || 'null');
-        if (flat && Array.isArray(v)) {
-          v.forEach(x => { if (_pkOk(x) && out.indexOf(x) < 0) out.push(x); });
-        } else if (Array.isArray(v)) {
-          v.forEach(g => { if (Array.isArray(g) && Array.isArray(g[1])) g[1].forEach(x => { if (_pkOk(x) && out.indexOf(x) < 0) out.push(x); }); });
-        }
-      } catch (e) {}
-    });
+    push('preset', '预设', GC_POKE_PRESETS);
+    // 字卡库【拍一拍】分类（公用 + 当前桌面专属的合并视图，与 getPokeCards 同一批卡）
+    let lib = [];
+    try { lib = (window.getPokeGroups && window.getPokeGroups()) || []; } catch (e) {}
+    lib.forEach(g => { if (Array.isArray(g) && Array.isArray(g[1]) && g[0]) push('lib', String(g[0]), g[1]); });
+    // 当前桌面「我的拍一拍」自建分组 + 存量扁平列表（同 chat.js pokeUserGroupsInit 的读法）
+    gcPokeJson('poke-groups-mine').forEach(g => { if (Array.isArray(g) && Array.isArray(g[1]) && g[0]) push('mine', String(g[0]), g[1]); });
+    push('legacy', '我的新增', gcPokeJson('poke-user-mine'));
     return out;
   }
   function gcClosePokeCard() { if (gcPokeCard) gcPokeCard.hidden = true; gcPokeCid = null; }
+  function renderGcPokeBar(groups) {
+    if (!gcPokeBar) return;
+    gcPokeBar.innerHTML = '';
+    // 只有一个来源时不占一行（没有可切换的对象）；.poke-groups 自带 display:flex，
+    // 会盖掉 [hidden] 的 UA 规则，所以这里用行内样式收
+    if (groups.length < 2) { gcPokeBar.style.display = 'none'; return; }
+    gcPokeBar.style.display = '';
+    groups.forEach(g => {
+      const c = document.createElement('span');
+      c.className = 'emoji-g-chip' + (gcPokeCur === g.key ? ' sel' : '');
+      c.textContent = g.label + g.cards.length;
+      c.addEventListener('click', (e) => { e.stopPropagation(); gcPokeCur = g.key; gcPokePrefSet(g.key); renderGcPokeList(); });
+      gcPokeBar.appendChild(c);
+    });
+  }
   function renderGcPokeList() {
     if (!gcPokeList) return;
+    const groups = gcPokeGroups();
+    if (!groups.some(g => g.key === gcPokeCur)) gcPokeCur = groups.length ? groups[0].key : '';
+    renderGcPokeBar(groups);
     gcPokeList.innerHTML = '';
-    const acts = gcPokeActions();
-    if (!acts.length) { gcPokeList.innerHTML = '<div class="cc-empty">暂无拍一拍文字</div>'; return; }
-    acts.forEach((a) => {
+    const cur = groups.find(g => g.key === gcPokeCur);
+    if (!cur) { gcPokeList.innerHTML = '<div class="cc-empty">暂无拍一拍文字</div>'; return; }
+    cur.cards.forEach((a) => {
       const d = document.createElement('div');
       d.className = 'cc-item glass';
       d.innerHTML = '<div class="cc-txt"><div class="t">' + escapeHtml(a) + '</div></div>';
@@ -4329,6 +4449,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     if (!gcPokeCard || !gcPokeList) return;
     closeGcMsgActions(); // 菜单开着时先收，防双浮层叠着（stopPropagation 会跳过 document 收菜单那条路）
     gcPokeCid = cid;
+    gcPokeCur = gcPokePrefGet(); // 键按桌面命名空间存，切桌面后开面板要重新落位
     if (gcPokeNameEl) gcPokeNameEl.textContent = memberName(cid);
     renderGcPokeList();
     gcPokeCard.hidden = false;

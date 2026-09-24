@@ -593,6 +593,21 @@
         if (!g) { g = [name, []]; auth[t].push(g); }
         const have = new Set(g[1]);
         cards.forEach(c => { if (!have.has(c)) { g[1].push(c); have.add(c); } });
+        // FIX 2026-09-22 #1012：并集之后把「内存侧的相对顺序」回填到两边都有的那些位置上——
+        // 原实现顺序一律取权威库，于是「长按拖动排序」在权威库还没进内存（写守卫走营救路径
+        // 本函数）时被整段还原＝用户所见「长按拖动字卡无法调整顺序」；大库被启动回填挂起
+        // （__xyIdbDeferredKeys）时 ccAuthSeen 整会话不解除，守卫每次拖动都还原，就成了
+        // 「拖了没反应」。权威侧独有的卡一律原地不动（防覆盖语义零改动）；同一分组出现
+        // 重复卡时退回旧口径（绝不动顺序）。
+        const uniq = (a) => a.filter((x, i) => a.indexOf(x) === i);
+        const memU = uniq(cards);
+        if (memU.length === cards.length && uniq(g[1]).length === g[1].length) {
+          const shared = memU.filter(c => g[1].indexOf(c) >= 0);
+          if (shared.length > 1) {
+            let k = 0;
+            for (let i = 0; i < g[1].length; i++) if (shared.indexOf(g[1][i]) >= 0) g[1][i] = shared[k++];
+          }
+        }
       });
     });
     return auth;
@@ -1366,6 +1381,13 @@
   const DRAG_CATS = ['text', 'kaomoji', 'emoji', 'sticker'];
   function attachCardDrag(el, gname, i) {
     if (DRAG_CATS.indexOf(cur) < 0) return;
+    // FIX 2026-09-22 #1012：可拖分类的卡片行不长按选字——用户要的手势就是「长按」，
+    // 而手机端长按期间系统的选字手势会在约 500ms 处接管这次触摸（touchcancel/
+    // pointercancel），把刚抓起的拖拽当场打断＝「长按拖动字卡无法调整顺序」。
+    // 做法与 .sm-song.draggable（播放队列拖动）一致；编辑弹窗里照旧能选中/复制文字。
+    el.style.setProperty('-webkit-user-select', 'none');
+    el.style.setProperty('user-select', 'none');
+    el.style.setProperty('-webkit-touch-callout', 'none');
     let pressTimer = null;
     let startX = 0, startY = 0;
     el.addEventListener('pointerdown', (e) => {
@@ -1402,6 +1424,12 @@
     el.classList.add('cc-dragging');
     if (navigator.vibrate) try { navigator.vibrate(15); } catch (err) {}
     let dropTarget = null;
+    // FIX 2026-09-22 #1012：拖拽存续期按住 touchmove 的默认行为。手机端 .card-list 可
+    // 纵向滚动，手指一移动浏览器就把这次触摸判成「滚动列表」并当场派发 pointercancel，
+    // 拖拽被取消（无头实测：长按 350ms 已抓起成功，首次 touchmove 后 2ms 收到
+    // pointercancel，松手时落点为空＝顺序一张不变；桌面鼠标没有这个手势，故一直正常）。
+    // 只在拖拽存续期挂载、松手立刻摘掉：350ms 内移动手指＝取消拖拽，列表照常滚动。
+    const stopPan = (ev) => { if (ev.cancelable) ev.preventDefault(); };
     const onMove = (ev) => {
       ev.preventDefault();
       clone.style.top = (ev.clientY - offsetY) + 'px';
@@ -1409,6 +1437,7 @@
       updateCardDropIndicator(dropTarget);
     };
     const onUp = () => {
+      document.removeEventListener('touchmove', stopPan);
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
       document.removeEventListener('pointercancel', onUp);
@@ -1417,6 +1446,7 @@
       clearCardDropIndicator();
       if (dropTarget) moveCardTo(gname, i, dropTarget);
     };
+    document.addEventListener('touchmove', stopPan, { passive: false });
     document.addEventListener('pointermove', onMove, { passive: false });
     document.addEventListener('pointerup', onUp);
     document.addEventListener('pointercancel', onUp);
@@ -1518,7 +1548,14 @@
 
   function render() {
     const token = ++renderToken;
+    try { if (window.__mochiPhase) window.__mochiPhase('cc-render'); } catch (e0) {}
     rendering = true;
+    // FIX 2026-09-22 #1040c：每次渲染（含切分类）同步「批量导入」按钮上的真·可点层——
+    // 媒体分类铺层、文本分类撤层，让分类切换后的物理点按路径与 JS 兜底路径都正确。
+    try {
+      var _ccImpSync = document.getElementById('cc-import');
+      if (_ccImpSync && _ccImpSync.__ccSyncSurface) _ccImpSync.__ccSyncSurface();
+    } catch (e1) {}
     renderTabCounts();
     let mediaHelp = document.getElementById('cc-media-help');
     const showMediaHelp = cur === 'sticker' || cur === 'image';
@@ -1648,20 +1685,47 @@
         attachCardDrag(el, it.gname, it.i);
       }
     };
-    const step = () => {
+    // #974：续批改「空闲期调度」——原实现每帧都续批（requestAnimationFrame），上万条的大分类
+    // （默认聊天字卡 4576 / 词典 14839）会连续几十帧占满主线程，与用户滑动/点按抢 CPU，
+    // 真机表现＝字卡库页持续 3~4fps、单帧冻结 3.3~3.6s（iPhone 13 实测）。改为：
+    // ①页面不可见（切走/后台）就暂停续批，回来再续；②可见时用 requestIdleCallback（缺失回退
+    // 60ms 定时）只在空闲跑；③空闲批更小（IDLE_BATCH）。渲染结果与顺序完全不变，只是不再抢主线程。
+    const IDLE_BATCH = 40;
+    const scheduleNext = (fn) => {
+      try {
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(function () { fn(); }, { timeout: 300 });
+          return;
+        }
+      } catch (e) {}
+      setTimeout(fn, 60);
+    };
+    const step = (batch) => {
       if (token !== renderToken) { rendering = false; return; } // 新渲染已开始，废弃本批次
-      const end = Math.min(pos + RENDER_BATCH, flat.length);
+      const n = batch || RENDER_BATCH;
+      const end = Math.min(pos + n, flat.length);
       for (; pos < end; pos++) {
         const el = document.createElement('div');
         build(el, flat[pos]);
         frag.appendChild(el);
       }
-      // 每帧挂载一批：列表渐进出现，首屏立即可滚动
+      // 每批挂载一次：列表渐进出现，首屏立即可滚动
       list.appendChild(frag);
-      if (pos < flat.length) requestAnimationFrame(step);
-      else rendering = false;
+      if (pos < flat.length) {
+        if (document.hidden) {
+          // 不可见＝先停（不浪费 CPU），**回前台一次性续完**——不能就此丢弃，否则列表永久残缺
+          var _onVis = function () {
+            document.removeEventListener('visibilitychange', _onVis);
+            if (token !== renderToken) { rendering = false; return; }
+            scheduleNext(function () { step(IDLE_BATCH); });
+          };
+          document.addEventListener('visibilitychange', _onVis);
+          return;
+        }
+        scheduleNext(function () { step(IDLE_BATCH); });
+      } else rendering = false;
     };
-    step(); // 首帧同步跑第一批（小列表一次完成，行为与原一致）
+    step(); // 首批同步跑（小列表一次完成，行为与原一致）
   }
 
   // 分类切换
@@ -1725,6 +1789,7 @@
   searchResultEl.hidden = true;
   (function () { const w = document.querySelector('#page-chatcard .tc-search-wrap'); if (w && w.parentNode) w.parentNode.insertBefore(searchResultEl, w.nextSibling); })();
   function renderSearchResult(kw) {
+    try { if (window.__mochiPhase) window.__mochiPhase('cc-search'); } catch (e0) {}
     if (!kw) { searchResultEl.hidden = true; searchResultEl.innerHTML = ''; return; }
     searchResultEl.hidden = false;
     kw = window.mochiSearch ? window.mochiSearch.qnorm(kw) : kw; // #573 查询侧标点归一：「晚安。」＝「晚安」
@@ -2393,11 +2458,14 @@
         }
         if (failed) { seenTok.clear(); out.libs.push({ label: L.label, skipped: '令牌化不可用，本库未改动' }); continue; }
         if (!largeTotal) continue;
+        // FIX 2026-09-22 #1038 写盘失败闸门（vivo/红米等低端大库机实报「本地上传的表情包忽然缺失、重新导入过不了多久又出现」，多机型同现）：mochiMediaFlush 返回 false＝本批池值没落进 IDB（idbSetAll 超时/连接丢失后回队重试，#226/#665a）。旧实现 await 后忽略返回值照写令牌库键——令牌库串小而必成、池值大而最易超时＝「令牌入库而池缺数据」；低端机后台被系统频繁回收（writeBuf 只在内存，一被杀即永久丢）＝图片丢失。同聊天 normalize #186 口径，零机型分支。
+        let _poolOk = false;
+        try { _poolOk = await window.mochiMediaFlush(); } catch (e) { _poolOk = false; }
+        if (_poolOk !== true) { out.libs.push({ label: L.label, skipped: '媒体池写盘失败（存储繁忙），本库保持不变，稍后自动重试' }); continue; }
         out.images += largeTotal;
         // 池先令牌后（对齐聊天 normalize「先 mochiMediaFlush 再 saveMsgs」契约）：池写缓冲
         // 是 300ms 延迟批量落盘，不强制冲刷的话库键令牌可能先于池数据入 IDB——崩溃窗口
         // 变成「令牌入库而池缺数据」＝图片丢失。这里显式 flush 后才允许写库键。
-        try { await window.mochiMediaFlush(); } catch (e) {}
         // ③ 补齐尾段并一次写回（此刻池数据已强制落 IDB；不变小不写＝保险丝）
         outStr += raw.slice(last);
         if (!replaced || outStr.length >= raw.length) continue;
@@ -2606,6 +2674,18 @@
           pickImportFile(mode);
         }, {
           noInput: true,
+          // FIX 2026-09-22 #1014：确定＝真·可点 input 层（原生动作弹选择器，不靠程序化激活）。
+          // 选「粘贴文本导入」时不弹选择器（skipWhen）——那条路本来就是给「选择器打不开」的
+          // 机型留的活路，撤掉默认动作后交回确定按钮原处理器，行为与以前逐字节相同。
+          pickOk: {
+            entry: 'cc-import-data', accept: '',
+            skipWhen: (m) => m === 'paste',
+            onFiles: (files, mode) => {
+              const f = files && files[0];
+              if (!f) { toast('没有取到文件，请再选一次'); return; }
+              importFromFile(f, mode);
+            }
+          },
           staticText: '选择导入方式：\n· 追加字卡：保留现有字卡，按分组并入，重复内容自动去除\n· 导入到「' + curName + '」：文件里全部字卡都并入当前分类\n· 替换字卡：清空当前字卡库，完全使用文件内容\n· 粘贴文本导入：文件选不出来时用这个（按「追加字卡」并入）',
           pills: [
             { label: '追加字卡（自动去重）', value: 'merge' },
@@ -3249,6 +3329,15 @@
       if (!window.openModal) return;
       window.openModal('导入自定义字卡', '', (mode) => { ccFullPickFile(mode); }, {
         noInput: true,
+        // FIX 2026-09-22 #1014：确定＝真·可点 input 层（同「导入字卡数据」）
+        pickOk: {
+          entry: 'li-cc-full-import', accept: '',
+          onFiles: (files, mode) => {
+            const f = files && files[0];
+            if (!f) { toast('没有取到文件，请再选一次'); return; }
+            ccFullImportFile(f, mode);
+          }
+        },
         staticText: '导入范围：文件里包含的各库（公用聊天字卡 / 专属聊天字卡 / 互动功能字卡 / 寻踪日常 / 今日情话 / TA 六类题库）——公用、专属、互动功能、全量四种导出文件都支持，文件里没有的部分不动。\n注意：「专属」部分会导入到当前桌面联系人——如文件来自别的桌面，请先切到对应联系人桌面再导入。\n选择导入方式：\n· 追加合并：保留现有字卡，按内容去重并入（推荐）\n· 整包替换：文件里包含的各库清空后完全使用文件内容，未包含在文件里的现有字卡会丢失',
         pills: [
           { label: '追加合并（自动去重）', value: 'merge' },
@@ -3260,8 +3349,11 @@
     function ccFullPickFile(mode) {
       // accept 放开为全文件（同字卡库导入 v3.23.x 口径：部分安卓壳对 .json 过滤灰显），
       // 格式由读取后的内容校验兜底
-      pickFiles('', false, (files) => {
-        const f = files && files[0];
+      pickFiles('', false, (files) => ccFullImportFile(files && files[0], mode));
+    }
+    // FIX 2026-09-22 #1014：文件到手后的完整导入管线——「程序化激活」与「弹窗确定＝真·可点
+    // input 层」两条路汇入这一份实现（同一入口只有一条管线，解析/自救/计数一字未改）。
+    function ccFullImportFile(f, mode) {
         if (!f) return;
         const fname = f.name || '未命名文件';
         const reader = new FileReader();
@@ -3305,7 +3397,6 @@
         };
         reader.onerror = () => toast('导入失败：文件读取失败，请重选文件再试');
         reader.readAsText(f);
-      });
     }
     function ccFullApply(d, mode) {
       try {
@@ -3489,121 +3580,176 @@
   }
   const impBtn = document.getElementById('cc-import');
   if (impBtn) {
-    impBtn.addEventListener('click', () => {
-      // 媒体分类：表情包/图片上传图片，语音上传音频
-      // v3.16.x：iOS Safari「文件」选择器会按 accept 过滤文件——accept="audio/*" 时只
-      // 放行系统识别为音频的文件，amr/silk/无扩展名等语音导出文件会被灰显不可选（用户
-      // 反馈公用/专属字卡语音无法上传「梦角语音文件」）。语音分类改为不限制类型
-      //（全文件可选），选完后在回调里按 MIME/扩展名校验，非音频直接跳过，绝不当作音频存库。
-      if (IMG_TYPES[cur]) {
-        pickFiles(cur === 'voice' ? '' : 'image/*', true, (files) => {
-          if (!files.length) return;
-          if (!groups[cur]) groups[cur] = [];
-          // 目标分组：当前选中分组，否则默认分组（表情包/图片），再否则新建
-          let g = null;
-          if (curGroup) {
-            g = groups[cur].find(g => g[0] === curGroup);
-            if (!g) { g = [curGroup, []]; groups[cur].push(g); }
-          } else {
-            const defName = IMG_TYPES[cur];
-            g = groups[cur].find(g => g[0] === defName);
-            if (!g) { g = [defName, []]; groups[cur].push(g); }
-          }
-          let done = 0;
-          let skipped = 0;
-          let notAudio = 0;
-          let gifSaved = 0;  // 动图直存（跳过压缩）计数
-          let cmpSaved = 0;  // 静态图压缩成功计数
-          // v3.6.x：上传大小限制——语音不压缩直接存 dataURL（字符串膨胀约 33%），
-          // 超大音频会撑爆手机内存/IDB；图片虽有 260px 压缩兜底，原图读取也占峰值内存。
-          // 语音限 10MB、图片限 20MB，超出跳过并提示
-          const sizeLimit = cur === 'voice' ? 10 * 1024 * 1024 : 20 * 1024 * 1024;
-          files.forEach((f) => {
-            if (f.size > sizeLimit) {
-              skipped++;
+    // ---- 媒体分类批量导入主管线（表情包/图片上传图片，语音上传音频）----
+    // FIX 2026-09-22 #1040c：把这条管线从按钮闭包里抽成模块级函数，让「按钮点击（JS 兜底腿）」
+    // 与「#cc-import 上铺的真·可点 file input 层（物理点按，浏览器原生弹选择器）」同走一套
+    // 压缩/落库逻辑，两边严丝合缝、绝不各写一份而走偏（本族历史「手抄必漏」的结构性教训）。
+    function ccImportMedia(files) {
+      if (!files || !files.length) return;
+      if (!groups[cur]) groups[cur] = [];
+      // 目标分组：当前选中分组，否则默认分组（表情包/图片），再否则新建
+      let g = null;
+      if (curGroup) {
+        g = groups[cur].find(g => g[0] === curGroup);
+        if (!g) { g = [curGroup, []]; groups[cur].push(g); }
+      } else {
+        const defName = IMG_TYPES[cur];
+        g = groups[cur].find(g => g[0] === defName);
+        if (!g) { g = [defName, []]; groups[cur].push(g); }
+      }
+      let done = 0;
+      let skipped = 0;
+      let notAudio = 0;
+      let badResolve = 0; // 解析/解码失败的图片计数（旧版静默「加载不出来」）
+      let gifSaved = 0;  // 动图直存（跳过压缩）计数
+      let cmpSaved = 0;  // 静态图压缩成功计数
+      // v3.6.x：上传大小限制——语音不压缩直接存 dataURL（字符串膨胀约 33%），
+      // 超大音频会撑爆手机内存/IDB；图片虽有 260px 压缩兜底，原图读取也占峰值内存。
+      // 语音限 10MB、图片限 20MB，超出跳过并提示
+      const sizeLimit = cur === 'voice' ? 10 * 1024 * 1024 : 20 * 1024 * 1024;
+      files.forEach((f) => {
+        const settleOne = () => { if (done === files.length) finishUpload(done - skipped - notAudio - badResolve, skipped, notAudio, badResolve); };
+        if (f.size > sizeLimit) {
+          skipped++;
+          done++;
+          settleOne();
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          // v3.13.x：语音分类里用户可能误传视频（安卓文件管理器常忽略 accept 过滤）——
+          // 视频 MIME 直接跳过，绝不当作音频存。存了播放只会空白/报错，还拖慢整库序列化
+          // v3.16.x：accept 放宽后（iOS Files 按 audio/* 过滤会让 amr/silk/无扩展名等
+          // 语音文件灰显不可选）文件可能是任意类型——非视频也非音频（MIME 不是 audio/
+          // 且扩展名推导不出音频 MIME）的一律跳过，避免把图片/文档/视频硬塞进语音库
+          if (cur === 'voice') {
+            const rvm = /^data:([^;,]*);/.exec(reader.result || '');
+            const rvMime = rvm ? rvm[1] : '';
+            const isVideo = (f.type && f.type.indexOf('video/') === 0) || rvMime.indexOf('video/') === 0;
+            const isAudio = audioMimeFromName(f.name) || (f.type && f.type.indexOf('audio/') === 0) || rvMime.indexOf('audio/') === 0;
+            if (isVideo || !isAudio) {
+              notAudio++;
               done++;
-              if (done === files.length) finishUpload(done - skipped, skipped);
+              settleOne();
               return;
             }
-            const reader = new FileReader();
-            reader.onload = () => {
-              // v3.13.x：语音分类里用户可能误传视频（安卓文件管理器常忽略 accept 过滤）——
-              // 视频 MIME 直接跳过，绝不当作音频存。存了播放只会空白/报错，还拖慢整库序列化
-              // v3.16.x：accept 放宽后（iOS Files 按 audio/* 过滤会让 amr/silk/无扩展名等
-              // 语音文件灰显不可选）文件可能是任意类型——非视频也非音频（MIME 不是 audio/
-              // 且扩展名推导不出音频 MIME）的一律跳过，避免把图片/文档/视频硬塞进语音库
-              if (cur === 'voice') {
-                const rvm = /^data:([^;,]*);/.exec(reader.result || '');
-                const rvMime = rvm ? rvm[1] : '';
-                const isVideo = (f.type && f.type.indexOf('video/') === 0) || rvMime.indexOf('video/') === 0;
-                const isAudio = audioMimeFromName(f.name) || (f.type && f.type.indexOf('audio/') === 0) || rvMime.indexOf('audio/') === 0;
-                if (isVideo || !isAudio) {
-                  notAudio++;
-                  done++;
-                  if (done === files.length) finishUpload(done - skipped - notAudio, skipped, notAudio);
-                  return;
-                }
-              }
-              const process = (data) => {
-                // 语音：存 "文件名|||音频数据"，图片/表情：存图片 dataURL
-                // v3.6.x：文件名去掉 mp3/mp4 等后缀（聊天里语音名称不显示 .mp3/.mp4）
-                const val = cur === 'voice' ? ((f.name || '音频').replace(/\.[^.]+$/, '') + '|||' + data) : data;
-                // FIX 2026-09-16 #554（TASKS #128）字卡媒体令牌化持久化·上传口：
-                // 表情包/图片 ≥CC_CC_TOK_MIN 先写媒体池、库键只存 @@m: 令牌——同一张图全库
-                // （公用+各专属，哈希寻址）只存一份。池写失败/非安全上下文回退内联原值，
-                // 上传永不因池失败而丢图；令牌渲染/导出还原/GC 保护消费方均已就绪（见迁移函数注释）。
-                const commit = (v) => { g[1].push(v); done++; if (done === files.length) finishUpload(done - skipped, skipped); };
-                if (cur !== 'voice' && window.mochiMediaTokenize && typeof data === 'string' && data.length >= CC_CC_TOK_MIN) {
-                  try { window.mochiMediaTokenize(data).then((tok) => commit(tok || val)).catch(() => commit(val)); return; } catch (e) { commit(val); return; }
-                }
-                commit(val);
-              };
-              // v3.8.x：语音先归一化 MIME（安卓/雨见下 File.type 为空时 dataURL 无 audio/ 前缀，
-              // 会触发乱码+无法播放），再存文件
-              if (cur === 'voice') process(normalizeAudioDataURL(reader.result, f));
-              else {
-                // v3.7.x：GIF 动图跳过 canvas 压缩——canvas 只能画出第一帧，
-                // 重绘成 PNG/JPEG 会把动图压成静态图，这里直存原图保留动画
-                const isGif = /image\/gif/i.test(f.type || '') || /\.gif$/i.test(f.name || '');
-                if (isGif) {
-                  // v3.26.x #139：直存原图前拦截超大 GIF（超限跳过并提示，与压缩失败同路径）
-                  if (String(reader.result || '').length > CC_GIF_MAX_B64) {
-                    skipped++; done++;
-                    if (done === files.length) finishUpload(done - skipped, skipped);
-                    toast('GIF「' + ((f && f.name) || '动图') + '」超过 380KB，已跳过');
-                    return;
-                  }
-                  gifSaved++;
-                  process(reader.result); return;
-                }
-                // v3.7.x：原 260px 在 3x 高清屏被放大 2~3 倍导致模糊。
-                //   图片分类当大图显示，压到 720px JPEG 0.85；表情包多小图且需透明背景，用 PNG 480px
-                const isImg = cur === 'image';
-                compressImage(reader.result, isImg ? 720 : 480, isImg ? 'image/jpeg' : 'image/png', isImg ? 0.85 : undefined).then((data) => {
-                  // v3.6.x：压缩失败/图片过大返回 null——不存原图（防 iOS 解码崩溃），跳过并提示
-                  if (!data) { skipped++; done++; if (done === files.length) finishUpload(done - skipped, skipped); return; }
-                  cmpSaved++;
-                  process(data);
-                });
-              }
-            };
-            reader.readAsDataURL(f);
-          });
-          function finishUpload(ok, skip, skipNotAudio) {
-            // v3.27.x：持久化延后——同批量导入，避免同步序列化大库阻塞
-            scheduleSave();
-            renderGroupsBar();
-            render();
-            const msgs = [];
-            if (ok > 0) msgs.push('已上传 ' + ok + ' 个' + (cur === 'voice' ? '音频' : '图片'));
-            if (gifSaved > 0) msgs.push('动图无法压缩，「' + gifSaved + '」个按原图存入');
-            if (cmpSaved > 0) msgs.push('已自动压缩 ' + cmpSaved + ' 个静态图');
-            if (skip > 0) msgs.push('跳过 ' + skip + ' 个超大文件（' + (cur === 'voice' ? '音频>10MB' : '图片>20MB') + '）');
-            if (skipNotAudio > 0) msgs.push('跳过 ' + skipNotAudio + ' 个视频/非音频（语音分类只支持音频）');
-            if (!msgs.length) msgs.push('没有可上传的文件');
-            toast(msgs.join('，'));
           }
-        });
+          const process = (data) => {
+            // 语音：存 "文件名|||音频数据"，图片/表情：存图片 dataURL
+            // v3.6.x：文件名去掉 mp3/mp4 等后缀（聊天里语音名称不显示 .mp3/.mp4）
+            const val = cur === 'voice' ? ((f.name || '音频').replace(/\.[^.]+$/, '') + '|||' + data) : data;
+            // FIX 2026-09-16 #554（TASKS #128）字卡媒体令牌化持久化·上传口：
+            // 表情包/图片 ≥CC_CC_TOK_MIN 先写媒体池、库键只存 @@m: 令牌——同一张图全库
+            // （公用+各专属，哈希寻址）只存一份。池写失败/非安全上下文回退内联原值，
+            // 上传永不因池失败而丢图；令牌渲染/导出还原/GC 保护消费方均已就绪（见迁移函数注释）。
+            const commit = (v) => { g[1].push(v); done++; settleOne(); };
+            if (cur !== 'voice' && window.mochiMediaTokenize && typeof data === 'string' && data.length >= CC_CC_TOK_MIN) {
+              try { window.mochiMediaTokenize(data).then((tok) => commit(tok || val)).catch(() => commit(val)); return; } catch (e) { commit(val); return; }
+            }
+            commit(val);
+          };
+          // v3.8.x：语音先归一化 MIME（安卓/雨见下 File.type 为空时 dataURL 无 audio/ 前缀，
+          // 会触发乱码+无法播放），再存文件
+          if (cur === 'voice') process(normalizeAudioDataURL(reader.result, f));
+          else {
+            // FIX 2026-09-22 #1040c：iOS 相册/「文件」App 常有 File.type 为空 → readAsDataURL 产出
+            // "data:;base64,…"（空 MIME）——WebKit 系对无类型 data: 不做图片嗅探，这样喂给
+            // <img>/canvas 解码必然 onerror＝compressImage 返回 null＝旧版静默「选择图片后加载不出来」。
+            // 这里复用 chat.js 的 #948h 魔数补正（window.chatFixNoMimeImg），按 base64 头解出的
+            // jpeg/png/gif/webp/bmp 补回规范 MIME，同一段载荷就能正常解码渲染（判定层不与任何
+            // 方案抄第二份，直接调既有窗口函数）。
+            let src = String(reader.result || '');
+            try { const mime = window.chatFixNoMimeImg ? window.chatFixNoMimeImg(src) : ''; if (mime) src = mime; } catch (e0) {}
+            // v3.7.x：GIF 动图跳过 canvas 压缩——canvas 只能画出第一帧，
+            // 重绘成 PNG/JPEG 会把动图压成静态图，这里直存原图保留动画
+            const isGif = /image\/gif/i.test(f.type || '') || /\.gif$/i.test(f.name || '') || /^data:image\/gif;/i.test(src);
+            if (isGif) {
+              // v3.26.x #139：直存原图前拦截超大 GIF（超限跳过并提示，与压缩失败同路径）。
+              // 体积按原始 reader.result 判定（#952 哨兵锚），存库/压缩用补正 MIME 后的 src。
+              if (String(reader.result || '').length > CC_GIF_MAX_B64) {
+                skipped++; done++;
+                settleOne();
+                toast('GIF「' + ((f && f.name) || '动图') + '」超过 380KB，已跳过');
+                return;
+              }
+              gifSaved++;
+              process(src); return;
+            }
+            // v3.7.x：原 260px 在 3x 高清屏被放大 2~3 倍导致模糊。
+            //   图片分类当大图显示，压到 720px JPEG 0.85；表情包多小图且需透明背景，用 PNG 480px
+            const isImg = cur === 'image';
+            compressImage(src, isImg ? 720 : 480, isImg ? 'image/jpeg' : 'image/png', isImg ? 0.85 : undefined).then((data) => {
+              // v3.6.x：压缩失败/图片过大返回 null——不存原图（防 iOS 解码崩溃），跳过并提示。
+              // FIX 2026-09-22 #1040c：成功路径 Compress null 归入 badResolve，明确给「无法解析」提示而非静默。
+              if (!data) { badResolve++; done++; settleOne(); return; }
+              cmpSaved++;
+              process(data);
+            });
+          }
+        };
+        // FIX 2026-09-22 #1040c：readAsDataURL 读失败（内核不回调 / 文件被系统收回）旧版无任何
+        // 提示＝像「点了没反应」。补 onerror 看门狗，非静默提示并照常结算这批。
+        reader.onerror = () => { badResolve++; done++; settleOne(); toast('有图片读取失败，已跳过（可换一张再试）'); };
+        reader.readAsDataURL(f);
+      });
+      function finishUpload(ok, skip, skipNotAudio, bad) {
+        // v3.27.x：持久化延后——同批量导入，避免同步序列化大库阻塞
+        scheduleSave();
+        renderGroupsBar();
+        render();
+        const msgs = [];
+        if (ok > 0) msgs.push('已上传 ' + ok + ' 个' + (cur === 'voice' ? '音频' : '图片'));
+        if (gifSaved > 0) msgs.push('动图无法压缩，「' + gifSaved + '」个按原图存入');
+        if (cmpSaved > 0) msgs.push('已自动压缩 ' + cmpSaved + ' 个静态图');
+        if (skip > 0) msgs.push('跳过 ' + skip + ' 个超大文件（' + (cur === 'voice' ? '音频>10MB' : '图片>20MB') + '）');
+        if (skipNotAudio > 0) msgs.push('跳过 ' + skipNotAudio + ' 个视频/非音频（语音分类只支持音频）');
+        if (bad > 0) msgs.push(bad + ' 个图片无法解析/已跳过（可能是格式不受支持或已损坏）');
+        if (!msgs.length) msgs.push('没有可上传的文件');
+        toast(msgs.join('，'));
+      }
+    }
+    // 铺/撤「真·可点」层（FIX 2026-09-22 #1040c）：媒体分类铺（手指物理点按命中原生 file input，
+    // 浏览器按原生默认动作弹系统选择器，不依赖 JS 激活腿——iOS Safari 常静默无视 showPicker/click，
+    // 这就是「从系统文件导入图片无反应」的根因面）；文本分类撤层（否则透明的可点层盖住按钮，
+    // 会吞掉点按、破坏文字批量导入弹窗）。
+    function syncCcImportSurface() {
+      try {
+        if (!impBtn) return;
+        const media = !!IMG_TYPES[cur];
+        const inp = impBtn.querySelector('input[data-file-pick-surface]');
+        if (!media) { if (inp) try { inp.remove(); } catch (e) {} return; }
+        if (inp) {
+          // FIX 2026-09-22 #1040d：已铺也要按当前分类刷新 accept——语音分类必须放开为空。
+          // iOS 的「文件」选择器按 accept 过滤（v3.16.x 在 JS 腿上修过的同一坑）：surface
+          // 一旦在表情包/图片分类先铺上（accept=image/*），切到语音分类若不刷新，选择器
+          // 会把语音文件灰显不可选＝「语音传不上去」。multiple 恒 true（批量口径不变）。
+          try { inp.accept = cur === 'voice' ? '' : 'image/*'; inp.multiple = true; } catch (e) {}
+          return; // 已铺，复用（幂等，不随 render 堆积节点）
+        }
+        if (window.mochiFilePickSurface) {
+          var _ccSurf = window.mochiFilePickSurface(impBtn, {
+            id: 'cc-import-media-surf',
+            accept: cur === 'voice' ? '' : 'image/*',
+            multiple: true,
+            onFiles: ccImportMedia
+          });
+          // FIX 2026-09-22 #1040d：mochiFilePickSurface 内部是 `o.accept || 'image/*'`——
+          // 语音分类有意传的空串会被兜底成 image/*（iOS 选择器按 accept 过滤＝语音文件
+          // 灰显不可选，v3.16.x 同坑）。这里按返回的真 input 再写一次真实口径。
+          try { if (_ccSurf) _ccSurf.accept = cur === 'voice' ? '' : 'image/*'; } catch (e) {}
+        }
+      } catch (e) {}
+    }
+    impBtn.__ccSyncSurface = syncCcImportSurface;
+    syncCcImportSurface(); // 初始同步一次（打开页默认文本分类＝撤层）
+    impBtn.addEventListener('click', () => {
+      // 媒体分类：真机上物理点按已被上面铺的层接管；这里兜底 JS 腿（合成点击、空状态按钮
+      // 透传给 el.click() 的路径、以及层未被铺的旧环境），与层走同一条 ccImportMedia 管线。
+      // v3.16.x：iOS Safari「文件」选择器会按 accept 过滤文件——accept="audio/*" 时只
+      // 放行系统识别为音频的文件，amr/silk/无扩展名等语音导出文件会被灰显不可选。语音分类
+      // 改为不限制类型（全文件可选），选完后在回调里按 MIME/扩展名校验，非音频直接跳过。
+      if (IMG_TYPES[cur]) {
+        pickFiles(cur === 'voice' ? '' : 'image/*', true, (files) => { ccImportMedia(files); });
         return;
       }
       // 文字分类：批量导入（一行一个；按【组名】识别分组 / txt 文件）
@@ -4567,6 +4713,7 @@
   // 像「数据丢了」。打开管理页=用户正在看这份数据，先按需取回再渲染列表；
   // 只对「被挂起且确实读不到」的键生效，正常设备零等待。
   function hydrateCurScope() {
+    try { if (window.__mochiPhase) window.__mochiPhase('cc-hydrate'); } catch (e0) {}
     if (!window.idbHydrateKey) return Promise.resolve(false);
     try { if (curStore().get(curKey())) return Promise.resolve(false); } catch (e) {}
     // v3.25.x：不再要求键在挂起名单——回填链被打断（iOS 挂后台杀 IDB 连接等）时
@@ -4690,6 +4837,7 @@
     });
   }
   function openCcPage(scope, startTab) {
+    try { if (window.__mochiPhase) window.__mochiPhase('cc-open'); } catch (e0) {}
     // v3.29.x：先落盘上一作用域的未保存变更——原 clearTimeout 会静默丢弃 120ms
     // 防抖窗口内刚上传/编辑的内容（切到另一作用域后刷新即丢）
     flushCcSave();

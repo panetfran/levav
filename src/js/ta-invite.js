@@ -4,8 +4,9 @@
 // 支持自定义新增、分组管理、批量导入、跨分类搜索、字卡库双入口、IndexedDB 权威恢复。
 // 触发链路不变：tryAutoSend → tryActiveInvite（chat.js）按 联系人回复设置→其他 的
 // ai-rps-en/prob、ai-game-en/prob 判定后从本库抽一张；本文件只负责题库存储与抽取。
-// 手动触发入口：聊天「更多功能 → TA的提问 → 邀请」（triggerTaInviteNow 定义在 chat.js，
-// 因为发送/弹确认/开半框依赖聊天页内部函数）；本库提供 taInvitePickAny 供其抽卡。
+// 手动触发入口：聊天「更多功能 → TA的提问 → 邀请 / 贴贴」（triggerTaInviteNow / triggerTaCuddleNow
+// 定义在 chat.js，因为发送/弹确认/开半框依赖聊天页内部函数）；本库提供 taInvitePickAny（全类型）
+// 与 taInvitePickKind（按类型，v8.29 #1003 起供「贴贴」那枚用）供其抽卡。
 (function () {
   const store = window.activeStore();
   const KEY = 'ta-invite';
@@ -125,7 +126,14 @@
   // c 为联系人回复设置对象（cfg()），缺字段回退默认值（与 reply-settings 默认一致）。
   function gn(c, k, def) { try { const v = c ? c[k] : undefined; return (typeof v === 'number' && !isNaN(v)) ? v : def; } catch (e) { return def; } }
   // #518：hit 出口统一套「系统预设字卡总档」缩放（本文件 hit 仅用于猜拳/游戏/贴贴三道邀请门）
-  function hit(p) { return Math.random() * 100 < (window.dcpEff ? window.dcpEff(p) : p); }
+  // #1153：再套一层「互动卡频率」档（用户直派「联系人在聊天里发送互动卡片的频率需要可以调整 /
+  //   原来的频率也保留」——邀请三类与提问卡同属「聊天里 TA 主动发的卡」，一起随档缩放）。
+  //   倍数与档位表在 src/js/ta-ask.js（icProb/IC_MODES，键 reply-ic-freq 随联系人桌面隔离）；
+  //   原频率档 ×1＝原值直通。手动「让 TA 邀请我」不走本函数（走 taInvitePickAny，不受档位影响）。
+  function hit(p) {
+    const eff = window.dcpEff ? window.dcpEff(p) : p;
+    return Math.random() * 100 < (window.icProb ? window.icProb(eff) : eff);
+  }
   window.taInviteDraw = function (c) {
     try {
       const d = tiLoad();
@@ -150,6 +158,15 @@
     try {
       const d = tiLoad();
       return drawFrom(enabledPool(d, ['rps', 'pong', 'snake', 'cuddle']));
+    } catch (e) { return null; }
+  };
+  // v8.29 #1003：手动触发按类型抽取（更多功能→TA的提问→贴贴）——只在指定类型的启用池里抽。
+  // 「邀请」那枚走上面的 taInvitePickAny（全类型随机），贴贴那枚要的是「一定是贴贴」，
+  // 故单开一个按 kind 抽的出口；口径与 taInvitePickAny 相同（不看开关/概率，抽不到返回 null）。
+  window.taInvitePickKind = function (kind) {
+    try {
+      const d = tiLoad();
+      return drawFrom(enabledPool(d, [kind]));
     } catch (e) { return null; }
   };
   window.__tiBankInfo = function () {

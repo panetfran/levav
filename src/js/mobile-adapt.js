@@ -32,16 +32,33 @@
   // #301：补游乐室半框（同族登记）
   const FLOAT_PANEL_SELECTORS = ['#chat-more-panel', '#chat-decision-panel', '#chat-gdecision-panel', '#chat-divine-panel', '#chat-ask-panel', '#poke-card', '#gc-poke-card', '#emoji-panel', '#chat-rp-panel', '#chat-rps-panel', '#chat-pong-panel', '#chat-snake-panel', '#chat-brick-panel', '#chat-c4-panel', '#chat-ms-panel', '#chat-fish-panel', '#chat-memory-panel', '#chat-gift-panel', '#chat-gomoku-panel', '#chat-linkup-panel', '#chat-match3-panel', '#chat-auction-panel', '#chat-arcade-panel', '#ck-panel', '#chat-search', '#gc-more-panel', '#voice-panel'];
 
+  // FIX 2026-09-22 #1043：viewport 串的两个等价写法（差别只有 scale 数值的 1.0 ↔ 1 写法）。
+  // 为什么必须有两个：①「初始 1 倍 + 下限 1 倍 + 上限 1 倍」才真正锁死缩放——iOS 自 iOS 10
+  // 起忽略 user-scalable=no（Safari 明确不支持），还能拦住「被缩小」的只剩 minimum-scale；
+  // ②iOS 只在 content **真的变了**时才重新解析 viewport，自愈重写若与当前串逐字相同就是空转
+  //（本批把 minimum-scale 补回启动串之后，自愈串会与它一字不差 ⇒ 必须靠 A/B 交替制造真实变更，
+  //  #810 安卓分支同款手法）。两串语义完全等价，唯一目的就是「能变」。
+  var IOS_VP_A = 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content';
+  var IOS_VP_B = 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content';
+
   // v3.10.x：iOS 用 interactive-widget=resizes-content，安卓用 resizes-visual。
   // template.html 默认 resizes-visual（安卓：visualViewport 收缩可检测键盘 + layout
   // viewport 不变无白闪）。但 iOS Safari 在 resizes-visual 下 syncIosKb 收缩 .phone
   // 异常（挤压不见），而 resizes-content 下 layout viewport 自动收缩、.phone 100dvh
   // 跟着收缩、输入栏天然停靠键盘上方（0ab2c49 之前一直正常）。iOS Safari 收键盘
   // 无安卓红米 K80 那种白闪，resizes-content 安全。此处 iOS 改写 viewport meta。
+  // FIX 2026-09-22 #1043：本串原先是手写整串，**漏掉了 template.html 本来声明着的
+  // minimum-scale=1.0** —— 而 iOS 唯一还认的「缩放下限」正是它，漏掉＝把 template.html
+  // 已经声明好的缩放锁在启动时自己拆掉（user-scalable=no 自 iOS 10 起被 Safari 忽略）。
+  // 后果（本批报障机 iPhone 15 / iOS 18.7 / **Safari 浏览器形态**，同族 13 mini 亦现）：
+  // 页面被系统缩到 scale=0.85、innerWidth 462 对可视 393，而 .phone 仍按布局像素撑高
+  // ⇒「底部少填 58px 白带 + 底部导航栏悬空 76px + 整页缩小」三条同源，且屏幕适配采集器
+  // 每隔几秒要重新量一遍（每次都是强制布局）。改写本串的唯一目的是换 interactive-widget
+  //（见上），其余一律按 template.html 原样带回。
   if (isIOS) {
     try {
       document.querySelectorAll('meta[name="viewport"]').forEach(function (m) {
-        m.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content');
+        m.setAttribute('content', IOS_VP_A);
       });
     } catch (e) {}
   }
@@ -157,6 +174,13 @@
     // 依赖原生 picker 的输入会彻底失效（安卓 Chrome/Edge 上无法设置、桌面组件不更新）
     if (t === 'checkbox' || t === 'range' || t === 'file' || t === 'color' || t === 'hidden' ||
         t === 'date' || t === 'time' || t === 'datetime-local' || t === 'month' || t === 'week') return;
+    // #1029（用户 2026-09-22 实报安卓「送礼只使用礼物的默认文案」根治）：**原生值必须在装 value
+    // 代理之前抓**。下方 value 代理一装上，inp.value 读的就是新 box 的文本（此刻恒为空），于是
+    // 「HTML 里写死内容的 textarea」（心意集市送礼弹窗「写给 TA 的话」= 礼物默认文案、同类回填框）
+    // 在安卓上回显为空框：用户看不到已有文案、空着点送出，后端只能回落到礼物默认文案＝用户所见
+    // 「只使用礼物的默认文案」。input 因为有 value attribute（getAttribute 那条路）才侥幸没踩到。
+    var preVal = inp.getAttribute('value');
+    if (preVal === null && inp.value !== undefined) preVal = inp.value;
     inp.dataset.ceDone = '1';
     // v3.26.x #118：先抓原始 className 再加 ce-ghost——避免可见的 ce-box div 继承到
     // ce-ghost 类别名（CSS 当前只对 input/textarea 生效未致视觉异常，但逻辑 bug：
@@ -433,9 +457,8 @@
     // 初始文本：input 若已有 value（如编辑回填），同步进 box
     // v3.5.130：textarea 的 value 是 JS 属性（无 value attribute）——getAttribute 取不到，
     // 导致打开面板后回显为空、点"应用"即清空内容；回退读 .value
-    var initV = inp.getAttribute('value');
-    if (initV === null && inp.value !== undefined) initV = inp.value;
-    if (initV) box.textContent = initV;
+    // #1029：取值挪到函数开头（preVal）——此处 value 代理已装好，再读 inp.value 只会读回空 box
+    if (preVal) box.textContent = preVal;
   }
   // 启动转换：页面现有文本输入框 + 动态创建（MutationObserver 兜底）
   // v3.6.x：仅非 iOS 启用（iOS Safari 保留原生输入框，见上方说明）
@@ -1122,6 +1145,7 @@
       //   var(--mochi-safe-bottom, env(safe-area-inset-bottom, 0px)) 的 27 处替换。
       var _vvFitOn = false;
       var _envTopCache = -1; // #148：env(safe-area-inset-top) 探针缓存（-1=未测）；旋转/#277 矛盾自愈时失效
+      var _envBottomCache = -1; // #1048：env(safe-area-inset-bottom) 探针缓存（与 top 同一探针同建同失效）
       var _envTopCacheAt = 0; // #277：缓存写入时刻（矛盾重探 5s 节流，防 1s 自愈循环频繁建探针 DOM）
       var _zoomFixCnt = 0, _zoomFixAt = 0; // #174：缩放异常自愈计数（每会话 ≤3 次，间隔 4s）
       function syncVvFit() {
@@ -1148,6 +1172,7 @@
           var _sig0 = {
             standalone: d.classList.contains('ios-pwa-standalone'),
             envTop: _envTopCache >= 0 ? _envTopCache : 0,
+            envBottom: _envBottomCache >= 0 ? _envBottomCache : 0,
             innerH: _ih2, screenH: _sh2, iosMajor: 0, safeTopForce: false
           };
           try {
@@ -1173,20 +1198,24 @@
             if (_sig0.standalone && _diff0 >= 20 && _envTopCache >= 0
                 && (_envTopCache === 0 || Math.abs(_envTopCache - _diff0) > 8)
                 && Date.now() - _envTopCacheAt > 5000) {
-              _envTopCache = -1; _envTopCacheAt = Date.now();
+              _envTopCache = -1; _envBottomCache = -1; _envTopCacheAt = Date.now();
             }
           } catch (eE5) {}
           var _f0 = window.mochiViewportForm(_sig0);
           if (_f0.needEnvProbe && _envTopCache < 0 && _sh2 > 0 && _vh2 > 0) {
             try {
               var _probe = document.createElement('div');
-              _probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;padding-top:env(safe-area-inset-top,0px);visibility:hidden;pointer-events:none;';
+              // #1048：同一探针同时量 top/bottom 两个 inset——bottom 是「env-top 说谎」
+              // 矛盾检测的反证信号（判定器消费，见 mochiViewportForm）
+              _probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);visibility:hidden;pointer-events:none;';
               document.body.appendChild(_probe);
               _envTopCache = parseFloat(getComputedStyle(_probe).paddingTop) || 0;
+              _envBottomCache = parseFloat(getComputedStyle(_probe).paddingBottom) || 0;
               document.body.removeChild(_probe);
-            } catch (e4) { _envTopCache = 0; }
+            } catch (e4) { _envTopCache = 0; _envBottomCache = 0; }
             _envTopCacheAt = Date.now(); // #277：探回值连同时刻一起入账（重探节流基准）
             _sig0.envTop = _envTopCache;
+            _sig0.envBottom = _envBottomCache;
           }
           var _f = window.mochiViewportForm(_sig0);
           var _safeTop = _f.safeTop;
@@ -1355,19 +1384,35 @@
           var d = document.documentElement; // FIX 2026-09-05 #189
           syncVvFit();
           syncSafeBottom();
-          // v3.26.x #174：独立应用缩放异常自愈——iOS 26.x 个别更新在主屏幕形态会把
-          // 页面缩到 scale≈0.85（iPhone 15 Pro 实测 visualViewport 462×932@0.85，
-          // 物理可见只剩 393×792，盖不满 852 高的屏幕 → 顶部状态栏区域露出白底、
-          // UI 整体缩小），maximum-scale=1 也拦不住。苹果没有 API 直接设置缩放，
-          // 重写 viewport meta（content 变化强制 Safari 重新解析并按 initial-scale
-          // 吸附）是唯一恢复手段；meta 已含 minimum-scale=1（#174）锁定缩放下限，
+          // v3.26.x #174：独立应用缩放异常自愈——iOS 26.x 个别更新会把页面缩到 scale≈0.85
+          //（iPhone 15 Pro 实测 visualViewport 462×932@0.85，物理可见只剩 393×792，盖不满
+          // 852 高的屏幕 → 顶部状态栏区域露出白底、UI 整体缩小），maximum-scale=1 也拦不住。
+          // 苹果没有 API 直接设置缩放，重写 viewport meta（content 变化强制 Safari 重新解析
+          // 并按 initial-scale 吸附）是唯一恢复手段；meta 含 minimum-scale=1 锁定缩放下限，
           // 重写后缩放吸附回 1。每会话最多 3 次 + 间隔 4s 防循环。
-          if (d.classList.contains('ios-pwa-standalone') && _vv && _vv.scale && _vv.scale < 0.95) {
+          // FIX 2026-09-22 #1043：判据去掉 `ios-pwa-standalone` 前置——原先只有「主屏幕形态」
+          // 会自愈，**Safari 浏览器形态（本批报障机）缩到 0.85 后全程无人自愈**，页面就永久
+          // 停在缩小态（诊断里「页面缩放 / 底部少填 58px / 底部导航栏悬空 76px」三条同源；
+          // 同族 iPhone 13 mini 也报过同一签名）。判据仍是内核可观测事实（visualViewport.scale），
+          // 零机型 / 零 UA 分支——按机型放行正是本族「修一台、另一台复发」的老路。
+          // 排除键盘 / 文本聚焦会话：WebKit 在聚焦期缩放是合法瞬态，与它对着干会打架
+          //（#810 安卓分支已证），那一路仍交给下方原逻辑处理。
+          var _zoomKbNow = false;
+          try {
+            if (_kbActive || _kbNowLike()) _zoomKbNow = true;
+            else {
+              var _aeZ = document.activeElement;
+              if (_aeZ && (_aeZ.tagName === 'INPUT' || _aeZ.tagName === 'TEXTAREA' || _aeZ.isContentEditable)) _zoomKbNow = true;
+            }
+          } catch (eZ) {}
+          if (_vv && _vv.scale && _vv.scale < 0.95 && !_zoomKbNow) {
             var _now = Date.now();
             if (_zoomFixCnt < 3 && _now - _zoomFixAt > 4000) {
               _zoomFixCnt++; _zoomFixAt = _now;
+              // A/B 交替＝保证 setAttribute 是一次真实内容变更（理由见 IOS_VP_A/IOS_VP_B 定义处）
+              var _zMeta = (_zoomFixCnt % 2) ? IOS_VP_B : IOS_VP_A;
               document.querySelectorAll('meta[name="viewport"]').forEach(function (m) {
-                m.setAttribute('content', 'width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content');
+                m.setAttribute('content', _zMeta);
               });
             }
           }
@@ -1487,7 +1532,7 @@
       window.addEventListener('resize', onIosVvEvent);
       window.addEventListener('orientationchange', onIosVvEvent);
       // v3.26.x #148：旋转后 env(safe-area-inset-top) 可能变化，失效探针缓存重测
-      window.addEventListener('orientationchange', function () { try { _envTopCache = -1; } catch (e) {} });
+      window.addEventListener('orientationchange', function () { try { _envTopCache = -1; _envBottomCache = -1; } catch (e) {} });
       // v3.26.x #213：视口时间线环形缓冲（每秒 1 拍，保留 60 条≈1 分钟）——
       // 键盘开合/工具条伸缩/白带出现等瞬态过程回放用：屏幕适配诊断报告尾部
       // dump 时间线，「出问题前发生了什么」直接可读（键盘 +350 / 突发 -59 等）。
@@ -1517,8 +1562,21 @@
       };
       window.addEventListener('pageshow', onIosVvEvent);
       document.addEventListener('visibilitychange', onIosVvEvent);
+      // #969：原来是「每秒无条件重校视口」——healViewport 要读 .phone/visualViewport 几何并写样式，
+      // 在 1.6 万节点页面上等于每秒一次强制布局＋样式失效，是 iOS 常驻卡顿的稳定来源之一。
+      // 改为指纹闸：视口指纹（inner/可视高/缩放/平移）没变就跳过，省掉整条重校链；
+      // 每第 10 拍仍无条件深查一次（防「指纹没变但内联样式被外部改坏」这类需要自愈的情况）。
+      let _vvFp = '', _vvTick = 0;
       setInterval(function () {
         if (document.visibilityState !== 'visible') return;
+        try {
+          _vvTick++;
+          const _v = window.visualViewport;
+          const fp = [window.innerWidth, window.innerHeight, _v ? Math.round(_v.height) : 0,
+            _v ? +(+_v.scale).toFixed(2) : 1, _v ? Math.round(_v.offsetTop || 0) : 0].join('|');
+          if (fp === _vvFp && (_vvTick % 10) !== 0) return; // 未变且非深查拍 → 本秒不重校
+          _vvFp = fp;
+        } catch (e0) {}
         onIosVvEvent();
       }, 1000);
       try { syncVvFit(); syncSafeBottom(); } catch (e) {}
@@ -2729,11 +2787,13 @@
     '#pc-sheet-mask',
     // FIX 2026-09-15 #527：边看边调底部抽屉——盖在桌面上的固定层，打开时同样要锁背景滚动
     //（此前未登记，抽屉打开后底层桌面仍可被滑动）
-    // FIX 2026-09-17 #660：聊天设置「输入栏按钮位置」排序面板同族（chat-settings.js
-    //   openInputOrderPanel 建的整屏遮罩，#cs-bg-panel 同款结构）——未登记＝面板开着时
-    //   底层设置页仍可被滑动。单独占一行登记：末行 '  #beauty-drawer', '#icon-fit-panel'];'
+    // FIX 2026-09-17 #660 / 改 @ #1120：聊天设置「输入栏按钮位置」排序面板同族（原 #660
+    //   openInputOrderPanel 建的整屏遮罩 #cs-input-order-panel，已在 #1120 改为「边看边调」
+    //   底部抽屉 #io-order-drawer）——未登记＝面板开着时底层设置页仍可被滑动。抽屉与
+    //   #chat-beauty-drawer 同结构（固定层、openInputOrderPanel 切换 hidden+display）。
+    //   单独占一行登记：末行 '  #beauty-drawer', '#icon-fit-panel'];'
     //   整段是 #581f 哨兵的 needle 原文，直接往那行追加会改掉它、把别人的锚点弄哑。
-    '#cs-input-order-panel',
+    '#io-order-drawer',
     // FIX 2026-09-16 #581：图标图片位置调整面板同族（personalize.js openIconFitPanel 建的固定底半框）
     // FIX 2026-09-18 #707：屏幕位置设置面板（personalize.js 建的底部半框）——同族登记防滚动穿透；
     //   本行插在 #581f 锚点行之前（那行原文一个字都不能动）
@@ -3089,8 +3149,13 @@
   function lsSet(k, v) { try { if (v) localStorage.setItem(PFX + KEYS[k], String(v)); else localStorage.removeItem(PFX + KEYS[k]); } catch (e) {} }
   function applyBottom() {
     try {
-      if (adj.bottom) origSet('--mochi-safe-bottom', 'calc(env(safe-area-inset-bottom, 0px) + ' + adj.bottom + 'px)');
-      else if (origGet('--mochi-safe-bottom').indexOf('calc(env(') === 0) origRemove('--mochi-safe-bottom');
+      // #969：底部补偿的 1s 轮询原为「每秒无条件重写一次 CSS 变量」——写自定义属性会让整棵
+      // 样式失效并触发重算/重绘，在长页面上是稳定的每秒开销。改为「当前值已是目标值就不写」
+      // （读仍在，保留「被外部 removeProperty 掉后 1s 内补回」的自愈职责不变）。
+      const want = adj.bottom ? ('calc(env(safe-area-inset-bottom, 0px) + ' + adj.bottom + 'px)') : '';
+      const cur = origGet('--mochi-safe-bottom') || '';
+      if (want) { if (cur !== want) origSet('--mochi-safe-bottom', want); }
+      else if (cur.indexOf('calc(env(') === 0) origRemove('--mochi-safe-bottom');
     } catch (e) {}
   }
   // #707 桌面图标区轴：独立写 --mochi-desk-adj（home.css 的 #desktop-pages padding-top 消费）——

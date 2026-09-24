@@ -16,6 +16,10 @@
     try { const v = window.xyStore ? window.xyStore(GNS).get(k) : null; if (v !== null && v !== undefined) return v; } catch (e) {}
     try { return store.get(k); } catch (e) { return null; }
   }
+  // #1059：通知逐条弹（关闭内容去重）——默认关闭＝保留去重；打开后每条消息都弹系统通知。
+  function bgNoDedup() {
+    try { return gGet('bg-notify-nodedup') === '1'; } catch (e) { return false; }
+  }
   function gSet(k, v) {
     try { if (window.xyStore) window.xyStore(GNS).set(k, v); } catch (e) {}
   }
@@ -546,7 +550,9 @@
   // （隐藏期定时器停摆过＝冻结/丢弃实锤，页面即便活着回来也算）；died=后台会话暴毙次数
   // （上个会话没能活着回来＝标签被系统丢弃/杀掉，回来自动重载＝「点回来页面被刷新」）。
   // 历史累计、跨会话保留，零机型分支——「保活到底有没有生效」从口述猜变成有数可查。
-  let kaEv = { stall: 0, died: 0 };
+  // #961：kaEv 增 rolling 回收时间表（diedAt，最多 10 条）——「近两天回收几次」要靠它，
+  // 只在总数上判断会让老设备的累计值永远触发升级提醒。
+  let kaEv = { stall: 0, died: 0, diedAt: [] };
   try {
     const _evSaved = gGet('__ka-ev');
     if (_evSaved && String(_evSaved).charAt(0) === '{') {
@@ -555,6 +561,37 @@
     }
   } catch (e) {}
   function kaEvSave() { try { gSet('__ka-ev', JSON.stringify(kaEv)); } catch (e) {} }
+
+  // ===== #961 通用会话存活标记（不依赖保活/通知开关）=====
+  // 背景：iOS 内存紧张时会把整个 WebContent 回收，用户切回来看到的就是「白屏/重新加载」——
+  // 旧实现只在开着保活时靠后台心跳察觉（kaLivenessOn 门控），没开保活的用户永远得不到解释，
+  // 而 17PM 实报「严重时聊天完全白屏动不了」正是这一类（该机累计被回收 43 次）。
+  // 标记极小：切后台/离开时写 {t, closed}；下次启动若上次不是正常收尾且时间很近 ⇒ 记一次回收。
+  // #1199：声明必须在使用它的第一段（下面的 sessBootCheck / 上面的会话取证）之前。原来它和
+  //   #1001 那批监听器代码写在一起（本 IIFE 后半），而 sessBootCheck() 在更早的启动块里就同步
+  //   给它的 `let` 赋值——TDZ ReferenceError 被外层 try{}catch{} 吞掉，于是通用路径永远抬不起
+  //   这个标记，顶条只能等异步心跳那条路（没开保活的用户＝永远不弹）。
+  let kaDiedNotice = false; // #1199 TDZ 闸：必须声明在 sessBootCheck() 之前
+  const SESS_KEY = '__sess-alive';
+  function sessMark(closed) { try { gSet(SESS_KEY, JSON.stringify({ t: Date.now(), closed: !!closed })); } catch (e) {} }
+  function sessBootCheck() {
+    try {
+      const prev = JSON.parse(gGet(SESS_KEY) || 'null');
+      if (prev && typeof prev.t === 'number' && !prev.closed && (Date.now() - prev.t) < 30 * 60 * 1000) {
+        kaEv.died++;
+        kaEv.diedAt = kaEv.diedAt || [];
+        kaEv.diedAt.push(Date.now());
+        // #1199：上限从 10 放宽到 30——原来「近两天几次」直接数这个定长数组，留 10 条＝计数
+        // 永远封顶在 10，屏幕上报出「近两天 10 次」其实是饱和值而不是实测值。
+        if (kaEv.diedAt.length > 30) kaEv.diedAt.shift();
+        kaEvSave();
+        kaDiedNotice = true;
+      }
+    } catch (e) {}
+    sessMark(false);
+  }
+  try { window.addEventListener('pagehide', function () { sessMark(true); }); } catch (e) {}
+  try { document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') sessMark(false); }); } catch (e) {}
   // 独立监听器（#153 的 hidden 监听器在音频播放中会提前 return，语义不同不共用）
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'hidden') {
@@ -568,6 +605,13 @@
         if (kaHb.ts && kaHb.resumed - kaHb.ts > 90000) {
           kaEv.stall++; kaEvSave();
           try { if (keepAudio && keepAudio.el && !kaCustomAudio) keepAudio.el.volume = KA_VOL_MAX; } catch (e) {}
+          // #977 长后台失效当面提示（用户直派「当后台长时间挂着，功能会失效，需要重新关掉网页
+          //   打开并重新打开功能」）：心跳断流＝这段后台里页面被系统冻结过，保活/后台弹窗在这段
+          //   时间实际停摆。只在「本次后台挂满 10 分钟且发生过冻结」的回前台提示一次（短冻结高频，
+          //   弹了反而吵）；恢复方法口径与 #bg-keep-sub 红条 / 功能说明胶囊一致。
+          if (kaHb.hid && kaHb.resumed - kaHb.hid >= 600000) {
+            toast('⚠ 挂后台太久，保活被系统冻结截断过\n这段时间的后台消息/后台弹窗可能失效（回本页已自动恢复）\n经常失效：彻底关闭网页重新打开，再把「后台保活」「后台弹窗」开关重新打开', 6000);
+          }
         }
         try { if (window.idbSet) window.idbSet(KA_HB_KEY, kaHb); } catch (e) {}
       }
@@ -578,9 +622,28 @@
   // （pagehide 告别标记）＝上个后台会话没能活着回来。pagehide 在关标签/导航时会触发、
   // 进程被杀/标签被丢弃时不会触发，恰好构成「有序结束 vs 暴毙」的判别（bye 标记只在
   // kaHb 存在的本会话写，避免把用户开着没用保活的会话误记成保活失效）。
+  // FIX 2026-09-21 #1001：这条实锤以前只有诊断里有数（测试按钮 / 信息诊断），用户侧零解释——
+  //   而「挂后台被系统丢弃重载」正是最容易被当成 bug 的设备限制（回来自动重载＝「页面自己刷新了」，
+  //   这段时间后台消息/弹窗本来就不存在）。本批把「上个后台会话暴毙」当面讲清：只在两个开关
+  //   开着（＝用户确实指望后台收消息）且页面在前台、开屏已关时提示一次，12h 冷却防唠叨。
   try {
+    sessBootCheck(); // #961：通用存活标记启动判定（含正常收尾标记，与保活开关无关）
     if (window.idbGet) window.idbGet(KA_HB_KEY).then(function (old) {
-      if (old && old.n > 0 && !old.resumed && !old.bye) { kaEv.died++; kaEvSave(); }
+      // #1199（吸收未构建的 #1063b）：同一次回收会在两条取证路上各记一次账——sessBootCheck
+      // 已在本次启动同步记过（kaDiedNotice=true）时这条不能再 ++，否则实际 2 次累计成 4 次，
+      // 门槛被虚高提前踩中＝「明明没几次却弹了」。
+      if (kaDiedNotice) return;
+      if (old && old.n > 0 && !old.resumed && !old.bye) {
+        kaEv.died++;
+        // #1199：这条路上以前只加总数、不进 diedAt 时间表，而新门槛只看 diedAt（近两天）——
+        // 不补时间戳就会漏计，两条取证路的口径必须一致。
+        kaEv.diedAt = kaEv.diedAt || [];
+        kaEv.diedAt.push(Date.now());
+        if (kaEv.diedAt.length > 30) kaEv.diedAt.shift();
+        kaEvSave();
+        kaDiedNotice = true;
+        tryShowKaDiedNotice();
+      }
     }).catch(function () {});
   } catch (e) {}
   window.addEventListener('pagehide', function () {
@@ -588,6 +651,165 @@
     kaHb.bye = 1;
     try { if (window.idbSet) window.idbSet(KA_HB_KEY, kaHb); } catch (e) {}
   });
+
+  // ===== FIX 2026-09-21 #1001：把两条「设备/权限限制」当面讲清（用户总当成 bug 的两类）=====
+  //   A. 上个后台会话被系统丢弃/关闭（页面被重载）——见上面 kaDiedNotice；
+  //   B. 「后台通知」开关开着但权限还没给（#988 起这种状态开关会保持开启、不再弹回）——
+  //      开关亮着却不弹窗，用户最容易报「功能坏了」，其实只是还没允许通知。
+  //   两条都只在「用户确实开着保活/通知」且页面在前台、开屏已关（#900 教训：开屏 z-999 之下
+  //   弹＝弹在看不见的地方）时提示；各自 12h 冷却，避免唠叨。
+  let kaPermNoticeArmed = false;
+  function kaLivenessOn() {
+    // try 包住：notifyEnabled 在文件更后面才声明（同一 IIFE 内同步执行完毕后才会有异步回调），
+    // 万一某条路径提前跑到这里，读未初始化变量会抛 TDZ——按「没开」处理即可，不必崩
+    try { return !!keepEnabled || !!notifyEnabled; } catch (e) { return false; }
+  }
+  function kaNoticeCool(key, ms) {
+    try { const t = Number(gGet(key)) || 0; return t > 0 && (Date.now() - t) < ms; } catch (e) { return false; }
+  }
+  function kaNoticeStamp(key) { try { gSet(key, String(Date.now())); } catch (e) {} }
+  // 开屏关掉（或用户已在应用内）时执行一次——冷启动时开屏正盖着，直接弹等于没弹
+  function kaNoticeAfterSplash(fn) {
+    try {
+      if (chanSplashGone()) { fn(); return; }
+      const s = document.getElementById('splash');
+      if (!s) { fn(); return; }
+      let done = false;
+      let mo = null, moBody = null, tmr = null;
+      const cleanup = function () {
+        done = true;
+        try { if (mo) mo.disconnect(); } catch (e) {}
+        try { if (moBody) moBody.disconnect(); } catch (e) {}
+        try { if (tmr) clearTimeout(tmr); } catch (e) {}
+      };
+      const fire = function () { if (done) return; cleanup(); try { fn(); } catch (e) {} };
+      if (typeof MutationObserver === 'function') {
+        mo = new MutationObserver(function () { if (chanSplashGone()) fire(); });
+        try { mo.observe(s, { attributes: true, attributeFilter: ['class', 'hidden'] }); } catch (e) {}
+        moBody = new MutationObserver(function () { if (!s.isConnected) fire(); });
+        try { moBody.observe(document.body, { childList: true }); } catch (e) {}
+      }
+      // 兜底：90s 还没进页就作废（不当着开屏弹、也不留到很晚才突然弹）
+      tmr = setTimeout(cleanup, 90000);
+    } catch (e) { try { fn(); } catch (e2) {} }
+  }
+  // #961 升级：①不再要求「开着保活/通知」才提示——回收是系统行为、谁都可能遇到；
+  // ②文案讲人话（系统收回页面→白屏/重开，不是网站坏了、不丢数据）并给具体方法；
+  // ③回收频繁时升级为顶部警告条＋冷却，平时只是一次 toast，避免唠叨。
+  // #1199 本条三处一起咬人（用户实报「弹窗无法关闭，并且总是错误出现，上面写的方法也没有用」）：
+  //   ①整条没有任何关闭键，只能干等 60s 自动收起；
+  //   ②门槛用了「累计 ≥10 次」这个永不衰减的数，且 diedAt 固定只留 10 条（「近两天」被顶成假 10 次），
+  //     老设备一旦跨过就每天复弹＝「总是出现」；
+  //   ③方法给的是 Chrome「内存节省程序 / 始终保持活动」——那是**标签页**开关，桌面快捷方式与独立
+  //     PWA 进程不受它约束，安卓端真正收回后台的是系统省电与后台管控，照做自然没用。
+  // 现在：门槛只看近两天、给「不再提示」永久静音、关闭键用全站共享的 .vub-act 芯片形态
+  //   （长文案独占一行、芯片另起一行，见 base.css 的 #mem-warn-bar），方法换成真能生效的那几条。
+  const MEM_NOTE_OFF = '__ka-mem-note-off';
+  function memNoteOff() { try { return gGet(MEM_NOTE_OFF) === '1'; } catch (e) { return false; } }
+  // #1199：「近两天几次」按时间窗算，不再靠定长数组（留 10 条＝计数上限被洗成 10）
+  function recentDiedCount() {
+    try {
+      const cut = Date.now() - 48 * 3600 * 1000;
+      const list = Array.isArray(kaEv.diedAt) ? kaEv.diedAt : [];
+      const keep = list.filter(function (t) { return typeof t === 'number' && t >= cut; });
+      if (keep.length !== list.length) { kaEv.diedAt = keep; kaEvSave(); }
+      return keep.length;
+    } catch (e) { return 0; }
+  }
+  const MEM_HOW_TO = '页面在后台被手机收回，是系统的省电与后台管控在做主，网站拦不住——但下面几条是真能少发生：\n\n① 别从「最近任务」把本站划掉（划掉＝你亲手关掉，回来一样要重载）。\n② 系统设置 → 应用 → 你用的浏览器 → 省电/电池 → 选「无限制 / 允许后台活动」；有「后台管理 / 自启动」的也一并设为允许。\n③ 最近任务里长按本站卡片选「锁定」（或小锁图标），一键清理后台时会跳过它。\n④ 不用时把 设置→系统 的「后台保活」关掉（它靠一直放近无声音频续命，本身也吃内存）。\n⑤ 设置→工具→「查看存储」清掉最占地方的一项（表情包大图/旧聊天记录，删前先导出备份）——页面越轻，越不容易被系统挑中收回。\n\n被收回不会丢数据：回到本页会自动重载接上，保活在你碰一下页面时自动恢复。';
+  // 跳到 设置→工具→查看存储（原「点整条」的路径，现在挂在「怎么清」弹窗的确认键上）
+  function gotoStorageView() {
+    try {
+      const t = document.querySelector('.tabbar .tab[data-page="page-setting"]');
+      if (t) t.click();
+      setTimeout(function () {
+        try {
+          const tg = document.querySelector('#set-tabs .them-tab[data-sec="tools"]');
+          if (tg) tg.click();
+        } catch (e) {}
+        setTimeout(function () {
+          try { const r = document.getElementById('row-storage-view'); if (r && r.scrollIntoView) r.scrollIntoView({ block: 'center' }); } catch (e) {}
+        }, 300);
+      }, 350);
+    } catch (e) {}
+  }
+  function showMemWarnBar(recent) {
+    try {
+      if (memNoteOff()) return;
+      if (document.getElementById('mem-warn-bar')) return;
+      const b = document.createElement('div');
+      b.className = 'ver-update-bar';
+      b.id = 'mem-warn-bar';
+      b.innerHTML = '<span class="vub-txt"></span>'
+        + '<span class="vub-act" id="mem-warn-how">怎么清</span>'
+        + '<span class="vub-act" id="mem-warn-off">不再提示</span>'
+        + '<span class="vub-act vub-close" id="mem-warn-x" role="button" aria-label="关闭本条提示">×</span>';
+      b.querySelector('.vub-txt').textContent = '近两天有 ' + recent + ' 次，这个页面在后台被手机收回后重新加载——切回来白一下/自动刷新就是它。是系统的省电与内存管控在做主，不是网站坏了，数据不会丢';
+      const close = function () { try { b.hidden = true; } catch (e) {} };
+      const how = b.querySelector('#mem-warn-how');
+      if (how) how.addEventListener('click', function (ev) {
+        try { ev.stopPropagation(); } catch (e) {}
+        try {
+          const ctl = window.openModal('怎么让它少被收回', '', function () { gotoStorageView(); }, { noInput: true, staticText: MEM_HOW_TO, big: true });
+          if (ctl && ctl.okText) ctl.okText('去清存储');
+        } catch (e) {}
+      });
+      const off = b.querySelector('#mem-warn-off');
+      if (off) off.addEventListener('click', function (ev) {
+        try { ev.stopPropagation(); } catch (e) {}
+        try { gSet(MEM_NOTE_OFF, '1'); } catch (e) {}
+        close();
+      });
+      const x = b.querySelector('#mem-warn-x');
+      if (x) x.addEventListener('click', function (ev) {
+        try { ev.stopPropagation(); } catch (e) {}
+        kaNoticeStamp('__ka-mem-note-at'); // 明确关掉＝这一轮冷却重新计时，不再当场复弹
+        close();
+      });
+      (document.body || document.documentElement).appendChild(b);
+      setTimeout(close, 60000); // 60s 自动收起，不常驻
+    } catch (e) {}
+  }
+  function tryShowKaDiedNotice() {
+    if (!kaDiedNotice) return;
+    if (memNoteOff()) { kaDiedNotice = false; return; }
+    try { if (document.visibilityState !== 'visible') return; } catch (e) { return; }
+    const recent = recentDiedCount();
+    // #1199：门槛只看「近两天」——累计 died 是历史值、永不衰减，原来「累计 ≥10 次」让老设备
+    // 一旦到过 10 就每天复弹（用户实报「总是错误出现」），且计数本身把「自己划掉/厂商省电杀后台」
+    // 也算了进来，虚高到几十次并不奇怪，所以它只配进诊断当线索，不配当弹条的门槛。
+    if (recent >= 3) {
+      if (kaNoticeCool('__ka-mem-note-at', 7 * 24 * 3600 * 1000)) { kaDiedNotice = false; return; }
+      kaDiedNotice = false;
+      kaNoticeStamp('__ka-mem-note-at');
+      kaNoticeAfterSplash(function () { showMemWarnBar(recent); });
+      return;
+    }
+    if (kaNoticeCool('__ka-died-note-at', 12 * 3600 * 1000)) { kaDiedNotice = false; return; }
+    kaDiedNotice = false;
+    kaNoticeStamp('__ka-died-note-at');
+    toast('⚠ 刚才这个页面在后台被手机收回过一次（系统的省电/内存管控在做主）——所以切回来会白一下、重新加载。这不是网站坏了，也不会丢数据。想少发生：①别从最近任务划掉本站 ②设置→系统 关掉「后台保活」③设置→工具→「查看存储」清掉最占地方的一项。');
+  }
+  function nbPermPendingNotice() {
+    try { if (!notifyEnabled) return; } catch (e) { return; }
+    let p = 'default';
+    try { p = nbPermState(); } catch (e) { return; }
+    // FIX 2026-09-22 #1017：本提示原来只认「还没决定（default）」。#1014 起开关在权限被浏览器
+    //   挡着（denied）时也留在开启位（不再自己关掉），那种状态同样「开关开着却收不到弹窗」——
+    //   一起讲清，否则用户只看到一个开着的开关，更容易以为坏了。
+    if (p !== 'default' && p !== 'denied') return;   // 已授权 / 本机无通知能力（unsupported）都不在此提示
+    if (kaNoticeCool('__nb-perm-note-at', 12 * 3600 * 1000)) return;
+    try { if (document.visibilityState !== 'visible') return; } catch (e) { return; }
+    kaNoticeStamp('__nb-perm-note-at');
+    toast(p === 'denied'
+      ? '⚠「后台通知」开关开着，但浏览器还挡着本站的通知权限\n地址栏左侧图标 → 网站设置 → 通知 → 允许（允许后自动生效，不用再点开关）\n这是权限限制，不是开关坏了'
+      : '⚠「后台通知」开关开着，但浏览器还没给通知权限\n地址栏左侧图标 → 网站设置 → 通知 → 允许（没允许之前，后台消息不会弹窗）\n这是权限限制，不是开关坏了', 7000);
+  }
+  try {
+    if (kaDiedNotice) kaNoticeAfterSplash(tryShowKaDiedNotice);
+    // 权限待决：给 #921g 说的「瞬态误读」留出恢复时间，20s 后复查仍是 default 才提示
+    setTimeout(function () { kaPermNoticeArmed = true; kaNoticeAfterSplash(nbPermPendingNotice); }, 20000);
+  } catch (e) {}
 
   // #260：诊断出口——device.js「保活现场」行消费（诊断在用户操作时生成，与加载顺序无关）
   window.__kaProbe = function () {
@@ -683,6 +905,8 @@
       //   ③ 音频被外部打断暂停→排一次退避补播（间隔由 kaSchedule 按连击指数化）。
       // 补播节奏明显放缓后，与其他 App 抢音频焦点的拉锯大幅减轻。
       keepInterval = setInterval(function () {
+        // #960 续：细分相位——ka-tick 是总拍，下面两处各自打点，便于把「冻结前后发生的事」
+        // 与「只是最频繁、恰好记在最后」区分开（取证行会带距冻结起点的中位差）
         try { if (window.__mochiPhase) window.__mochiPhase('ka-tick'); } catch (e0) {}
         if (keepAudio && keepAudio.el) {
           try {
@@ -707,7 +931,14 @@
                 }
               } catch (e) { hold = true; }
               if (hold) {
-                try { if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing'; } catch (e) {}
+                try {
+                  // #960 续：只在状态真要变时才写——原实现每 5 秒无条件重写同一值，iOS 上是
+                  // 一条到媒体/Now Playing 的跨进程 IPC，属纯重复劳动（读不到值时行为与旧版一致）
+                  if (navigator.mediaSession && navigator.mediaSession.playbackState !== 'playing') {
+                    try { if (window.__mochiPhase) window.__mochiPhase('ka-ms'); } catch (e0) {}
+                    navigator.mediaSession.playbackState = 'playing';
+                  }
+                } catch (e) {}
               }
               // 稳定播放够久 → 复位退避连击（下次打断从头 5s 起退避）
               if (kaPauseStreak && Date.now() - kaLastPlayAt > kaStableMs()) kaPauseStreak = 0;
@@ -906,13 +1137,46 @@
   document.addEventListener('music-media-release', function () {
     if (keepEnabled) { setKeepMediaSession(); syncKeepForMusic(); }
   });
+  // #977 开启即当面告知两条硬限制（用户直派「这两个功能需要提示用户」；惯例＝功能打开的一刻
+  //   把限制说清，不藏在说明里）。只挂在用户手动开启这一刻（boot 恢复 / 通知联动走
+  //   startKeepAlive(false) 不弹，避免重复打扰）；口径与 #bg-keep-sub 红条、功能说明胶囊一致。
+  function kaOpenEnableHints() {
+    try {
+      if (typeof window.openModal !== 'function') return;
+      window.openModal('后台保活已开启 · 三条必知', '', function () {}, {
+        noInput: true, pillSubmit: true,
+        pills: [{ label: '知道了', value: 'ok' }],
+        staticText: '保活＝页面在后台持续播放一段近无声音频，让系统不冻结本页。有两条硬限制（手机/浏览器限制，不是网站故障）：\n\n① 别的 App 会把保活截断：刷视频、听歌等会占用手机音频通道，保活音频被暂停＝保活失效，回到本页才自动恢复；被截断期间后台消息收不到、后台弹窗不弹。\n\n② 后台挂久了会失效：系统省电/内存策略会把挂久的页面冻结甚至丢弃重载（Edge「睡眠标签页」/Chrome「内存节省程序」约 30 分钟就会丢）。失效后请彻底关闭网页重新打开，再把「后台保活」「后台弹窗」开关重新打开。\n\n③ 开着它时页面不会在后台自动换新版（换版要重载页面、会把后台运行打断）：顶部出现「检测到新版本」条时，你自己挑时间点「刷新使用新版」即可；不点也不影响使用，下次彻底关闭网页重开会自然换到新版。'
+      });
+    } catch (e) {}
+  }
   const kaBtn = document.getElementById('bg-keepalive');
   function syncKeepUI() { if (kaBtn) kaBtn.checked = keepEnabled; }
-  // #921f：change 事件的用户手势闸（保活/通知开关共用）——环境不支持 userActivation 时放行
-  //（老内核无此 API，也不会有丢弃唤醒重载那类伪 change）；拿不到读数按真手势处理，不误伤。
+  // #921f：change 事件的用户手势闸（保活/通知开关共用）
+  // FIX 2026-09-21 #988：判据改为「以输入事件为准」，不再把 navigator.userActivation 当唯一裁判。
+  //   原判据 `hasBeenActive === false` 是全局一次性标记，由内核按自己的「用户激活」定义维护——
+  //   内核对触摸点按的激活判定与我们对「用户点按」的期望并不总是一致（定制内核 / 套壳 / 无头
+  //   环境都有先例），一旦它把真点按算成「从未激活」，开关就表现为「点第一下被静默吃掉、点第二
+  //   下才生效」（用户实报红米 K80 Chrome，明说其他型号也有）。现在先看证据：change 之前 1.2s 内
+  //   有过真实输入（pointerdown/up、touchstart/end、mouse*、click、keydown——真点按、长按、键盘
+  //   操作全覆盖，与内核 API 无关、零机型分支）即判为用户操作；#921f 要拦的唤醒重载伪 change 只
+  //   派发 change、前面没有任何输入事件，照旧被拦。userActivation 只在「完全没有输入证据」时起
+  //   二次否决作用，拿不到读数按真手势处理，不误伤。
+  let kaInputAt = 0;
+  try {
+    const kaMarkInput = function (e) {
+      // 只认真实输入：脚本造的 click/tap 不算手势证据（否则页面自身合成点击会把伪 change 放行）
+      try { if (e && e.isTrusted === false) return; } catch (er) {}
+      kaInputAt = Date.now();
+    };
+    ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'mousedown', 'mouseup', 'click', 'keydown'].forEach(function (t) {
+      try { document.addEventListener(t, kaMarkInput, { passive: true, capture: true }); } catch (err) {}
+    });
+  } catch (e) {}
   function kaUserGesture(e) {
     try {
       if (e && e.isTrusted === false) return false;
+      if (Date.now() - kaInputAt <= 1200) return true;
       if (navigator.userActivation && navigator.userActivation.hasBeenActive === false) return false;
     } catch (er) {}
     return true;
@@ -931,7 +1195,7 @@
       // FIX 2026-09-16 #601d：记住「用户手动关过保活」——开启「后台通知」时的自动联动
       // 与任何回填不得再把它强行打开（用户反馈：关掉后过一会/重开又变回开启）。
       gSet('__ka-user-off', keepEnabled ? '0' : '1');
-      if (keepEnabled) startKeepAlive(true);
+      if (keepEnabled) { startKeepAlive(true); kaOpenEnableHints(); }
       else stopKeepAlive(true);
     });
   }
@@ -1258,85 +1522,336 @@
   }
   // v3.5.114：请求权限（支持成功/失败回调）——失败时开关要弹回关闭，
   //   否则 iOS 不支持 / 权限被拒时开关显示"开"但实际无效，误导用户
-  function requestNotifyPermission(cb, failCb) {
+  // FIX 2026-09-21 #988：失败回调补「原因」并把「还没决定」与「被拒绝」分开——
+  //   'unsupported' 环境不支持 / 'denied' 明确被拒 / 'pending' 用户还没在系统弹窗里做出选择
+  //   （安卓 Chrome 与国产 ROM 上弹窗挂着未答复时 requestPermission 就 resolve 成 'default'）/
+  //   'error' 调用异常。调用方据此区分「该回弹」与「该继续等」，不再把待决当失败。
+  //   opts.quiet＝不打任何 toast（供轮询重试这类不该重复打扰的场合）。
+  function requestNotifyPermission(cb, failCb, opts) {
+    const quiet = !!(opts && opts.quiet);
+    const say = function (m) { if (!quiet) toast(m); };
+    const fail = function (why) { if (failCb) failCb(why); };
     if (!('Notification' in window)) {
       // v3.7.x：按平台区分文案——安卓阉割 WebView（OPPO 自带/Via 等）也无 Notification API，
-      //   原文案硬编码"iPhone"对安卓用户很困惑。iOS 仍引导装主屏（iOS PWA 也不支持本地通知）
+      //   原文案硬编码"iPhone"对安卓用户很困惑。
+      // FIX 2026-09-21 #978：iOS 那支原文案暗示「装到主屏幕后由系统接管」，与同一功能另外两处
+      //   口径矛盾（行下说明「本开关在 iPhone 上无效」、#924c「不保证弹出」）——iOS WebKit 的
+      //   网页通知只认推送服务通道，装到主屏幕也不保证。统一为「改用桌面消息弹窗」。
       // v3.16.x：设备判定统一读 device.js（mochiDevice）
       const _isIOS = !!(window.mochiDevice || {}).isIOS;
-      toast(_isIOS
-        ? 'iPhone 网页版不支持系统通知\n请安装到主屏幕后由系统接管'
-        : '当前浏览器不支持系统通知\n请改用 Chrome/Edge，或添加到主屏幕后由系统接管');
-      if (failCb) failCb();
+      say(_isIOS
+        ? 'iPhone / iPad 的网页拿不到系统通知\n（添加到主屏幕也不保证）请用「桌面消息弹窗」'
+        : '当前浏览器不支持系统通知\n请改用 Chrome/Edge 打开本站（安卓或电脑都行）');
+      fail('unsupported');
       return;
     }
     if (Notification.permission === 'granted') { if (cb) cb(); return; }
-    if (Notification.permission === 'default') {
-      Notification.requestPermission().then(function (p) {
-        if (p === 'granted') { if (cb) cb(); }
-        else {
-          toast('未获得通知权限，后台消息无法弹窗');
-          if (failCb) failCb();
-        }
-      }).catch(function () { if (failCb) failCb(); });
-    } else {
-      toast('通知权限被拒绝，请在浏览器设置中允许通知');
-      if (failCb) failCb();
+    if (Notification.permission !== 'default') {
+      say('通知权限被拒绝，请在浏览器设置中允许通知');
+      fail('denied');
+      return;
     }
+    try {
+      let settled = false;
+      const once = function (p) {
+        if (settled) return;
+        settled = true;
+        if (p === 'granted') { if (cb) cb(); return; }
+        if (p === 'denied') { say('通知权限被拒绝，请在浏览器设置中允许通知'); fail('denied'); return; }
+        say('还没拿到通知权限：请在浏览器弹窗里点「允许」（地址栏左侧图标 → 网站设置 → 通知）');
+        fail('pending');
+      };
+      // 两种 API 形态都接：返回 Promise 的内核走 then；老回调形态（部分 iOS WebView）返回
+      //   undefined、结果只从回调进——原写法直接 .then 会抛 TypeError，表现为「点了毫无反应」
+      const ret = Notification.requestPermission(once);
+      if (ret && typeof ret.then === 'function') {
+        ret.then(function (p) { once(p); }, function () { once('error'); });
+      }
+    } catch (e) { fail('error'); }
+  }
+  // #1059：通知逐条弹（关闭去重）开关——默认关闭（存储 '0'/空＝去重生效）；只影响系统通知弹不弹
+  const ndBtn = document.getElementById('bg-notify-nodedup');
+  let ndUserTouched = false;
+  function syncNoDedupUI() { if (ndBtn) ndBtn.checked = (gGet('bg-notify-nodedup') === '1'); }
+  if (ndBtn) {
+    syncNoDedupUI();
+    ndBtn.addEventListener('change', function (e) {
+      // 与保活/通知同款手势闸：无手势的伪翻转忽略并回弹
+      if (!kaUserGesture(e)) { syncNoDedupUI(); return; }
+      ndUserTouched = true;
+      if (ndBtn.checked) { gSet('bg-notify-nodedup', '1'); toast('已开启：以后每条消息都单独弹通知（内容重复时会连环弹）'); }
+      else { gSet('bg-notify-nodedup', '0'); toast('已关闭：恢复去重（内容相同或近期弹过的只弹一条）'); }
+    });
   }
   const nbBtn = document.getElementById('bg-notify');
   function syncNotifyUI() { if (nbBtn) nbBtn.checked = notifyEnabled; }
+  function nbPermState() {
+    try { return ('Notification' in window) ? Notification.permission : 'unsupported'; } catch (e) { return 'unsupported'; }
+  }
+  // ===== FIX 2026-09-21 #988：开启「后台通知」的流程重写 =====
+  //   用户实报：红米 K80 Chrome 点第一下开关被「拦回去」、点第二下才开（明说其他型号也有）。
+  //   根因（零机型分支）：旧实现把 requestNotifyPermission 的回调当成成/败二值——resolve 不是
+  //   'granted' 就走失败分支（toast「未获得通知权限」＋notifyEnabled=false＋开关弹回关闭）。
+  //   而安卓 Chrome / 国产 ROM 上「系统授权弹窗已经弹出、用户还没点允许」时，requestPermission
+  //   就会先 resolve 成 'default'（'default' ＝ 还没决定，不是拒绝）——用户那一下点按就这样被
+  //   吃掉、开关自己弹了回去；等他第二下点开关时权限其实已经在系统弹窗里被允许了 ⇒「第二下才开」。
+  //   同一文件里启动恢复（#921g）与回填重读本就按「'default' ＝ 瞬态，不落 0、开关照常开」处理，
+  //   只有这条手动开启路径口径不一致，本批把两者统一（不碰 #601d/#921f 语义、零机型分支）。
+  //   新语义：granted ＝ 当场生效；denied ＝ 明确被拒，回弹开关（沿用原口径：显示开着却无效会误导）；
+  //   unsupported ＝ 环境不支持，回弹；default ＝ 先按用户意图把开关亮着（不丢这一下），再把结果
+  //   等出来（轮询 + 回前台/重新聚焦补查 + 用户下次点按借手势再请求一次），全程不再要求点第二下。
+  const NB_SETTLE_MS = 12000; // 待决等待上限：覆盖「系统弹窗弹着、用户过几秒才点允许」的正常窗口
+  let nbAttempt = 0;          // 每轮「用户动开关」的代号：回调/轮询只认自己那一轮，过期即弃
+  let nbSettleTimer = null;
+  let nbSettlePoke = null;    // 待决轮询的「探一脚」入口（回前台/重新聚焦时立刻补查）
+  let nbAppliedFor = 0;       // 已落地的轮次（granted 可能从回调与轮询两边同时到）
+  function nbAttemptNext() {
+    nbAttempt++;
+    if (nbSettleTimer) { clearTimeout(nbSettleTimer); nbSettleTimer = null; }
+    nbSettlePoke = null;
+    return nbAttempt;
+  }
+  function nbRevertOff() { notifyEnabled = false; gSet('bg-notify', '0'); syncNotifyUI(); }
+  function nbApplyOn(my) {
+    if (my !== nbAttempt || nbAppliedFor === my) return;
+    nbAppliedFor = my;
+    notifyEnabled = true;
+    gSet('bg-notify', '1');
+    syncNotifyUI();
+    nbSyncPermWarn();   // #1014：权限已到位，撤掉行下那条标红说明（否则权限好了还挂着「还挡着」）
+    showSysNotification('通知已开启', { body: '后台消息提醒将正常弹窗' });
+    // FIX 2026-09-20 #924c：iPhone 如实告知能力边界——iOS WebKit 的系统通知只认
+    //   「推送服务」通道（App Store 级推送服务端），纯本地应用没有推送服务，
+    //   保活期间的后台弹窗不保证弹出＝平台限制、代码无法绕过；消息本身不丢，
+    //   回前台有迟到补弹（#915 bgLateCatchup）与聊天记录兜底。
+    if (kaIsIOS()) setTimeout(function () { toast('iPhone 提示：受系统限制，后台弹窗不保证弹出；消息不会丢，回来自动补看'); }, 1600);
+    // v3.5.132：开启通知时自动联动开启后台保活——后台消息要"到达"必须
+    //   页面定时器在后台仍运行（静音音频保活）；否则开关开了但页面休眠，
+    //   消息根本不产生，通知永远不会弹（旧版只 toast 提醒，用户容易漏开）
+    setTimeout(function () {
+      const keep = document.getElementById('bg-keepalive');
+      const keepOn = keepEnabled;
+      // FIX 2026-09-16 #601d：用户已手动关过保活（存储 '0' 或标记 __ka-user-off=1）时
+      // 不再强行打开——尊重用户选择，只提醒「通知要靠保活才收得到后台消息」。
+      const userWantsKeepOff = gGet('bg-keepalive') === '0' || gGet('__ka-user-off') === '1';
+      if (!keepOn && userWantsKeepOff) {
+        toast('你已手动关闭「后台保活」，保持你的设置；但后台消息可能收不到通知，需要时请手动开启');
+      } else if (!keepOn) {
+        if (keep) keep.checked = true;
+        keepEnabled = true;
+        gSet('bg-keepalive', '1');
+        gSet('__ka-user-off', '0');
+        startKeepAlive(false);
+        syncKeepUI();
+        toast('已自动开启后台保活（后台消息必需）');
+      }
+      if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+        toast('提醒：需 HTTPS 访问，浏览器才允许通知');
+      }
+    }, 400);
+  }
+  // ===== FIX 2026-09-22 #1014：开关＝用户意图；权限读数只决定「标红提示」与「自动生效」 =====
+  //   用户实报（红米 K80 Chrome，同一族第三次）：「首次打开后台通知功能，还是会显示被浏览器拒绝，
+  //   我第二次打开才有反应」「后台通知功能开启后，切后台会自动关闭」。
+  //   根因（无头实测取证、零机型分支）：原实现把**一次** Notification.permission 读数当成用户的最终
+  //   决定——启动/回填回读读到 'denied' 就 notifyEnabled=false 并把存储写死 '0'（实测：存量 '1' 在
+  //   一次瞬态 denied 读数后永久变 '0'，随后权限已 granted 也回不来＝用户看到的「切后台自动关闭、
+  //   要重新开一次」）；点开关时请求被弹回 'denied' 也当场回弹关闭＝「第一次显示被拒绝」。
+  //   而同一台设备上 #921g 早已实测「丢弃重载/回前台」这类时机的权限读数是失真的（那次失真读数是
+  //   'default'，故只把 'default' 当瞬态）；'denied' 同样会不经用户决定地产生——首次授权被浏览器的
+  //   安静提示 UI 挡掉、授权框被切后台打断、弹框压根没弹出，网页侧读到的都是 'denied'，分不出
+  //   「用户点了拒绝」与「浏览器没让用户看见这个问题」。
+  //   新口径（三句）：①存储 'bg-notify' 只表达「用户想不想要」，只由用户自己改（任何读数都不写它）；
+  //   ②权限不到位时开关保持开＋行下标红如实说明缺哪一步，权限一到位**自动生效**（不再点第二次）；
+  //   ③真的没有通知能力的设备（无 Notification API / iPhone）仍按平台限制如实告知并回弹开关
+  //   （那里没有「等一会儿就好」可言，见 #975/#978 口径）。
+  function nbNoticeOnce(key, msg) {
+    try { if (kaNoticeCool(key, 60 * 1000)) return; kaNoticeStamp(key); } catch (e) {}
+    toast(msg, 7000);
+  }
+  function nbPermWarnText() {
+    const p = nbPermState();
+    if (p === 'unsupported') {
+      // 能力限制与开关无关，一直显示（这类设备点多少次都不会好）
+      return (window.mochiDevice || {}).isIOS
+        ? '⚠ 本机拿不到系统通知（iPhone / iPad 平台限制，添加到主屏幕也不保证）：请用「桌面消息弹窗」的应用内横幅'
+        : '⚠ 本机浏览器没有通知能力（小米 / vivo / OPPO 自带浏览器、UC、夸克、Via 常见如此）：请改用 Chrome / Edge 打开本站';
+    }
+    if (!notifyEnabled) return '';
+    // #1056：红米 K80 + Chrome 151 实报「授权框被静默吞掉（请求直接被挡成拒绝）、网站设置
+    //   列表里也找不到本站」——指路必须覆盖「手动添加」这一步，否则用户按文案走到网站设置
+    //   仍然无处可点。「多半不是你点了拒绝」＝#1017 记录的成因：授权框反复弹出会被 Chrome
+    //   判骚扰并自动挡，旧版（#1017 之前）一次点按发 2 次以上请求正是推手。
+    if (p === 'denied') return '⚠ 浏览器已把本站通知记成「屏蔽」（授权框反复弹出后 Chrome 会自动挡，多半不是你点了拒绝）。两条路恢复：① 地址栏左侧图标 → 权限 → 通知 → 改「允许」；② Chrome 右上角 ⋮ → 设置 → 网站设置 → 通知 → 「添加网站例外」→ 输入本站网址。改了仍不弹＝Chrome 对本站的自动屏蔽无法解除：请换 Edge / 电脑打开本站（聊天记录可在 设置 → 通用 导出 / 导入 迁移）。允许后自动生效，不用再点开关（此权限与「经期提醒」共用）；从主屏幕图标打开的（已安装应用）：长按图标卸载后重新「添加到主屏幕」即可重置授权';
+    if (p === 'default') return '⚠ 还没给本站通知权限：点「测试」或开关会请求一次；没弹授权框＝Chrome 对弹过多次的站静默拒绝。两条路手动恢复：① 地址栏左侧图标 → 权限 → 通知 → 允许；② Chrome ⋮ → 设置 → 网站设置 → 通知 → 「添加网站例外」→ 输入本站网址。允许后自动生效（此权限与「经期提醒」共用）；从主屏幕图标打开的（已安装应用）：卸载后重新「添加到主屏幕」可重置授权';
+    return '';
+  }
+  function nbSyncPermWarn() {
+    try {
+      const el = document.getElementById('bg-notify-perm-warn');
+      if (!el) return;
+      const t = nbPermWarnText();
+      el.textContent = t;
+      el.hidden = !t;
+    } catch (e) {}
+  }
+  let nbWaitingGrant = false;   // 意图在、权限没到位＝正等一个授权（等到了自动生效）
+  let nbWatchTimer = null;
+  let nbWatchFor = -1;          // 等待窗属于哪一轮（同轮不重挂，见 nbArmWatch）
+  function nbArmWatch(my) {
+    const p0 = nbPermState();
+    const want = !!notifyEnabled && (p0 === 'denied' || p0 === 'default');
+    // 同一轮的等待窗已经挂着就别重挂（重复收口不得把检查点往后推）：
+    if (nbWatchTimer && nbWaitingGrant && nbWatchFor === my && want) return;
+    if (nbWatchTimer) { clearTimeout(nbWatchTimer); nbWatchTimer = null; }
+    nbWaitingGrant = want;
+    nbWatchFor = my;
+    if (!nbWaitingGrant) return;
+    let ticks = 0;
+    const tick = function () {
+      nbWatchTimer = null;
+      if (my !== nbAttempt || !notifyEnabled) { nbWaitingGrant = false; return; }
+      const p = nbPermState();
+      try { nbSyncPermWarn(); } catch (e) {}   // #1014：读数为 default/unsupported 时标红说明也要跟着变
+      if (p === 'granted') { nbWaitingGrant = false; nbApplyOn(my); return; }
+      if (p === 'unsupported' || ++ticks >= 24) { nbWaitingGrant = false; return; }  // 2 分钟封顶，不做永动机
+      nbWatchTimer = setTimeout(tick, 5000);
+    };
+    nbWatchTimer = setTimeout(tick, 5000);
+  }
+  // 用户把开关打开但权限没到位（请求被弹回 / 已被挡着 / 还没决定）时的统一收口：保住意图（开关不动、
+  //   存储继续 '1'）、如实说明缺哪一步、挂上「下次点按借手势再请求一次」与「权限到位自动生效」两条路。
+  function nbHoldOn(my, why) {
+    if (my !== nbAttempt) return;
+    notifyEnabled = true;
+    gSet('bg-notify', '1');
+    syncNotifyUI();
+    nbSyncPermWarn();
+    nbArmWatch(my);
+    if (why === 'denied') {
+      nbNoticeOnce('__nb-denied-note-at',
+        '⚠ 浏览器这次没放行通知权限（可能没弹授权框就直接挡了）\n地址栏左侧图标 → 网站设置 → 通知 → 允许；列表里没有本站就在「允许」里手动添加本站网址\n开关已记住你的选择：允许后自动生效，不用再点一次开关');
+    }
+    nbArmRetry(my);
+  }
+
+  // 待决结果轮询：#988 本体——不回弹，把「用户还没点允许」这段窗口等出来（先密后疏，最长 NB_SETTLE_MS）
+  function nbSettleStart(my, quiet) {
+    const start = Date.now();
+    const tick = function () {
+      if (my !== nbAttempt) return;
+      if (nbSettleTimer) { clearTimeout(nbSettleTimer); nbSettleTimer = null; }
+      const p = nbPermState();
+      if (p === 'granted') { nbSettlePoke = null; nbApplyOn(my); return; }
+      if (p === 'denied') {
+        // FIX #1014：不再回弹关闭＋不再写 '0'——保住用户意图并标红说明（见上方 #1014 注释）
+        nbSettlePoke = null;
+        nbHoldOn(my, 'denied');
+        return;
+      }
+      if (Date.now() - start < NB_SETTLE_MS) {
+        nbSettleTimer = setTimeout(tick, (Date.now() - start) < 3000 ? 600 : 2000);
+        return;
+      }
+      // 一直没决定：开关保持开启（用户的意图留着），如实指路＋挂「下次点按再请求一次」
+      nbSettlePoke = null;
+      if (!quiet) toast('通知权限还没定下来：地址栏左侧图标 → 网站设置 → 通知 → 允许；开关已为你保持开启，允许后自动生效');
+      nbArmRetry(my);
+    };
+    nbSettlePoke = tick;
+    nbSettleTimer = setTimeout(tick, 600);
+  }
+  // 借用户下一次点按的手势再请求一次授权（Chrome 要求 requestPermission 带手势）——
+  //   把旧版的「再点一次开关」变成「回来随手点哪都行」，且失败不重复弹打扰
+  // FIX 2026-09-22 #1017：本机制必须**单例**、只在「还没决定（default）」时挂、且**每轮至多一次**。
+  //   ①实测（无头）：每次收口都会调它一次（权限请求回调 / 600ms 待决轮询 / 上一次点按的回调），
+  //     各挂一份 pointerdown 监听 ⇒ 同一记点按被多份监听同时接住，实测一次点按发出 **2 次**
+  //     Notification.requestPermission，且份数随轮次继续翻倍。
+  //   ②待决窗（12s）结束时还会再挂一份 ⇒ 权限一直待决时用户**每点一下又弹一次授权框**；授权框
+  //     反复出现正是浏览器判「骚扰」并自动挡掉通知权限的成因，与用户报的「首次显示被浏览器拒绝」同族。
+  //   ③已明确被挡（denied）时再请求不会出现任何授权框，挂着只会在每次点按时空转＋续挂。
+  //   现在：一记点按至多产生一次「再请求」，且同一轮只借一次手势（用户再动一次开关才换新的一轮）；
+  //   剩下的交给行下标红说明 ＋ nbArmWatch 的自动生效（用户去站点设置允许后自动兑现）。
+  let nbRetryTap = null;
+  let nbRetryUsed = 0;   // 哪一轮已经用过「下一次点按」这次机会
+  function nbArmRetry(my) {
+    if (nbRetryTap) {   // 单例：先撤掉上一份（同轮重复收口不得叠加监听）
+      try {
+        document.removeEventListener('pointerdown', nbRetryTap, true);
+        document.removeEventListener('keydown', nbRetryTap, true);
+      } catch (e) {}
+      nbRetryTap = null;
+    }
+    if (my !== nbAttempt || !notifyEnabled || nbPermState() !== 'default') return;
+    if (nbRetryUsed === my) return;
+    const onTap = function () {
+      document.removeEventListener('pointerdown', onTap, true);
+      document.removeEventListener('keydown', onTap, true);
+      if (nbRetryTap === onTap) nbRetryTap = null;
+      if (my !== nbAttempt) return;
+      const p = nbPermState();
+      if (p === 'granted') { nbApplyOn(my); return; }
+      if (p === 'denied') { nbHoldOn(my, 'denied'); return; }   // FIX #1014：同上，不回弹
+      if (p !== 'default') return;
+      nbRetryUsed = my;   // 这一轮的机会用掉了（用户再动一次开关才会换新的一轮）
+      requestNotifyPermission(null, function () {}, { quiet: true });
+      nbSettleStart(my, true);
+    };
+    nbRetryTap = onTap;
+    document.addEventListener('pointerdown', onTap, true);
+    document.addEventListener('keydown', onTap, true);
+  }
+  function nbPermRecheck() {
+    try { if (nbSettlePoke) nbSettlePoke(); } catch (e) {}
+    // FIX #1014：用户多半是「切出去到浏览器设置里允许、再切回来」——回前台当场把意图兑现，
+    //   不要求他再点一次开关（这正是旧版「第二次打开才有反应」里那多出来的一下）。
+    try { if (nbWaitingGrant && notifyEnabled && nbPermState() === 'granted') { nbWaitingGrant = false; nbApplyOn(nbAttempt); } } catch (e) {}
+    try { nbSyncPermWarn(); } catch (e) {}
+  }
+  // 有些内核从后台切回只发 focus 不发 visibilitychange（同 #153/#724 族的自愈口径），补一路
+  try { window.addEventListener('focus', nbPermRecheck); } catch (e) {}
   if (nbBtn) {
     nbBtn.addEventListener('change', function (e) {
-      // #921f：无手势 change 忽略并回弹（同保活闸——丢弃唤醒重载的伪翻转不得写 '0'）
+      // #921f / #988：无真实输入的 change 忽略并回弹（丢弃唤醒重载的伪翻转不得写 '0'）
       if (!kaUserGesture(e)) { syncNotifyUI(); try { nbBtn.checked = notifyEnabled; } catch (er) {} return; }
       notifyUserTouched = true; // #88：手动动过 → 回填后不再重读覆盖
+      const my = nbAttemptNext();
       if (nbBtn.checked) {
-        requestNotifyPermission(function () {
-          notifyEnabled = true;
-          gSet('bg-notify', '1');
-          syncNotifyUI();
-          showSysNotification('通知已开启', { body: '后台消息提醒将正常弹窗' });
-          // FIX 2026-09-20 #924c：iPhone 如实告知能力边界——iOS WebKit 的系统通知只认
-          //   「推送服务」通道（App Store 级推送服务端），纯本地应用没有推送服务，
-          //   保活期间的后台弹窗不保证弹出＝平台限制、代码无法绕过；消息本身不丢，
-          //   回前台有迟到补弹（#915 bgLateCatchup）与聊天记录兜底。
-          if (kaIsIOS()) setTimeout(function () { toast('iPhone 提示：受系统限制，后台弹窗不保证弹出；消息不会丢，回来自动补看'); }, 1600);
-          // v3.5.132：开启通知时自动联动开启后台保活——后台消息要"到达"必须
-          //   页面定时器在后台仍运行（静音音频保活）；否则开关开了但页面休眠，
-          //   消息根本不产生，通知永远不会弹（旧版只 toast 提醒，用户容易漏开）
-          setTimeout(function () {
-            const keep = document.getElementById('bg-keepalive');
-            const keepOn = keepEnabled;
-            // FIX 2026-09-16 #601d：用户已手动关过保活（存储 '0' 或标记 __ka-user-off=1）时
-            // 不再强行打开——尊重用户选择，只提醒「通知要靠保活才收得到后台消息」。
-            const userWantsKeepOff = gGet('bg-keepalive') === '0' || gGet('__ka-user-off') === '1';
-            if (!keepOn && userWantsKeepOff) {
-              toast('你已手动关闭「后台保活」，保持你的设置；但后台消息可能收不到通知，需要时请手动开启');
-            } else if (!keepOn) {
-              if (keep) keep.checked = true;
-              keepEnabled = true;
-              gSet('bg-keepalive', '1');
-              gSet('__ka-user-off', '0');
-              startKeepAlive(false);
-              syncKeepUI();
-              toast('已自动开启后台保活（后台消息必需）');
-            }
-            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-              toast('提醒：需 HTTPS 访问，浏览器才允许通知');
-            }
-          }, 400);
-        }, function () {
-          // 失败：弹回开关
-          notifyEnabled = false;
-          gSet('bg-notify', '0');
-          syncNotifyUI();
-        });
-      } else {
-        notifyEnabled = false;
-        gSet('bg-notify', '0');
+        const p0 = nbPermState();
+        // 先点亮＝不丢用户这一下（#988 口径保持），结果交给回调/轮询/自动生效收口
+        notifyEnabled = true;
+        gSet('bg-notify', '1');
         syncNotifyUI();
+        nbSyncPermWarn();
+        if (p0 === 'unsupported') {
+          // 本机根本没有通知能力（无 Notification API）：留着开只会误导，按平台限制如实回弹
+          //   （#975/#978 口径不变；行下标红的能力说明与开关无关、一直显示）
+          requestNotifyPermission(null, function () {
+            if (my !== nbAttempt) return;
+            nbAttemptNext(); nbRevertOff();
+          });
+          return;
+        }
+        requestNotifyPermission(function () {
+          // 直接在系统弹窗里点了「允许」：当场收口（轮询只是兜底，别让用户多等/再点一下）
+          if (my !== nbAttempt) return;
+          nbApplyOn(my);
+        }, function (why) {
+          // FIX #1014：请求被弹回不再把开关关掉、不再写 '0'（用户实报「第一次被拒绝、第二次才有
+          //   反应」与「切后台自动关闭」都由这条回弹产生）；改为保住意图＋标红说明＋等一次自动生效。
+          nbHoldOn(my, why);
+        });
+        if (p0 === 'default') nbSettleStart(my, false);
+        return;
       }
+      // 关闭：立即落 '0'，并把在途的授权请求/轮询/自动生效全作废（迟到的授权不得把开关又打开）
+      notifyEnabled = false;
+      gSet('bg-notify', '0');
+      nbWaitingGrant = false;
+      if (nbWatchTimer) { clearTimeout(nbWatchTimer); nbWatchTimer = null; }
+      nbAttemptNext();
+      syncNotifyUI();
+      nbSyncPermWarn();
     });
   }
   (function () {
@@ -1346,19 +1861,19 @@
       const old = store.get('bg-notify');
       if (old !== null) { gSet('bg-notify', old); saved = old; }
     }
-    // v3.5.131：恢复时校验权限——浏览器/系统回收权限后开关仍显示"开"但通知静默失效
-    // FIX 2026-09-20 #921g：自动关闭只认「明确被拒（denied）」——Edge/Chrome 睡眠标签页丢弃
-    //   唤醒重载等场景下 permission 会瞬态读到 'default'（诊断实锤：实际 granted、开关却被
-    //   落 '0'＝「重进后通知自动关闭」），'default' 一律视为瞬态误读：开关照常恢复为开、
-    //   不落 0，回前台 reheat 再复查（真被拒时浏览器设置里必是 denied，仍会被关）。
-    notifyEnabled = saved === '1' && 'Notification' in window && Notification.permission !== 'denied';
+    // v3.5.131：恢复时校验权限（浏览器/系统回收权限后开关仍显示"开"但通知静默失效）。
+    // FIX 2026-09-20 #921g：'default' 一律视为瞬态误读（诊断实锤：实际 granted 却被读成 default，
+    //   开关被落 '0'＝「重进后通知自动关闭」）。
+    // FIX 2026-09-22 #1014：把同一判断再推进一步——'denied' 也可能是瞬态/非用户决定（安静提示 UI、
+    //   授权框被切后台打断、丢弃重载后的失真读数），所以**任何读数都不再改写存储与开关**：开关
+    //   恢复用户存的意图，权限不足由行下标红如实说明，权限到位自动生效（见上方 #1014 注释）。
+    //   实测（无头）：旧实现下一次瞬态 denied 就把存量 '1' 永久写成 '0'、权限随后 granted 也回不来。
+    notifyEnabled = saved === '1';
     // v3.13.x：预热 badge 单色图——页面启动即后台生成，首条通知前通常已就绪
     if ('Notification' in window && Notification.permission === 'granted') { getBadgeUrl(function () {}); }
-    if (saved === '1' && !notifyEnabled) {
-      try { gSet('bg-notify', '0'); } catch (e) {}
-      toast('通知权限已被回收，已自动关闭通知');
-    }
     syncNotifyUI();
+    nbSyncPermWarn();
+    if (notifyEnabled) nbArmWatch(nbAttempt);
   })();
 
   // ===== v3.26.x 修复 #88：IDB 回填完成后重读一次两个开关 =====
@@ -1371,6 +1886,7 @@
   // 所以三个触发点（含回填挂起设备的定时兜底）都直接调它，不做「只跑一次」的状态机。
   // 边界：用户本会话手动动过某个开关 → 该开关不再重读覆盖（他的操作就是最新值）。
   function reheatBgSwitches() {
+    try { if (!ndUserTouched) syncNoDedupUI(); } catch (e) {}
     if (!keepUserTouched) {
       const wantKeep = gGet('bg-keepalive') === '1' && gGet('__ka-user-off') !== '1';
       if (wantKeep !== keepEnabled) {
@@ -1382,21 +1898,18 @@
       }
     }
     if (!notifyUserTouched) {
-      // 与初始化同口径（#921g）：只有 denied 才算真被拒；'default'＝瞬态误读不落 0 不关开关
-      const savedNotify = gGet('bg-notify');
-      const permState = ('Notification' in window) ? Notification.permission : 'unsupported';
-      const wantNotify = savedNotify === '1' && (permState === 'granted' || permState === 'default');
+      // FIX 2026-09-22 #1014：回填只重读「用户意图」，不再看权限读数——一次失真的 denied 读数
+      //   曾经把开关自己关掉并把存储写死 '0'（用户实报「开启后切后台会自动关闭」），
+      //   权限不足改由行下标红条说明，权限到位自动生效。
+      const wantNotify = gGet('bg-notify') === '1';
       if (wantNotify !== notifyEnabled) {
         notifyEnabled = wantNotify;
         syncNotifyUI();
         if (wantNotify) getBadgeUrl(function () {}); // 预热 badge 单色图（同初始化）
         try { console.info('[mochi] #88 回填后重读后台通知：' + (wantNotify ? '开' : '关')); } catch (e) {}
       }
-      // 权限已被回收（仅 denied）：静默把 IDB/LS 的「开」改回「关」保持存储与 UI 一致，
-      // 但不再重复 toast（初始化那次已经提示过）
-      if (savedNotify === '1' && permState === 'denied') {
-        try { gSet('bg-notify', '0'); } catch (e) {}
-      }
+      try { nbSyncPermWarn(); } catch (e) {}
+      try { nbArmWatch(nbAttempt); } catch (e) {}
     }
   }
   try {
@@ -1405,169 +1918,298 @@
     document.addEventListener('mochi-wrj-heal', function () { reheatBgSwitches(); });
     setTimeout(reheatBgSwitches, 16000); // 回填整体挂起设备的兜底
   } catch (e) {}
-  // v3.5.115：后台通知「测试」按钮——点一下发条测试通知 + 环境诊断，
-  //   安卓 Chrome 上通知不生效时一键定位卡在哪一环（HTTPS/权限/后台保活）
-  // v3.5.116：增强诊断——权限未授权时主动请求；发送后追加系统级通知检查提示
-  //   （红米/小米 HyperOS：站点权限通过后，系统设置里 Chrome 的通知仍可能被关，
-  //   此时 API 不报错但通知不显示，需提示用户去系统设置检查）
+  // ===== 后台通知「测试」按钮＝「后台弹窗自测」（两段） =====
+  // v3.5.115 起：点一下发条测试通知 + 环境诊断（安卓 Chrome 上通知不生效时一键定位卡在哪一环）。
+  // v3.5.116：增强诊断——权限未授权时主动请求；发送后追加系统级通知检查提示（红米/小米 HyperOS：
+  //   站点权限通过后系统设置里 Chrome 的通知仍可能被关，此时 API 不报错但通知不显示）。
+  // FIX 2026-09-22 #1014（用户直派「后台弹窗自测功能还是不完整，而且点测试有延迟」；红米 K80 Chrome）：
+  //   ①「延迟」＝结果 toast 被两件与本测试无关的事卡住——线上 version.json 的网络往返（无头实测：
+  //     正常网络 26ms 出结果；把 version.json 拖慢 3000ms，结果就 3025ms 才出）＋SW 通知队列回读里
+  //     写死的 500ms。现在结果只等「发送链落定」（通常一两百毫秒），版本比对与队列回读改成**不阻塞**
+  //     地往同一条结果里补行。
+  //   ②「不完整」＝旧测试只测「现在能不能发出一条通知」：既没报「后台通知开关本身开没开」（开关
+  //     关着也照样报「链路全通」＝误导），也没报权限 / 后台服务 / 保活锚点的真实状态；更测不到用户
+  //     真正关心的那一半——旧实现自己都在文案里承认「要验屏幕上方弹出请按 Home 切后台后再测一次」，
+  //     把活推给用户。现在补成两段：第一段当场给「环境＋发送」结论；第二段是「后台阶段」——按 Home
+  //     切后台后由页面在**隐藏态**真发一条，回前台给结论并问本人看到没有（系统横幅网页读不到，
+  //     本人是唯一裁判，同 #761 口径）。
   const testBtn = document.getElementById('bg-notify-test');
   if (testBtn) {
+    let testSeq = 0;          // 每轮点按的代号：迟到的异步结论只认自己那一轮
+    let env = [];             // 结果行（第一段写满即出，后续证据原地追加）
+    let resultShown = false;  // 结果单飞闸（发送/超时/队列回读三路只出一次，之后只改内容）
+    let verStale = false;     // 旧包（#761）——排查步骤据此把「先升级」排在第一位
+    const showResult = function () {
+      if (!env.length) return;
+      resultShown = true;
+      toast('测试结果：\n' + env.join('\n'), 6000);
+    };
+    const pushLine = function (line) {
+      if (env.indexOf(line) >= 0) return;
+      env.push(line);
+      if (resultShown) showResult();   // 已出过结果：原地重写同一条 toast（不重开一条，不动驻留窗口语义）
+    };
+    // 第一段·环境体检：全部本地读数，点下就有（不联网、不 await）——这就是「点测试不再有延迟」的一半
+    const envCheck = function () {
+      env = [];
+      resultShown = false;
+      verStale = false;
+      env.push(notifyEnabled
+        ? '✓ 后台通知开关：已开启'
+        : '✗ 后台通知开关：未开启——后台消息不会弹通知（点本行开关把它打开）');
+      const p = nbPermState();
+      if (p === 'granted') env.push('✓ 通知权限：已允许');
+      else if (p === 'default') env.push('✗ 通知权限：还没允许——地址栏左侧图标 → 网站设置 → 通知 → 允许');
+      else if (p === 'denied') env.push('✗ 通知权限：被浏览器挡着——地址栏左侧图标 → 网站设置 → 通知 → 允许（允许后自动生效）');
+      else env.push('✗ 通知权限：本机浏览器没有通知能力——请改用 Chrome / Edge（安卓或电脑都行）');
+      let kp = null;
+      try { kp = (typeof window.__kaProbe === 'function') ? window.__kaProbe() : null; } catch (e) {}
+      if (!kp || !kp.keep) env.push('✗ 后台保活：未开启（后台不产生消息，通知无从弹起）');
+      else {
+        env.push((kp.audio && !kp.audio.paused) ? '✓ 后台保活：音频播放中' : '! 后台保活：音频已暂停（回本页自动恢复；后台消息可能到不了）');
+        const anchor = [];
+        if (kp.ms && kp.ms.metadata) anchor.push('媒体会话');
+        if (kp.pc && kp.pc !== 'off') anchor.push('连接保活');
+        if (kp.hb && kp.hb.n) anchor.push('心跳 ' + kp.hb.n + ' 拍');
+        if (anchor.length) env.push('· 保活锚点：' + anchor.join(' / '));
+        if (kp.ev && (kp.ev.stall || kp.ev.died)) env.push('! 历史取证：断流 ' + kp.ev.stall + ' 次 / 后台终止 ' + kp.ev.died + ' 次（被系统冻结或丢弃过——恢复口径见本行「功能说明」）');
+      }
+      // 后台服务（Service Worker）：本地读数、通常很快，但也不阻塞结果（慢就后补一行）
+      try {
+        kaSWReady().then(function (reg) {
+          pushLine(reg
+            ? '✓ 后台服务：已就绪（Service Worker 通道，切后台 / 关屏也能弹）'
+            : '! 后台服务：未就绪——只会走页面通道，切后台就不弹了（刷新页面后重测）');
+        });
+      } catch (e) {}
+    };
+    // 第 1.5 层·回读 SW 通知队列：API 受理 ≠ 系统真挂出来（系统通知总开关被关时 showNotification
+    //   照常受理）——把「应用内成功」与「系统层拦截」分开归因。不阻塞结果（#1014）。
+    const queueProbe = function (wasHidden) {
+      kaSWReady().then(function (reg) {
+        if (!reg || !reg.getNotifications) return null;
+        return new Promise(function (res) {
+          setTimeout(function () {
+            try { reg.getNotifications().then(res, function () { res(null); }); } catch (e) { res(null); }
+          }, 500);
+        });
+      }).then(function (list) {
+        const found = !!(list && list.some && list.some(function (n) { return n && n.title === '后台通知测试'; }));
+        pushLine(found
+          ? '✓ 已确认进入系统通知队列——手机上没看到＝系统层拦截（通知总开关/悬浮横幅/省电限制），见本行「功能说明」排查'
+          : '! 已提交但未进系统通知队列＝多半被系统拦截，见本行「功能说明」排查');
+        if (found && wasHidden) {
+          pushLine('✓ 发送时页面在后台——屏幕上方应有横幅；没看见＝系统层拦截（通知总开关/悬浮横幅/省电限制）见本行「功能说明」');
+        } else if (found) {
+          pushLine('! 前台发送不弹顶层横幅——要验「屏幕上方弹出」请用下方第二段：按 Home 切后台（或锁屏）再发一条');
+        }
+      }).catch(function () {});
+    };
+    // 第 1.6 层·线上版本比对（要联网 ⇒ 只补行、绝不 gate 结果；#761 旧包检测口径不变）
+    const verProbe = function () {
+      try {
+        const sv = document.getElementById('splash-ver');
+        const localTs = Number(sv && sv.getAttribute('data-build-ts')) || 0;
+        kaWithTimeout(function () { return fetch('./version.json?v=' + Date.now()); }, 4000)
+          .then(function (r) { return r && r.json ? r.json() : null; })
+          .then(function (d) {
+            const ts = Number(d && d.ts) || 0;
+            if (!localTs || !ts) pushLine('! 版本：没问到线上版本（网络受限，不影响本测试）');
+            else if (ts > localTs) {
+              verStale = true;
+              pushLine('✗ 旧包正在运行：本页 ' + new Date(localTs).toLocaleString() + ' · 线上最新 ' + new Date(ts).toLocaleString() + '——「什么都没改弹窗突然全没」的常见原因，彻底关闭浏览器重开（升级新版本）后再测');
+            } else pushLine('✓ 版本已最新：' + new Date(ts).toLocaleString());
+          }, function () { pushLine('! 版本：没拉到 version.json（网络受限，不影响本测试）'); });
+      } catch (e) {}
+    };
+    // 结果问人本人（#761 口径）：JS 全绿 ≠ 用户真看到横幅（浏览器端通知通道被拧死时 API 不报错、
+    //   队列回读也可能正常）。第二段（后台阶段）复用同一套追问与排查步骤，只换问法与首句结论。
+    const askSeen = function (phase2) {
+      if (typeof window.openModal !== 'function') return;
+      window.openModal('自检确认', '', function (choice) {
+        if (choice === 'seen') {
+          toast(phase2 ? '✓ 后台弹窗链路全通：切后台（锁屏）也能弹横幅' : '✓ 弹窗链路全通：以后后台消息没弹时，先回来点这个测试', 4000);
+          return;
+        }
+        if (choice !== 'miss') return;
+        const MARKS = ['①', '②', '③', '④'];
+        const steps = [];
+        const push = function (s) { steps.push(MARKS[steps.length] + ' ' + s); };
+        if (verStale) push('先升级：本页是旧版本包——彻底关闭浏览器再重开（或点顶部「刷新使用新版」），旧包＝「没改任何东西弹窗突然全没」的头号原因');
+        push('重置浏览器通知权限：浏览器设置 → 网站设置 → 通知 → 把本站「关闭」再「允许」，然后强杀浏览器重开（「权限明明开着、通知却消失好几天」多数被这一步救活——JS 读到的一直是 granted，坏的是浏览器内部那条通道）');
+        push('系统通知设置：系统设置 → 通知管理 → 本浏览器 → 总开关打开、「允许横幅通知/在屏幕上方显示」打开、通知重要性选「提醒」；国产 ROM（vivo/OPPO/小米/华为）每项可能各自独立');
+        push('省电限制：允许本浏览器后台运行/关闭对它的省电优化（否则挂后台时整页被冻结，消息与通知都无从产生）；Edge 的「睡眠标签页」/Chrome 的「内存节省程序」默认把挂后台约 30 分钟的页面丢弃重载（表现＝回来时页面自动刷新、保活/通知可能被重置）——浏览器设置里把本站加入「永不睡眠/始终保持活动」名单');
+        steps.push('每做完一步就按 Home 键把页面切到后台、让 TA 发一条消息验证；全部走完仍不弹 → 用「信息诊断」里的反馈入口一键上报');
+        window.openModal('没弹出 → 按顺序排查（实效从高到低）', '', function () {}, {
+          noInput: true, big: true,
+          staticText: steps.join('\n')
+        });
+      }, {
+        noInput: true, lock: true,
+        staticText: (phase2
+          ? '刚才按 Home 把页面切到后台（或锁屏）之后，屏幕上方弹出「后台通知测试（后台阶段）」这条横幅了吗？\n（通知栏里有小图标 ≠ 屏幕上方弹出；锁屏界面上的通知算弹出）'
+          : '刚才屏幕上方弹出「后台通知测试」横幅了吗？\n（通知栏里有小图标 ≠ 屏幕上方弹出；前台发送通常只进通知栏，要验横幅请用第二段：按 Home 切后台后再测一次）'),
+        pills: [{ label: '看到了，顶部弹出', value: 'seen' }, { label: '没看到', value: 'miss' }],
+        pillSubmit: true
+      });
+    };
+    // ===== 第二段·后台阶段（#1014 新增）：补上「自测不完整」的那一半 =====
+    //   旧测试只能在前台发通知，然后把「切后台再测一次」推给用户自己判断。这一段由页面自己在
+    //   隐藏态真发一条：点「现在测」→ 按 Home（可锁屏）→ 后台 5 秒后自动发 → 回前台给结论并
+    //   问本人看到没有。只在第一段发送成功（SW 通道）时才提供，避免把坏链路的结论混进第二段。
+    // FIX 2026-09-22 #1017：done＝「发送链已落定」。#1014 首版只看 sent（已发起）就给结论，
+    //   实测：用户切后台 5 秒（发送刚发起、showNotification 还没落定）就切回本页时，页面当场报
+    //   「✗ 页面切到后台后没能发出通知（通道未就绪）」——而那条通知其实**已经提交**；等发送真落定
+    //   时报告闸（reported）已关，错的结论再也纠正不回来。现在两处报告都以 done 为前提。
+    const bgT2 = { armed: false, sent: false, done: false, ok: false, chan: '', reported: false, hideT: null, disarmT: null };
+    const bgT2Arm = function () {
+      if (bgT2.armed && !bgT2.sent) return;
+      if (bgT2.hideT) { clearTimeout(bgT2.hideT); bgT2.hideT = null; }
+      bgT2.armed = true; bgT2.sent = false; bgT2.done = false; bgT2.ok = false; bgT2.chan = ''; bgT2.reported = false;
+      toast('第二段已就绪：按 Home 把页面切到后台（可锁屏），5 秒后自动发一条；回到本页看结论', 7000);
+      if (bgT2.disarmT) clearTimeout(bgT2.disarmT);
+      bgT2.disarmT = setTimeout(function () { if (!bgT2.sent) bgT2.armed = false; }, 180000); // 3 分钟没切后台就作废
+    };
+    const bgT2Report = function () {
+      if (!bgT2.armed || !bgT2.sent || !bgT2.done || bgT2.reported) return;   // #1017：未落定不下结论
+      if (document.visibilityState === 'hidden') return;   // 后台弹的 toast 用户看不见，等回前台再说
+      bgT2.reported = true;
+      bgT2.armed = false;
+      if (bgT2.disarmT) { clearTimeout(bgT2.disarmT); bgT2.disarmT = null; }
+      const chTxt = bgT2.chan === 'sw' ? 'Service Worker 通道' : (bgT2.chan === 'page' ? '页面通道（后台会被系统抑制）' : '通道未就绪');
+      // #1014：让开一拍——回前台时主 visibilitychange 处理器可能同帧弹自己的提醒 toast，
+      //   而 #cc-toast 是同一个元素、后弹的会盖掉先弹的，第二段的结论必须落地可见。
+      const sayIt = function () { toast('第二段（后台阶段）结果：\n'
+        + (bgT2.ok
+          ? '✓ 页面切到后台后发出的通知已提交系统（' + chTxt + '）\n（通知栏里有小图标 ≠ 屏幕上方弹出，下面请如实回答）'
+          : '✗ 页面切到后台后没能发出通知（' + chTxt + '）——后台弹窗这一半不通，见本行「功能说明」排查'), 8000); };
+      setTimeout(sayIt, 700);
+      if (bgT2.ok) setTimeout(function () { askSeen(true); }, 1800);
+    };
+    const offerPhase2 = function () {
+      if (typeof window.openModal !== 'function') return;
+      window.openModal('后台弹窗自测 · 第二段', '', function (choice) {
+        if (choice === 'go') { bgT2Arm(); return; }
+        // 不测第二段：照旧问一句「刚才那条看到了吗」（#761 的「结果一定问人本人」不丢——
+        //   选了现在测则改由后台阶段的结论来问，同一句问话不在两处打断）
+        if (choice === 'no') askSeen(false);
+      }, {
+        noInput: true,
+        staticText: '第一段测的是「现在能不能发出通知」。第二段测你真正关心的那一半：按 Home 把页面切到后台（可锁屏）之后还会不会弹。\n\n点「现在测（切后台）」后：按 Home → 页面在后台 5 秒后自动发一条 → 回到本页即出结论并问你看没看到。\n（第一段前台发的那条通常只进通知栏，屏幕上方横幅只能这样验）\n点「不用了」＝只测第一段，会照旧问你一句「刚才那条看到了吗」。',
+        pills: [{ label: '现在测（切后台）', value: 'go' }, { label: '不用了', value: 'no' }],
+        pillSubmit: true
+      });
+    };
+    document.addEventListener('visibilitychange', function () {
+      if (!bgT2.armed) return;
+      if (document.visibilityState === 'hidden') {
+        if (bgT2.sent || bgT2.hideT) return;
+        // 隐藏态才是「后台弹窗」真实发生的场景：等 5 秒再发（避开刚切走那一下的瞬时抖动）
+        bgT2.hideT = setTimeout(function () {
+          bgT2.hideT = null;
+          if (!bgT2.armed || bgT2.sent || document.visibilityState !== 'hidden') return;
+          bgT2.sent = true;
+          try {
+            const nm = store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
+            showSysNotification('后台通知测试（后台阶段）', { body: '这条是在页面切到后台之后发出的 · 来自 ' + nm }, function (ch) { bgT2.chan = ch; })
+              .then(function (ok) { bgT2.ok = !!ok; bgT2.done = true; bgT2Report(); });
+          } catch (e) { bgT2.ok = false; bgT2.done = true; bgT2Report(); }
+        }, 5000);
+        return;
+      }
+      // 回到前台：没发出去的那次作废（没在后台待够），发出去的给结论
+      if (bgT2.hideT) { clearTimeout(bgT2.hideT); bgT2.hideT = null; }
+      bgT2Report();
+    });
+    const runTest = function (my) {
+      const testWasHidden = document.hidden;   // 发送那一刻在不在后台（决定「屏幕上方横幅」怎么解释）
+      let testChan = '';
+      let settled = false;
+      const settle = function () {
+        if (my !== testSeq || settled) return;
+        settled = true;
+        showResult();
+        // 第一段成功（真走了 SW 通道）：把「第二段·后台阶段」端上来（#1014 补全的那一半）
+        if (testChan === 'sw') offerPhase2();
+      };
+      try {
+        const name = store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
+        showSysNotification('后台通知测试', { body: '来自 ' + name + ' · 如果能看到这条，后台通知就通了' }, function (ch) { testChan = ch; }).then(function (ok) {
+          if (my !== testSeq) return;
+          if (testChan === 'sw' && ok) {
+            pushLine('✓ 测试通知已发送并真正提交系统显示（Service Worker 通道：后台关屏也能弹）');
+          } else if (testChan === 'page') {
+            pushLine(ok
+              ? '✓ 测试通知已发送（页面通道：仅本页前台可见）'
+              : '! 未真正送达：后台服务未就绪，页面通道在后台会被系统抑制（已挂自动补发，或刷新页面重试）');
+          } else {
+            pushLine('✗ 测试通知提交失败：被浏览器/系统拒绝——见本行「功能说明」排查（权限已允许仍被拒＝查系统设置里本浏览器的通知总开关）');
+          }
+          settle();
+          // 两件证据都不阻塞结果（#1014 治延迟）：到了就原地补行
+          if (testChan === 'sw' && ok) queueProbe(testWasHidden);
+          verProbe();
+        });
+      } catch (e) {
+        pushLine('✗ 测试执行异常：' + (e && e.message ? e.message : e));
+        settle();
+        return;
+      }
+      setTimeout(function () {
+        if (my !== testSeq || settled) return;
+        settled = true;
+        pushLine('✗ 测试超时：通知发送链 8 秒未落定（应用内故障，非权限/系统问题）——请用「诊断信息」一键反馈');
+        showResult();
+      }, 8000);
+    };
     testBtn.addEventListener('click', function () {
-      // FIX 2026-09-16 #614：先给即时反馈——原实现要等通知发送链 settle 才出结果，
-      //   SW 若不可用会一直等（用户＝「点测试没反应」）。现在点击立刻有提示。
+      const my = ++testSeq;
       toast('正在检查通知环境…');
-      const env = [];
+      envCheck();
       if (!('Notification' in window)) {
-        env.push('✗ 当前浏览器不支持 Notification API');
-        env.push('原因：安卓 Chrome 必须 HTTPS 访问才有通知');
-        env.push('当前：' + location.protocol + '//' + location.host);
-        env.push('解决：用 https:// 部署访问（GitHub Pages 即是 HTTPS）');
-        toast('环境检查：\n' + env.join('\n'));
+        // 三分支（#978 口径不变）：非安全上下文 / iOS 平台限制 / 本机浏览器没有通知能力
+        if (!window.isSecureContext) {
+          pushLine('✗ 当前浏览器不支持 Notification API');
+          pushLine('原因：' + location.protocol + '//' + location.host + ' 不是安全上下文，浏览器不开放通知能力');
+          pushLine('解决：用 https:// 部署访问（GitHub Pages 即是 HTTPS）');
+        } else if (kaIsIOS()) {
+          pushLine('✗ 当前浏览器不支持 Notification API');
+          pushLine('原因：iPhone / iPad 的网页拿不到系统通知（添加到主屏幕也不保证）');
+          pushLine('解决：改用 设置 → 系统 →「桌面消息弹窗」的应用内横幅');
+        } else {
+          pushLine('✗ 当前浏览器不支持 Notification API');
+          pushLine('原因：本机浏览器没有通知能力（小米 / vivo / OPPO 等自带浏览器、UC、夸克、Via 常见如此）');
+          pushLine('解决：改用 Chrome / Edge 打开本站（安卓或电脑都行）');
+        }
+        showResult();
         return;
       }
       if (Notification.permission === 'default') {
-        // 未授权：主动请求一次再继续
+        // 还没授权：借这一下的手势请求一次，请求结果回来立刻给结论（不做无声等待）
         Notification.requestPermission().then(function (p) {
-          if (p === 'granted') runTest(env);
-          else {
-            env.push('✗ 通知权限：拒绝了授权请求');
-            env.push('解决：地址栏左侧图标 → 网站设置 → 通知 → 允许');
-            toast('环境检查：\n' + env.join('\n'));
+          if (my !== testSeq) return;
+          if (p === 'granted') { envCheck(); runTest(my); return; }
+          pushLine('✗ 通知权限：这次没能拿到' + (p === 'denied' ? '（浏览器没放行——可能没弹授权框就直接挡了）' : '（还没在弹窗里做选择）'));
+          pushLine('解决：地址栏左侧图标 → 网站设置 → 通知 → 允许（开关已记住你的选择，允许后自动生效）');
+          // #1056：列表里根本没有本站时（Chrome 静默拒绝不落记录），上一步会无处可点——给出手动添加的网址
+          pushLine('② 若列表里没有本站：Chrome ⋮ → 设置 → 网站设置 → 通知 → 「添加网站例外」→ 输入 ' + location.origin);
+          pushLine('③ 上面改了还是不行＝Chrome 对本站的自动屏蔽无法解除：换 Edge / 电脑打开本站（数据在 设置 → 通用 导出 / 导入 迁移）');
+          // #1058：已安装应用（主屏图标/WebAPK）形态——通知权限由应用自己管理，Chrome 网站设置
+          //   里不显示本站（「由 Mochi 管理」），授权请求会被静默拒绝＝Chrome 与应用授权失联
+          //   （Chrome 151 更新后实报）。重置＝卸载主屏图标后重新「添加到主屏幕」并允许通知。
+          if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+            pushLine('本站当前是「已安装应用」（主屏图标）形态：通知权限由应用自己管理（Chrome 网站设置里不显示本站＝正常）。授权框不出现时——长按主屏图标卸载本应用，重新打开网站「添加到主屏幕」并允许通知，即可重置');
           }
+          showResult();
         }).catch(function () {
-          toast('环境检查：\n✗ 请求通知权限失败');
+          if (my !== testSeq) return;
+          pushLine('✗ 请求通知权限失败（浏览器没给授权框）——地址栏左侧图标 → 网站设置 → 通知 → 允许');
+          showResult();
         });
         return;
       }
-      runTest(env);
+      runTest(my);
     });
-    function runTest(env) {
-      // #724 测试只写测试（用户直派「测试只需要写测试的，别和功能下方说明重复；黑框字都飞出来了」）：
-      //   环境体检/分步排查在本行下方说明（gs-sub）、本行「功能说明」胶囊、信息诊断三处本就全有，
-      //   测试结果里整段复读＝十几个 env 行把 toast 撑爆（字飞出黑框）且根本读不完；叠加 #708 的
-      //   9 秒驻留被 CSS 动画固定 2.6s 淡出吞掉（见 toast() 内 #724 注释）＝「结果一闪就没、测试失效」。
-      //   现在结果只留测试本体：保活锚一行 + 版本一行 + 发送结论一至两行。
-      try {
-        const kp = (typeof window.__kaProbe === 'function') ? window.__kaProbe() : null;
-        if (!kp || !kp.keep) env.push('✗ 后台保活：未开启（后台不产生消息，通知无从弹起）');
-        else env.push(kp.audio && !kp.audio.paused ? '✓ 后台保活：音频播放中' : '! 后台保活：音频已暂停（回本页自动恢复；后台消息可能到不了）');
-      } catch (e) {}
-      // FIX 2026-09-18 #761 自检补「旧包检测」层（用户实报：权限一直开着没动过，弹窗消失两天；
-      //   把浏览器通知权限关掉再打开后弹窗恢复）。API 侧 Notification.permission 恒报 granted，
-      //   JS 看不出浏览器把该站通知通道拧死；而「重开权限」必然伴随页面重载——手机上最隐蔽的
-      //   等价操作＝旧包在跑：这两天通知链正好经历 #673 全灭→#705 修复的发布窗口，设备若缓存
-      //   着故障包，表现就是「什么都没改、弹窗突然全没」。自检必须明说本页是不是线上最新版。
-      //   比对构建时注入的 splash-ver data-build-ts 与线上 version.json，零机型分支。
-      let verStale = false;
-      const verP = new Promise(function (resolve) {
-        const fin = function () { resolve(); };
-        try {
-          const sv = document.getElementById('splash-ver');
-          const localTs = Number(sv && sv.getAttribute('data-build-ts')) || 0;
-          kaWithTimeout(function () { return fetch('./version.json?v=' + Date.now()); }, 4000)
-            .then(function (r) { return r && r.json ? r.json() : null; })
-            .then(function (d) {
-              const ts = Number(d && d.ts) || 0;
-              if (!localTs || !ts) env.push('! 版本：没问到线上版本（网络受限，不影响本测试）');
-              else if (ts > localTs) {
-                verStale = true;
-                env.push('✗ 旧包正在运行：本页 ' + new Date(localTs).toLocaleString() + ' · 线上最新 ' + new Date(ts).toLocaleString() + '——「什么都没改弹窗突然全没」的常见原因，彻底关闭浏览器重开（升级新版本）后再测');
-              } else env.push('✓ 版本已最新：' + new Date(ts).toLocaleString());
-              fin();
-            }, function () { env.push('! 版本：没拉到 version.json（网络受限，不影响本测试）'); fin(); });
-        } catch (e) { fin(); }
-      });
-      try {
-        const name = store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
-        let testChan = '';
-        let testSettled = false;
-        let testOk = false;
-        let resultShown = false;
-        // FIX 2026-09-18 #761 结果问人本人：JS 全绿 ≠ 用户真看到横幅（浏览器端通知通道被拧死时
-        //   API 不报错、队列回读也可能正常）。发送成功后追问一句「弹了吗」，没弹就给按实效排序的
-        //   实操指引——「权限关掉再打开＋强杀浏览器」正是本次用户实测恢复有效的那一步。
-        const askSeen = function () {
-          if (typeof window.openModal !== 'function') return;
-          window.openModal('自检确认', '', function (choice) {
-            if (choice === 'seen') { toast('✓ 弹窗链路全通：以后后台消息没弹时，先回来点这个测试', 4000); return; }
-            if (choice !== 'miss') return;
-            const MARKS = ['①', '②', '③', '④'];
-            const steps = [];
-            const push = function (s) { steps.push(MARKS[steps.length] + ' ' + s); };
-            if (verStale) push('先升级：本页是旧版本包——彻底关闭浏览器再重开（或点顶部「刷新使用新版」），旧包＝「没改任何东西弹窗突然全没」的头号原因');
-            push('重置浏览器通知权限：浏览器设置 → 网站设置 → 通知 → 把本站「关闭」再「允许」，然后强杀浏览器重开（「权限明明开着、通知却消失好几天」多数被这一步救活——JS 读到的一直是 granted，坏的是浏览器内部那条通道）');
-            push('系统通知设置：系统设置 → 通知管理 → 本浏览器 → 总开关打开、「允许横幅通知/在屏幕上方显示」打开、通知重要性选「提醒」；国产 ROM（vivo/OPPO/小米/华为）每项可能各自独立');
-            push('省电限制：允许本浏览器后台运行/关闭对它的省电优化（否则挂后台时整页被冻结，消息与通知都无从产生）；Edge 的「睡眠标签页」/Chrome 的「内存节省程序」默认把挂后台约 30 分钟的页面丢弃重载（表现＝回来时页面自动刷新、保活/通知可能被重置）——浏览器设置里把本站加入「永不睡眠/始终保持活动」名单');
-            steps.push('每做完一步就按 Home 键把页面切到后台、让 TA 发一条消息验证；全部走完仍不弹 → 用「信息诊断」里的反馈入口一键上报');
-            window.openModal('没弹出 → 按顺序排查（实效从高到低）', '', function () {}, {
-              noInput: true, big: true,
-              staticText: steps.join('\n')
-            });
-          }, {
-            noInput: true, lock: true,
-            staticText: '刚才屏幕上方弹出「后台通知测试」横幅了吗？\n（通知栏里有小图标 ≠ 屏幕上方弹出；前台发送通常只进通知栏，要验横幅请按 Home 切后台后再测一次）',
-            pills: [{ label: '看到了，顶部弹出', value: 'seen' }, { label: '没看到', value: 'miss' }],
-            pillSubmit: true
-          });
-        };
-        const showResult = function () {
-          if (resultShown) return;
-          resultShown = true;
-          toast('测试结果：\n' + env.join('\n'), 6000);
-          if (testChan === 'sw' && testOk) askSeen();
-        };
-        // 「屏幕上方弹出」检查：system 横幅 JS 读不到，只能按发送时刻页面前台/后台如实归因＋引导复核
-        const testWasHidden = document.hidden;
-        showSysNotification('后台通知测试', { body: '来自 ' + name + ' · 如果能看到这条，后台通知就通了' }, function (ch) { testChan = ch; }).then(function (ok) {
-          testSettled = true;
-          testOk = !!ok;
-          if (testChan === 'sw' && ok) {
-            env.push('✓ 测试通知已发送并真正提交系统显示（Service Worker 通道：后台关屏也能弹）');
-            // #724 端到端自检：API 受理 ≠ 系统真挂出来（系统通知总开关被关时 showNotification 照常
-            // 受理）——回读 SW 通知队列确认这条测试通知在列，把「应用内成功」与「系统层拦截」
-            // 分开归因：「测试失效」到底卡在哪一层一点就知，自检不再说半真话。
-            const queueCheck = kaSWReady().then(function (reg) {
-              if (!reg || !reg.getNotifications) return null;
-              return new Promise(function (res) {
-                setTimeout(function () {
-                  try { reg.getNotifications().then(res, function () { res(null); }); } catch (e) { res(null); }
-                }, 500);
-              });
-            }).then(function (list) {
-              const found = !!(list && list.some && list.some(function (n) { return n && n.title === '后台通知测试'; }));
-              env.push(found
-                ? '✓ 已确认进入系统通知队列——手机上没看到＝系统层拦截（通知总开关/悬浮横幅/省电限制），见本行「功能说明」排查'
-                : '! 已提交但未进系统通知队列＝多半被系统拦截，见本行「功能说明」排查');
-              // 「屏幕上方弹出」检查（用户直派）：只证明进系统队列≠屏幕上方真弹横幅——系统横幅页面
-              // JS 读不到，按发送时前台/后台如实归因，前台则引导切后台人工复核「从屏幕顶部弹出」：
-              if (found && testWasHidden) {
-                env.push('✓ 发送时页面在后台——屏幕上方应有横幅；没看见＝系统层拦截（通知总开关/悬浮横幅/省电限制）见本行「功能说明」');
-              } else if (found) {
-                env.push('! 前台发送不弹顶层横幅——要验「屏幕上方弹出」：按 Home 切后台（或锁屏），即可看到通知从屏幕顶部弹出');
-              }
-            }).catch(function () {});
-            Promise.all([queueCheck, verP]).then(showResult);
-            setTimeout(showResult, 4500); // 队列回读/版本比对卡住也出结果
-          } else if (testChan === 'page') {
-            env.push(ok
-              ? '✓ 测试通知已发送（页面通道：仅本页前台可见）'
-              : '! 未真正送达：后台服务未就绪，页面通道在后台会被系统抑制（已挂自动补发，或刷新页面重试）');
-            verP.then(showResult);
-          } else {
-            env.push('✗ 测试通知提交失败：被浏览器/系统拒绝——见本行「功能说明」排查（权限已允许仍被拒＝查系统设置里本浏览器的通知总开关）');
-            verP.then(showResult);
-          }
-        });
-        setTimeout(function () {
-          if (testSettled) return;
-          env.push('✗ 测试超时：通知发送链 8 秒未落定（应用内故障，非权限/系统问题）——请用「诊断信息」一键反馈');
-          showResult();
-        }, 8000);
-      } catch (e) {
-        env.push('✗ 测试执行异常：' + (e && e.message ? e.message : e));
-        toast('测试结果：\n' + env.join('\n'), 6000);
-      }
-    }
   }
 
   // v3.5.132：从后台回到前台时做一次状态检查——通知开但保活被关 / 权限被回收
@@ -1595,6 +2237,13 @@
       return;
     }
     if (vis !== 'visible') return;
+    // FIX 2026-09-21 #988：通知授权弹窗挂着时用户常切出去看/点「允许」——回前台立刻重查一次
+    // 权限状态，待决的那一轮当场收口（不必等轮询到点，更不必让用户再点一次开关）
+    nbPermRecheck();
+    // FIX 2026-09-21 #1001：两条「设备/权限限制」提示的回前台补出口——启动时页面若在后台
+    //（被系统丢弃重载后的常见形态），开屏/前台条件当场不满足，回前台这里补上
+    try { kaNoticeAfterSplash(tryShowKaDiedNotice); } catch (e) {}
+    try { if (kaPermNoticeArmed) kaNoticeAfterSplash(nbPermPendingNotice); } catch (e) {}
     const saved = gGet('bg-notify');
     if (saved === '1') {
       const keepOn = keepEnabled;
@@ -1903,15 +2552,16 @@
     //   NOTIFY_FRESH_CHAT_DUP_MS），但不再连这 15 秒内真正新产生的消息一起吞掉
     //   （用户报障形态：发完消息就切出去，TA 在 1~40 秒随机延迟内回复 → 落在窗内 →
     //   聊天有、通知栏没有）。force（来电等一次性事件）照旧绕过。
-    if (!force && lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS &&
+    // #1059：开关打开时跳过内容类去重（每条都弹）；消息身份重放闸 #780 不受影响。
+    if (!force && !bgNoDedup() && lastHiddenAt > 0 && Date.now() - lastHiddenAt < NOTIFY_HIDDEN_MIN_MS &&
         recentChatDup(nkey, ts, NOTIFY_FRESH_CHAT_DUP_MS)) { gateStats.tooFresh++; return; }
     // v3.23.x：回退 v3.22.x 的 batchBurst（30 秒内同文案放行）——实测是重放放大器：
     // 切后台后 15 秒过渡期一过，撞车内容在上一条通知 30 秒内可绕过全部去重再次弹出，
     // 正是「切后台马上弹几分钟前看过的消息」的组成来源。v3.22.x 想解决的「批量连发
     // 撞车只弹一条」从未有用户反馈，属于臆造场景；真正的批量连发各条内容不同，
     // 本就不会被内容去重拦截
-    if (!force && (notifiedDup(nkey) || seenDup(nkey))) { gateStats.dup++; return; }
-    if (!force && recentChatDup(nkey, ts)) { gateStats.dup++; return; }
+    if (!force && !bgNoDedup() && (notifiedDup(nkey) || seenDup(nkey))) { gateStats.dup++; return; }
+    if (!force && !bgNoDedup() && recentChatDup(nkey, ts)) { gateStats.dup++; return; }
     // FIX 2026-09-19 #800：受理记账从「发送成功回调」提前到「决定发送」的同步点——
     // markNotified 原在 showSysNotification().then(ok) 里才落账，而发送链前段还有头像
     // 裁剪（Image onload，#673 起最长 1200ms 截止）等异步段。同一条消息在**同一同步任务**
@@ -2042,28 +2692,6 @@
       img.src = dataUrl;
     } catch (e) { cb(''); }
   }
-  // v3.5.147：通知缩略图压缩——canvas 把图片 dataURL 压到最长边 96px JPEG。
-  // 压缩失败返回空串（调用方不带图发送，保证文字通知不丢）
-  function compressNotifyImg(dataUrl, cb) {
-    try {
-      const img = new Image();
-      img.onload = function () {
-        try {
-          const maxSide = 96;
-      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-          const w = Math.max(1, Math.round(img.width * scale));
-          const h = Math.max(1, Math.round(img.height * scale));
-          const c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          c.getContext('2d').drawImage(img, sx || 0, sy || 0, w, h);
-          cb(c.toDataURL('image/jpeg', 0.72));
-        } catch (e) { cb(''); }
-      };
-      img.onerror = function () { cb(''); };
-      img.src = dataUrl;
-    } catch (e) { cb(''); }
-  }
-
   // ================= v3.15.x：离线消息提醒（Periodic Background Sync，零后端） =================
   // 页面全关后浏览器定期唤醒 SW（见 src/pwa/sw.js 同名段）：SW 读本段写入的快照弹通知。
   // 本段职责：①设置开关+状态行；②注册/注销 periodicsync；③把「当前联系人可发文案」
@@ -2147,6 +2775,9 @@
     psyncSyncStatus();
   }
   async function drainPsyncQueue(force) {
+    // #1015 夜间静默：跨桌面消息队列回放夜间暂停（队列原样保留在 IDB，7:00 后下次 drain 补放）；
+    // force（诊断/手动）不受限。
+    if (!force && window.nightModeActive && window.nightModeActive()) return 0;
     if (!window.idbGet || !window.idbSet || !window.chatAddIn) return 0;
     try { if (!force && performance.now() < 10000) return 0; } catch (e) {} // 开屏 10s 内不动，等聊天权威数据就绪
     let arr = null;
@@ -2182,8 +2813,8 @@
     const isIOS = !!(window.mochiDevice || {}).isIOS;
     if (!psyncSupported()) {
       el.textContent = isIOS
-        ? '此浏览器不支持离线提醒（iPhone 只能靠系统通知/保活；安卓请用 Chrome/Edge，并把应用添加到主屏幕）'
-        : '此浏览器不支持离线提醒（请用安卓 Chrome/Edge，并把应用添加到主屏幕后重开此开关）';
+        ? '此浏览器不支持离线提醒（iPhone / iPad 拿不到；请靠「后台保活」+「桌面消息弹窗」的应用内横幅）'
+        : '此浏览器不支持离线提醒（需要 Chromium 内核：安卓或电脑上的 Chrome / Edge，并把应用添加到主屏幕后重开此开关）';
       return;
     }
     if (!psyncEnabled()) { el.textContent = '已关闭 · 页面全关后不再收到 TA 的消息提醒'; return; }

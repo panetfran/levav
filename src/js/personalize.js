@@ -38,23 +38,29 @@
         return;
       }
       const img = new Image();
+      // FIX 2026-09-22 #1036：解码看门狗——部分内核大图解码偶发既不回调 onload 也不回调
+      // onerror（挂起），原 Promise 永久悬空＝「换头像/背景没反应、重开好几次」；超时按
+      // 失败返回 null，由调用方给用户可感反馈。零机型分支（与 chat-settings 同批同口径）。
+      let settled = false;
+      const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); resolve(v); };
+      const watchdog = setTimeout(() => once(null), 20000);
       img.onload = () => {
         try {
           // 解码后像素拦截：高压缩格式小文件也可能是超大图（48MP HEIC 约 5-8MB）
-          if (img.width * img.height > 26000000) { resolve(null); return; }
+          if (img.width * img.height > 26000000) { once(null); return; }
           const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
           const w = Math.max(1, Math.round(img.width * scale));
           const h = Math.max(1, Math.round(img.height * scale));
           const c = document.createElement('canvas');
           c.width = w; c.height = h;
           c.getContext('2d').drawImage(img, 0, 0, w, h);
-          resolve(c.toDataURL('image/jpeg', 0.85));
+          once(c.toDataURL('image/jpeg', 0.85));
         } catch (e) {
           // 压缩失败不再回退存原图（原图可能超大，存进去会让后续每次渲染重新崩溃）
-          resolve(null);
+          once(null);
         }
       };
-      img.onerror = () => resolve(null);
+      img.onerror = () => once(null);
       img.src = dataUrl;
     });
   }
@@ -154,20 +160,28 @@
   // input 的激活更苛刻；clip 后命中区为零、不挡任何点击。原生 label 兜底见 device.js mochiFilePickLabel。
   avatarPickInput.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:1;margin:0;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;';
   document.body.appendChild(avatarPickInput);
+  // v8.29 #991（第九波）：选图后的处理抽成公共函数——sr-only input（老路径）与
+  // 铺在头像盒上的真 input（surface，新路径）两条来源共用同一条压缩/落库管线，防止两处走偏。
+  function avatarPickFile(f, cb) {
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      compressImage(reader.result, 256).then(data => {
+        // v3.6.x：压缩失败/图片过大返回 null——不再存原图（防 iOS 解码崩溃），提示换图
+        if (!data) { toast('图片过大、格式不支持或读取超时，请换一张小图'); return; }
+        if (cb) cb(data);
+      });
+    };
+    // FIX 2026-09-22 #1036：补 reader.onerror（原缺＝桌面头像读取失败静默无反馈）
+    reader.onerror = () => toast('图片读取失败，请重试');
+    reader.readAsDataURL(f);
+  }
   avatarPickInput.onchange = () => {
     const f = avatarPickInput.files && avatarPickInput.files[0];
     avatarPickInput.value = ''; // 允许重选同一文件
     if (!f) return;
     const cb = avatarPickCb; avatarPickCb = null;
-    const reader = new FileReader();
-    reader.onload = () => {
-      compressImage(reader.result, 256).then(data => {
-        // v3.6.x：压缩失败/图片过大返回 null——不再存原图（防 iOS 解码崩溃），提示换图
-        if (!data) { toast('图片过大或格式不支持，请换一张小图'); return; }
-        if (cb) cb(data);
-      });
-    };
-    reader.readAsDataURL(f);
+    avatarPickFile(f, cb);
   };
   function bindAvatar(id, key) {
     const box = document.getElementById(id);
@@ -175,22 +189,35 @@
     applyAvatar(id, key);
     // FIX 2026-09-18 #738：原生 label 激活兜底（小米浏览器对 JS 合成 click 静默不弹选择器）
     if (window.mochiFilePickLabel) window.mochiFilePickLabel(box, avatarPickInput);
+    // 把图落到界面 + 存储（两条来源共用：点击兜底腿、以及手指点 surface input）
+    const applyData = (data) => {
+      const ring = box.querySelector('.ring');
+      // v3.6.x：img 用属性赋值（dataURL 含引号时拼 innerHTML 会逃逸注入 HTML）
+      if (ring) {
+        ring.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = data;
+        img.alt = '';
+        ring.appendChild(img);
+      }
+      store.set(key, data);
+    };
+    // FIX 2026-09-21 #991（第九波）：在头像盒内铺一层真·可点 file input——手指物理落在 input 上，
+    // 浏览器按原生默认动作弹相册，不再依赖 label 转发 / JS 合成 click / showPicker 任何一条腿
+    //（用户 2026-09-21 红米 Note 9 Pro + 自带浏览器报的正是「三条腿都在、点了仍没反应」那一类内核）。
+    // 昵称 .lbl 的 z-index:1（#821）仍在它之上：点昵称＝改昵称、点圆圈/其余区域＝换头像。
+    if (window.mochiFilePickSurface) {
+      window.mochiFilePickSurface(box, {
+        id: 'mochi-avatar-tap-' + id,
+        accept: 'image/*',
+        onFiles: (files) => { avatarPickFile(files && files[0], applyData); }
+      });
+    }
     box.addEventListener('click', (e) => {
       e.stopPropagation();
       // ★ 先把回调武装好，再激活选择器（#756：兜底 click 会延后 60ms 触发，
       //   若回调在激活之后才赋值，用户秒选文件时会拿到 null 回调＝存不上）
-      avatarPickCb = (data) => {
-        const ring = box.querySelector('.ring');
-        // v3.6.x：img 用属性赋值（dataURL 含引号时拼 innerHTML 会逃逸注入 HTML）
-        if (ring) {
-          ring.innerHTML = '';
-          const img = document.createElement('img');
-          img.src = data;
-          img.alt = '';
-          ring.appendChild(img);
-        }
-        store.set(key, data);
-      };
+      avatarPickCb = applyData;
       // FIX 2026-09-18 #756：原 `if (fromLabel(e)) return;` 会在「label 存在但内核不转发」时
       // 连 JS 兜底一起跳过＝彻底没反应（国产内核实况）。改为：label 只作加速路径，
       // 由 mochiFilePickGuard 确认「确实没弹出」后补 JS click。
@@ -632,6 +659,23 @@ try {
       }
       cb = fn;
       mask.hidden = false;
+      // #1014：上一个弹窗可能留下「确定＝真·可点 input 层」（见 device.js mochiModalPickOk）——
+      // 每次开弹窗先撤干净，绝不跨弹窗残留；下面按 opts.pickOk 重新铺本弹窗的那一层。
+      if (window.mochiModalPickOkClear) { try { window.mochiModalPickOkClear(); } catch (eP) {} }
+      if (opts.pickOk && okBtn && window.mochiModalPickOk) {
+        try {
+          window.mochiModalPickOk({
+            okBtn: okBtn,
+            accept: opts.pickOk.accept || '',
+            multiple: !!opts.pickOk.multiple,
+            entry: opts.pickOk.entry || '',
+            // 模式＝弹窗内胶囊当前值：点按那一刻与选完文件那一刻各读一次（用户可能先选胶囊再点确定）
+            mode: function () { return pillVal; },
+            skipWhen: opts.pickOk.skipWhen,
+            onFiles: opts.pickOk.onFiles
+          });
+        } catch (eP2) {}
+      }
       // v3.5.133：多行模式聚焦 textarea（原只 focus 单行 input——多行模式下 input 隐藏、
       // focus 打在 display:none 元素上，键盘不弹，批量导入用户首触必失败一次）
       setTimeout(() => {
@@ -778,6 +822,8 @@ try {
         if (window.mochiKbDismiss) { try { window.mochiKbDismiss(); } catch (eD) {} }
       } catch (eC0) {}
       mask.hidden = true; cb = null;
+      // #1014：关窗即撤「确定＝真·可点 input 层」（与开窗那次重复调用是幂等空操作）
+      if (window.mochiModalPickOkClear) { try { window.mochiModalPickOkClear(); } catch (eP3) {} }
     }
     function fire() {
       if (!cb) return;
@@ -948,6 +994,79 @@ try {
   };
   // v3.27.x：壁纸定位/缩放可调（phone-bg-pos-x/y/size），默认 cover+center，旧数据无键时完全兼容
   const bgPosOf = () => ({ x: store.get('phone-bg-pos-x') || '50', y: store.get('phone-bg-pos-y') || '50', s: store.get('phone-bg-size') || 'cover' });
+  // ===== #1161：桌面壁纸模糊烘焙进纹理（修「滑动时背景模糊闪失、过几秒才恢复」——vivo X200s/Edge 实报，零机型分支）=====
+  // 旧机制（#240）：壁纸层常驻挂全屏 filter:blur(0~20px)。大半径全屏模糊在 Chromium 系引擎
+  // 每次「暂停摘除（#976 滑页期 filter:none）→ 恢复」都要整幅重新栅格化纹理，弱机/高 DPR 下
+  // 数百毫秒到数秒——观感＝「一滑动模糊就没了，停下几秒才糊回来」；不暂停则滑动掉帧（#976
+  // 当初为之）。两条都是「运行时全屏 filter」这一个根的果。
+  // 新机制：blur>0 时把壁纸原图经 canvas 降采样＋轻度模糊烘焙成几十~几百 px 宽的小纹理，
+  // 壁纸层直接显示「已经糊好的图」，运行时不挂任何 filter——滑动/翻页零重算、无中间态；
+  // 烘焙未完成/失败（渐变纯色预设、canvas 不可用、解码超时）时保持旧 CSS filter 路径显示
+  // 模糊，成功后才切纹理，任何时刻画面不出现「清晰裸图」闪烁。
+  let deskBlurPx = 0;           // 当前模糊半径（0~20，bg-blur 键原值）
+  let deskWallSrc = null;       // 壁纸原图 dataURL（null＝渐变/纯色预设/无壁纸 → 旧滤镜路径）
+  let deskLayerMode = 'none';   // 图层当前内容形态：'img' 原图壁纸 / 'css' 预设 / 'none'
+  let deskBlurBaked = null;     // 最近一次烘焙结果（已模糊小图 dataURL）
+  let deskBlurBakedFor = null;  // 烘焙结果对应的原图（=== 当前 deskWallSrc 才可用）
+  let deskBlurFallback = false; // true＝当前壁纸烘焙失败 → 维持旧 CSS filter（.desk-blur-on）
+  let deskBlurBakeSeq = 0;      // 烘焙序号：滑杆连改/换图时迟到的旧结果一律丢弃
+  let deskBlurTimer = null;
+  const setDeskBlurClass = (on) => {
+    // FIX 2026-09-07 #240：模糊载体＝壁纸层自滤（.desk-blur-on 挂 .phone，见 home.css）。
+    // #1161 后它只服务「烘焙不可用」的回退路径与渐变/纯色预设（无原图可烘）。
+    const ph = document.querySelector('.phone');
+    if (ph) ph.classList.toggle('desk-blur-on', !!on);
+  };
+  const deskBlurReady = () => deskBlurPx > 0 && deskLayerMode === 'img' && !deskBlurFallback && !!deskBlurBaked && deskBlurBakedFor === deskWallSrc;
+  const deskBlurRender = () => {
+    if (deskLayerMode !== 'img') { setDeskBlurClass(deskBlurPx > 0); return; } // 预设/空：旧滤镜路径
+    setDeskBlurClass(deskBlurPx > 0 && !deskBlurReady()); // 未烘好前原图＋旧滤镜＝始终有糊，不闪清晰裸图
+    paintBgLayerImage(deskBlurReady() ? deskBlurBaked : deskWallSrc);
+  };
+  const deskBlurSchedule = () => {
+    if (deskBlurTimer) { clearTimeout(deskBlurTimer); deskBlurTimer = null; }
+    deskBlurRender();
+    if (deskBlurPx > 0 && deskLayerMode === 'img' && deskWallSrc && deskBlurBakedFor !== deskWallSrc) {
+      deskBlurTimer = setTimeout(() => { deskBlurTimer = null; deskBlurBake(deskWallSrc, deskBlurPx); }, 120); // 滑杆防抖：逐步触发合并烘焙
+    }
+  };
+  const deskBlurBake = (src, px) => {
+    const seq = ++deskBlurBakeSeq;
+    let done = false;
+    const once = (out) => {
+      if (done) return; done = true;
+      if (seq !== deskBlurBakeSeq) return; // 更新的一次改动已发出，本结果作废（由新一轮处理）
+      if (out && src === deskWallSrc) { deskBlurBaked = out; deskBlurBakedFor = src; deskBlurFallback = false; }
+      else { deskBlurBaked = null; deskBlurBakedFor = null; deskBlurFallback = true; }
+      deskBlurRender();
+    };
+    try {
+      const img = new Image();
+      img.onload = () => { try { once(deskBlurCanvas(img, px)); } catch (e) { once(null); } };
+      img.onerror = () => once(null);
+      setTimeout(() => once(null), 5000); // 解码挂起（异常内核/巨型 dataURL）→ 判烘焙不可用，回旧路径
+      img.src = src;
+    } catch (e) { once(null); }
+  };
+  const deskBlurCanvas = (img, px) => {
+    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    if (!iw || !ih || !(px > 0)) return null;
+    // 画布宽 ≈ 参考屏 380 CSS px ÷（模糊半径/2.5）：20px→48、8px→119、1px→950（≈不降采样），
+    // 双线性放大后每个纹素≈可见模糊斑大小，观感与 CSS blur 同级；用户在滑杆所见即所得自校正。
+    const cw = Math.max(6, Math.min(iw, Math.round(950 / px)));
+    const ch = Math.max(4, Math.round(ih * cw / iw));
+    const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+    const g = c.getContext('2d'); if (!g) return null;
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, cw, ch); // jpeg 输出：透明 PNG 壁纸白底（全屏背景语义不变）
+    // 源图内缩采样（边上约 1.2×半径 的屏幕比例，封顶 12%）防透明/暗缘渗入＝旧方案「四边外扩 24px」的等价
+    const m = Math.min(0.12, (px * 1.2) / 380);
+    g.imageSmoothingEnabled = true;
+    try { g.imageSmoothingQuality = 'high'; } catch (e) {}
+    try { if ('filter' in g) g.filter = 'blur(' + (190 / cw).toFixed(2) + 'px)'; } catch (e) {} // 小尺度再轻抹一道去马赛克感（老内核无 ctx.filter 则仅靠降采样，仍成立）
+    g.drawImage(img, iw * m, ih * m, iw * (1 - 2 * m), ih * (1 - 2 * m), 0, 0, cw, ch);
+    const out = c.toDataURL('image/jpeg', 0.85);
+    return out && out.indexOf('data:image') === 0 ? out : null;
+  };
   // ===== v3.26.x #147：壁纸常驻图层（修 iPhone16 Pro「退聊天回桌面巨卡」）=====
   // 此前壁纸直写 .phone，applyBgVisibility 在每次进出桌面时清空/重设 backgroundImage：
   // 2MB 级 dataURL 壁纸在 iOS 上每次重设都要主线程重新解码整张大图；且 chat-back 直挂
@@ -972,7 +1091,7 @@ try {
     phoneEl.insertBefore(bgLayer, phoneEl.firstChild);
     return bgLayer;
   };
-  const setBgLayerImage = (data) => {
+  const paintBgLayerImage = (data) => {
     const l = ensureBgLayer(); if (!l) return;
     const want = data ? 'url("' + data + '")' : '';
     // FIX 2026-09-04 #151 backgroundImage 仍「值变才写」（#147 防 iOS 重复解码语义不变），
@@ -987,13 +1106,26 @@ try {
     if (l.style.backgroundSize !== szWanted) l.style.backgroundSize = szWanted;
     if (l.style.backgroundPosition !== psWanted) l.style.backgroundPosition = psWanted;
   };
+  const setBgLayerImage = (data) => {
+    // #1161：这里只记「原图」，图层实际显示哪份纹理由 deskBlurRender 决定
+    //（模糊开着且已烘好＝已模糊小纹理；否则＝原图，旧滤镜兜底）。
+    deskWallSrc = data || null;
+    deskLayerMode = data ? 'img' : 'none';
+    deskBlurSchedule();
+  };
   const setBgLayerPreset = (css) => {
+    // #1161：渐变/纯色预设没有「原图」可烘（canvas 画不了任意 CSS 渐变）——记为 'css' 形态，
+    // 模糊维持旧滤镜路径（渐变瓦片光栅远便宜于全屏照片纹理，#976 的暂停对它仍然适用）。
+    deskWallSrc = null;
+    deskLayerMode = 'css';
+    if (deskBlurTimer) { clearTimeout(deskBlurTimer); deskBlurTimer = null; }
     const l = ensureBgLayer(); if (!l) return;
     if (l.style.backgroundImage !== css) {
       l.style.backgroundImage = css;
       l.style.backgroundSize = 'cover';
       l.style.backgroundPosition = 'center';
     }
+    setDeskBlurClass(deskBlurPx > 0);
   };
   const setBgLayerVisible = (on) => {
     const l = ensureBgLayer(); if (!l) return;
@@ -1225,7 +1357,9 @@ try {
       cell.addEventListener('click', () => {
         // 只读被点中的这一张全图（active-id 对账保证高亮一致）
         const full = store.get('phone-bg-item-' + id);
-        if (!full) return;
+        // FIX 2026-09-22 #1036：全图数据丢失（存储被系统清理）时原本点格静默无响应，
+        // 用户表现为「点了没反应要按好几次」——改为明确提示重传
+        if (!full) { toast('这张壁纸原图已丢失（可能被浏览器清理），请重新上传'); return; }
         applyPhoneBg(full);
         store.set('phone-bg', full);
         store.set(PBG_ACTIVE, id);
@@ -1292,6 +1426,9 @@ try {
     const upBtn = document.createElement('button');
     upBtn.textContent = '＋ 上传新图（可多选）';
     upBtn.style.cssText = 'width:100%;padding:11px;border:none;border-radius:10px;background:var(--ink,#111);color:var(--bg-b,#fff);font-size:14px;font-weight:600;margin-bottom:8px';
+    // FIX 2026-09-21 #1002：手机壁纸「＋ 上传新图（可多选）」铺真·可点 input 层（owner＝统一入口那个
+    // 多选 input 的 id；面板每次打开都是新按钮，故渲染即铺，幂等）
+    if (window.mochiFilePickSurface) window.mochiFilePickSurface(upBtn, { id: 'phone-bg-up-tap', accept: 'image/*', multiple: true, owner: 'mochi-phonebg-gallery-pick' });
     upBtn.addEventListener('click', () => {
       // FIX 2026-09-18 #755：统一走 window.mochiFilePick（原实现虽挂 body，但 accept 迟到、无 label
       // 原生激活兜底、每次点按 new 一个再 remove；vivo X200s/百度浏览器报「上传无反应」的同族面）
@@ -1299,25 +1436,34 @@ try {
         id: 'mochi-phonebg-gallery-pick', accept: 'image/*', multiple: true, btn: upBtn,
         onFiles: (fs) => {
           if (!fs.length) { toast('没有取到图片，请再选一次'); return; }
-          let ok = 0;
+          let ok = 0, fail = 0;
           toast('正在处理 ' + fs.length + ' 张图片…');
           let chain = Promise.resolve();
           fs.forEach((f) => {
             chain = chain.then(() => new Promise((res) => {
               const reader = new FileReader();
-              reader.onload = () => { pbgAdd(reader.result).then((id) => { if (id) ok++; res(); }); };
-              reader.onerror = () => res();
+              // FIX 2026-09-22 #1036：失败图原本既不计成功也不给反馈（全失败＝整批静默
+              // 无响应＝「换了背景没反应」），现在计数收口并明确提示原因
+              reader.onload = () => { pbgAdd(reader.result).then((id) => { if (id) ok++; else fail++; res(); }); };
+              reader.onerror = () => { fail++; res(); };
               reader.readAsDataURL(f);
             }));
           });
           chain.then(() => {
-            if (ok) toast('已加入 ' + ok + ' 张壁纸');
+            if (ok) toast('已加入 ' + ok + ' 张壁纸' + (fail ? '，' + fail + ' 张失败（太大/格式不支持/读取超时）' : ''));
+            else if (fail) toast('图片太大、格式不支持或读取超时，没能加入，请换一张重试');
             if (document.getElementById('phone-bg-gallery-panel') && document.getElementById('phone-bg-gallery-panel').style.display === 'flex') openPhoneBgPanel();
           });
         }
       });
     });
     wrap.appendChild(upBtn);
+    // #997：多选能力由浏览器选择器决定（本站只是网页，没有相册权限），只能选一张 / 点了没反应时给就地指引
+    const bgHint = document.createElement('div');
+    bgHint.id = 'phonebg-upload-hint';
+    bgHint.style.cssText = 'font-size:11px;line-height:1.6;color:var(--muted);margin:2px 0 8px';
+    bgHint.textContent = '选不了多张或点了没反应，是浏览器 / 所在 App 的限制：换 Chrome / Edge 再试（详见 使用说明第 13 节）';
+    wrap.appendChild(bgHint);
     if (cur) {
       const rmBtn = document.createElement('button');
       rmBtn.textContent = '清除当前壁纸（图库保留）';
@@ -2290,10 +2436,40 @@ try {
   // 所以这个坑只在真机暴露）。现改为底部抽屉：桌面完整留在上半屏，抽屉占下半屏、可折叠。
   // 同时按「颜色/尺寸/背景」分区补齐控件（原来只有 5 项：主题色/组件背景/边框/圆角/透明度，
   // 按钮色、按钮文字色、爱心色、图标圆角、字号、卡片大小、壁纸/模糊/遮罩全都没有）。
-  // FIX 2026-09-16 #562：边看边调面板可拖动/吸附（用户「还是会遮挡其他东西我看不见」）——
-  // 会话内记住拖到的纵向位置；null=贴底（默认）。放模块作用域不落盘：纯 UI 位置，避免与
-  // contacts.js 的根键迁移/EXCLUDE 清单打交道。
-  let beautyDockTop = null;
+  // FIX 2026-09-16 #562 / v8.29 #1008：边看边调面板可拖动/吸附（用户「还是会遮挡其他东西我看不见」）——
+  // 会话内记住拖到的纵向位置；null＝自动位（停在底部导航之上，同 #962 屏幕适配面板口径）。
+  // 放模块作用域不落盘：纯 UI 位置，避免与 contacts.js 的根键迁移/EXCLUDE 清单打交道。
+  // v8.29 #1008（用户直派「桌面美化的边看边调不能托标题行可上移」）：#562 当年只留下了
+  // beautyDockTop 这个声明、拖动实现从未落地（grip 一直是纯装饰的误导 affordance，聊天侧
+  // #760 的注释里已记过这笔）；本轮按聊天侧同一口径把三处抽屉补齐。同时默认位从贴底
+  // （bottom:0）改为「停在底部导航之上」——贴底时抽屉 z-index:95 压住 z-index:2 的底部导航，
+  // 开着它根本切不了页，而「边看边调」的全部意义就是带着去别的页面看现场。
+  let beautyDockBot = null;
+  function beautyDrawerReserve() {
+    try {
+      const tb = document.querySelector('.tabbar');
+      const t = tb && tb.getBoundingClientRect();
+      if (t && t.height && t.top > 0) return Math.max(14, Math.round(window.innerHeight - t.top + 8));
+    } catch (e) {}
+    return 14;
+  }
+  function beautyDrawerApplyBottom() {
+    const d = document.getElementById('beauty-drawer');
+    if (!d) return;
+    d.style.bottom = (beautyDockBot == null ? beautyDrawerReserve() : beautyDockBot) + 'px';
+  }
+  // v8.29 #1008：自动位要按「切页完成后的底部导航」量。openBeautyDrawer 会先切到桌面页，
+  // 而底部导航的显示是 tabs.js 的 syncChrome 在页面 hidden 观察器里补的——本函数在那一刻
+  // 量到的 tabbar 还是 hidden（0 高）⇒ 会把抽屉错放到贴底 14px（实测 verify-beauty-cta-first
+  // B2 当场红：clearsNav=false）。只读观察页面 hidden，切页落定后再量一次；rAF 兜首帧。
+  let beautyDockObs = null;
+  function watchBeautyDockPages() {
+    if (beautyDockObs || !('MutationObserver' in window)) return;
+    try {
+      beautyDockObs = new MutationObserver(function () { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
+      document.querySelectorAll('.page').forEach(function (p) { beautyDockObs.observe(p, { attributes: true, attributeFilter: ['hidden'] }); });
+    } catch (e) { beautyDockObs = null; }
+  }
   // #769：可选 secKey＝直接打开指定分区（设置页「底部栏美化」行直达「底部栏」）；省略=停留上次分区
   const openBeautyDrawer = (secKey) => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -2319,7 +2495,10 @@ try {
       // FIX 2026-09-16 #562：面板改半透明（用户报「又不是半透明的页面，还是会遮挡其他东西我看不见」）——
       // 底色 72% 不透明 + 不透明度更高时保留原观感（color-mix 不支持的老内核回落上一句纯色，行为不变）；
       // 同时高度上限 44vh→40vh，给桌面留更多可视区。刻意不加 backdrop-filter：AGENTS 的 iOS 卡顿红线。
-      d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
+      // v8.29 #1008：加 transition:bottom——切页时自动位会在「底部导航留白」与「无导航 14px」
+      // 之间跳（实测设置页 90px → 聊天设置页 14px 一跳，旧实现 transition all 0s 硬切＝用户
+      // 看到的「瞬移/闪」）。拖动期间由 bindDrawerDrag 临时置 none，不影响跟手。
+      d.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:95;max-height:40vh;transition:bottom .16s ease;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 12px calc(10px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:8px';
       d.innerHTML = '';
       const grip = document.createElement('div');
       grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 0;flex:none';
@@ -2335,7 +2514,12 @@ try {
       hd.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none';
       const hdTxt = document.createElement('span');
       hdTxt.textContent = '边看边调（即时生效）';
-      hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      hdTxt.style.cssText = 'font-size:13px;font-weight:700;flex:none';
+      // v8.29 #1008：标题行可拖动这件事此前三处抽屉都没有任何文字提示（用户原话「用户并不知道
+      // 有这个功能」）——提示固定挂在标题行里，点「收起」折叠正文区后仍然看得见。
+      const hdHint = document.createElement('span');
+      hdHint.textContent = '按住标题行上下拖 · 让开看桌面';
+      hdHint.style.cssText = 'font-size:11px;color:var(--muted,#888);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
       const panelBody = document.createElement('div');
       panelBody.style.cssText = 'display:flex;flex-direction:column;gap:8px;flex:none';
       const body = document.createElement('div');
@@ -2346,8 +2530,43 @@ try {
         foldBtn.textContent = willFold ? '展开' : '收起';
       });
       const closeBtn = mkMini('\u2715', () => { d.style.display = 'none'; showThemePage(); }, ';padding:4px 8px');
-      hd.appendChild(hdTxt); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
+      hd.appendChild(hdTxt); hd.appendChild(hdHint); hd.appendChild(foldBtn); hd.appendChild(closeBtn);
       d.appendChild(hd);
+      // v8.29 #1008：grip 与标题行都可竖向拖动（用户「不能托标题行可上移」）。口径与聊天侧 #760
+      // 完全一致：pointer 事件 + setPointerCapture——不夺回控制权时触摸序列会被内核抢成滚动，
+      // 表现为「抖一下拖不动」；标题行里的按钮让行（否则点不动）；拖动期间关掉 bottom 过渡，
+      // 松手回自动位附近则吸附复位（null＝回「底部导航之上」）。
+      const bindDrawerDrag = (el) => {
+        el.style.touchAction = 'none';
+        el.style.cursor = 'grab';
+        let sy = 0, sb = 0, drag = false;
+        el.addEventListener('pointerdown', (e) => {
+          if (e.target.closest('button')) return;
+          if (e.pointerType === 'mouse' && e.button !== 0) return;
+          drag = true; sy = e.clientY;
+          sb = beautyDockBot == null ? beautyDrawerReserve() : beautyDockBot;
+          d.style.transition = 'none';
+          try { el.setPointerCapture(e.pointerId); } catch (er) {}
+          e.preventDefault();
+        });
+        el.addEventListener('pointermove', (e) => {
+          if (!drag) return;
+          beautyDockBot = Math.max(0, Math.min(Math.round(window.innerHeight * 0.6), Math.round(sb + sy - e.clientY)));
+          beautyDrawerApplyBottom();
+          e.preventDefault();
+        });
+        const up = () => {
+          if (!drag) return;
+          drag = false;
+          d.style.transition = 'bottom .16s ease';
+          if ((beautyDockBot || 0) <= beautyDrawerReserve() + 6) beautyDockBot = null; // 拖回自动位＝吸附复位
+          beautyDrawerApplyBottom();
+        };
+        el.addEventListener('pointerup', up);
+        el.addEventListener('pointercancel', up);
+      };
+      bindDrawerDrag(grip);
+      bindDrawerDrag(hd); // grip 只有 4px 高，标题行才是主拖拽把手
       const chipsRow = document.createElement('div');
       chipsRow.style.cssText = 'display:flex;gap:6px;flex:none';
       panelBody.appendChild(chipsRow);
@@ -2644,14 +2863,24 @@ try {
         } }
       ];
       let activeSec = 'color';
-      const renderSec = (key) => {
-        activeSec = key;
+      // v8.29 #1008：点亮态只在真变化时写（口径同 #938：先比对现状与目标，相等就别写）。
+      // 原实现每次 renderSec 都无条件写 3×N 个 style——实测重复点同一个分区会白写 24~30 次，
+      // 而「没变也在动」正是用户报的闪屏里可去掉的那一半。重建控件区的行为刻意保留：
+      // 点当前分区胶囊＝重画本区视图是既有刷新链路（verify-badge-tune D3 依赖它）。
+      const paintChips = (key) => {
         Array.prototype.forEach.call(chipsRow.children, c => {
           const on = c.dataset.sec === key;
-          c.style.background = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
-          c.style.color = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
-          c.style.borderColor = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+          const bg = on ? 'var(--ink,#111)' : 'var(--btn-cancel-bg,#fafafa)';
+          if (c.style.background !== bg) c.style.background = bg;
+          const fg = on ? 'var(--bg-b,#fff)' : 'var(--ink,#111)';
+          if (c.style.color !== fg) c.style.color = fg;
+          const bd = on ? 'var(--ink,#111)' : 'var(--card-border,#ddd)';
+          if (c.style.borderColor !== bd) c.style.borderColor = bd;
         });
+      };
+      const renderSec = (key) => {
+        activeSec = key;
+        paintChips(key);
         body.innerHTML = '';
         paletteHost = null;
         colorItems = [];
@@ -2668,8 +2897,21 @@ try {
       });
       renderSec(activeSec);
       if (secKey) renderSec(secKey);
+      // v8.29 #1008：先落位再显形——自动位＝停在底部导航之上（见 beautyDrawerReserve），
+      // 这样开着抽屉也能点到底部导航去别的页面看现场。
+      beautyDrawerApplyBottom();
       d.style.display = 'flex';
+      // 切页落定后（底部导航由 syncChrome 补显）再量一次自动位；rAF 兜首帧（观察器回调是
+      // 微任务、rAF 在绘制前跑，正常首次绘制就已是正确位置，不会看到一次跳动）。
+      watchBeautyDockPages();
+      if (window.requestAnimationFrame) requestAnimationFrame(() => { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
   };
+  // v8.29 #1008：兜住「开着抽屉时转屏/改窗口尺寸」——自动位按当前底部导航高度重算；
+  // 用户拖过的位置（beautyDockBot != null）不动。
+  try {
+    window.addEventListener('resize', () => { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if (beautyDockBot == null) beautyDrawerApplyBottom(); });
+  } catch (e) {}
   // 回到「手机桌面美化」页（抽屉关闭/跳转用）。
   // 导航口径对齐 tabs.js 的 #row-appearance 处理：隐藏所有页 → 只显示 #page-theme，
   // 底部 tab 停在「设置」（page-theme 是 setting 的二级页，不单独占 tab）。
@@ -2769,13 +3011,13 @@ try {
       '应用锁': '密码 锁 隐私',
       '开屏问答门': '问答 暗号 验证 提问',
       '手机布局': '布局 适配 模式',
-      '离线消息提醒': '通知 推送 通知提醒 新消息',
+      '离线消息提醒': '通知 推送 通知提醒 新消息 安卓 电脑 主屏幕 iPhone Chrome Edge',
       '使用说明': '教程 帮助 常见问题 安装',
       '导出数据': '备份 保存 导出',
       '导入数据': '恢复 还原 迁移 换机',
       '修改摸鱼天数': '恢复 找回 补回 归零 重来 已摸鱼',
       '设备兼容诊断': '诊断 兼容 报错 环境',
-      '顶部避让修正': '安全区 白带 重叠 刘海',
+      '顶部避让修正': '安全区 白带 重叠 刘海 添加到主屏幕 独立应用 电脑',
       '屏幕适配诊断': '适配 屏幕 空白 裁切',
       '屏幕适配微调': '微调 字号 文字大小 放大 变小 偏移 遮挡 裁切 留白 白带 状态栏 手势条 屏幕错位 位置',
       '功能诊断': '检测 测试',
@@ -3321,17 +3563,15 @@ try {
   const bgBlurRow = document.getElementById('row-bg-blur');
   const bgBlurVal = document.getElementById('bg-blur-val');
   const getBgBlur = () => { const v = store.get('bg-blur'); if (v) { const n = parseInt(v, 10); if (!isNaN(n)) return Math.max(0, Math.min(20, n)); } return 0; };
-  const setBgBlurClass = (px) => {
-    // FIX 2026-09-07 #240：模糊改画在壁纸常驻图层自身（.desk-blur-on 挂 .phone，
-    // 见 home.css 同日注）——原 .phone-bg-mask.blur-on 的 backdrop-filter 在
-    // 小米15Pro/Chrome 151 真机上采样不生效（#219 提层后仍无感），不再挂。
-    const ph = document.querySelector('.phone');
-    if (ph) ph.classList.toggle('desk-blur-on', px > 0);
-  };
+  // #1161：本函数不再是「挂/摘全屏 filter」的开关——那条路是滑动闪失的根。
+  // 现在只记录半径并交给 deskBlurSchedule：能烘纹理就走已烘好的小纹理（运行时零
+  // filter）；不能烘（预设/失败）时由 deskBlurRender 兜底切 .desk-blur-on 旧滤镜。
+  // --desk-bg-blur 仍要写：home.css 的 #240/#976 规则只在回退路径消费它。
   const applyBgBlur = (px) => {
+    deskBlurPx = px;
     document.documentElement.style.setProperty('--desk-bg-blur', px + 'px');
-    setBgBlurClass(px);
     if (bgBlurVal) bgBlurVal.textContent = px === 0 ? '关闭' : px + 'px';
+    deskBlurSchedule();
   };
   applyBgBlur(getBgBlur());
   if (bgBlurRow) {
@@ -4369,32 +4609,52 @@ try {
     show(tabs[0] ? tabs[0].dataset.tab : 'basic');
   })();
 
-  // ===== 设置页平台标记（v8.29）：iOS / 安卓专属项一眼看清 + 非本机平台给替代入口 =====
-  // 用户问「设置里好多 iOS / 安卓专属功能，要不要单独分一类」——结论是不分类：按平台切
-  // 会把两个系统都要用的行（全屏模式 / 后台保活 / 手机布局强制 / 屏幕适配）藏起来，而且
-  // 平台判定本身有 UA 伪装失手面（OPPO/Via 伪装 iPhone、iPad 伪装、桌面版网站模式整套
-  // 伪装成桌面）。改为行级标记：静态胶囊在 template（.plat-tag[data-plat]），这里只做
-  // 「明确判定为另一平台」时弱化 + 给替代入口。判定不明（桌面 / 伪装 / 失手）一律原样，
-  // 且只弱化标签、绝不 disabled 开关——否则识别失手的用户会被挡在唯一能修好自己问题的
-  // 开关外面（「手机布局（强制）」本身就是为这种失手准备的）。
-  (function initPlatTags() {
+  // ===== 设置页「本机能不能用」标记（v8.29 #978）：按真实前提标记，不按手机系统 =====
+  // 沿革：用户先问「设置里好多 iOS / 安卓专属功能，要不要单独分一类」→ 结论不分类、改行级标记
+  // （#964）；随后用户指出两处静态胶囊都误导——「后台通知」行右的「仅安卓」与「顶部避让修正」
+  // 行的「仅 iPhone」。实测三条胶囊的真实前提没有一条是「手机系统」：
+  //   后台通知   = Chromium 内核 + https + 通知权限（电脑版 Chrome / Edge 同样可用；而小米 /
+  //                vivo / OPPO 自带、UC、夸克、Via 这些安卓壳本机没有 Notification 对象）
+  //   离线消息提醒 = Chromium 内核（PeriodicSyncManager）+ 添加到主屏幕（电脑版 Chrome 也可以）
+  //   顶部避让修正 = 添加到主屏幕的独立应用形态 + 用户自己声明形态（执行器 forceCover 的
+  //                standalone 就是 ios-pwa-standalone 类，只在 iOS 独立应用形态加；iPhone 用
+  //                Safari 直接打开时这个开关是空的，开了不生效）
+  // 静态胶囊把「平台」当成门槛，两个方向都错：桌面 Chromium 用户被「仅安卓」劝退（其实能用），
+  // iPhone 浏览器形态用户被「仅 iPhone」叫去开一个空开关。故撤掉静态胶囊，改为按本机实测条件
+  // 标记：不满足条件才变灰 + 给替代入口，满足条件不加任何标记。判定保守口径不变（判定不明 /
+  // 桌面 / UA 伪装一律不误伤），且只变灰、绝不 disabled 开关——识别失手的用户必须仍能点到
+  // 唯一能修好自己问题的开关。
+  (function initUseMark() {
     const page = document.getElementById('page-setting');
     if (!page) return;
-    const tags = page.querySelectorAll('.plat-tag[data-plat]');
-    if (!tags.length) return;
     const d = window.mochiDevice || {};
-    // 非本机平台的替代指引：key = 该行开关 input 的 id（无开关的行只弱化不给指引）
-    const ALT = {
-      'bg-notify': { text: '本机是 iPhone：网页拿不到系统通知，请改用应用内横幅「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' },
-      'psync-en': { text: '本机是 iPhone：离线消息提醒只有安卓 Chrome / Edge 可用，请改用「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' },
-      'safe-top-force': { text: '本机是安卓：本项只修 iPhone 顶部状态栏重叠；安卓要调顶部遮挡 / 底部裁切请用「屏幕适配微调」。', go: '#row-screen-adj', goText: '去调整' }
+    const isIOS = function () { return d.isIOS === true; };
+    // 本机有没有网页通知能力（Chromium 只在 https / localhost 才暴露 Notification 对象）
+    const hasNotify = function () { try { return 'Notification' in window; } catch (e) { return false; } };
+    // 是不是「添加到主屏幕后的独立应用形态」——与 fullscreen.js 加 ios-pwa-standalone 类同口径
+    // （fullscreen.js 在 personalize.js 之后加载，故先读类、读不到再按同式自算）
+    const isIosStandalone = function () {
+      if (!isIOS()) return false;
+      if (document.documentElement.classList.contains('ios-pwa-standalone')) return true;
+      try {
+        return navigator.standalone === true ||
+          !!(window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+      } catch (e) { return false; }
     };
-    // 只有明确判定为「另一平台」才弱化：desktop / 伪装 / 判定失手一律不动
-    function offPlatform(plat) {
-      if (plat === 'android') return d.isIOS === true;
-      if (plat === 'ios') return d.isAndroid === true;
-      return false;
-    }
+    // 每行一个判定器：返回 null＝本机可用（不加任何标记）；返回 { text, go? }＝本机用不了，
+    // 变灰 + 替代指引。key 取该行开关 input 的 id。
+    const RULES = [
+      { input: 'bg-notify', off: function () {
+        if (isIOS()) return { text: '本机是 iPhone / iPad：网页拿不到系统通知（添加到主屏幕也不保证），请改用应用内横幅「桌面消息弹窗」。', go: '#desk-msg-en', goText: '去开启' };
+        if (!hasNotify()) return { text: '本机浏览器没有通知能力（小米 / vivo / OPPO 等自带浏览器、UC、夸克常见如此）：请改用 Chrome / Edge 打开本站，安卓或电脑都行。' };
+        return null;
+      } },
+      { input: 'safe-top-force', off: function () {
+        if (isIosStandalone()) return null; // 本机就是它要修的形态
+        if (isIOS()) return { text: '本项只在「添加到主屏幕」后打开（独立应用形态）才生效：浏览器里直接打开时开关无效果，顶部遮挡 / 底部裁切请用「屏幕适配微调」。', go: '#row-screen-adj', goText: '去调整' };
+        return { text: '本项只修 iPhone / iPad 独立应用形态的顶部避让（安卓没有这个形态）：安卓要调顶部遮挡 / 底部裁切请用「屏幕适配微调」。', go: '#row-screen-adj', goText: '去调整' };
+      } }
+    ];
     function jumpTo(sel) {
       const target = document.querySelector(sel);
       if (!target) return;
@@ -4414,14 +4674,15 @@ try {
       row.classList.add('plat-flash');
       setTimeout(function () { row.classList.remove('plat-flash'); }, 1500);
     }
-    Array.prototype.forEach.call(tags, function (tag) {
-      if (!offPlatform(tag.getAttribute('data-plat'))) return;
-      const row = tag.closest('.set-row, .gs-row');
+    RULES.forEach(function (rule) {
+      const inp = document.getElementById(rule.input);
+      if (!inp) return;
+      const row = inp.closest('.set-row, .gs-row');
       if (!row) return;
-      row.classList.add('plat-off');
-      const inp = row.querySelector('input[type="checkbox"]');
-      const alt = ALT[(inp && inp.id) || ''];
+      let alt = null;
+      try { alt = rule.off(); } catch (e) { alt = null; }
       if (!alt) return;
+      row.classList.add('plat-off');
       const hint = document.createElement('div');
       hint.className = 'gs-sub plat-hint';
       hint.textContent = alt.text;
@@ -4436,12 +4697,9 @@ try {
         go.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') fire(e); });
         hint.appendChild(go);
       }
-      // 插在该行自己的说明小字之后（先看说明、再看「你这台该怎么用」）；后面紧跟的是别的行
-      // （如「离线消息提醒」下面那条状态行）就贴在行下
-      let anchor = row;
-      while (anchor.nextElementSibling && anchor.nextElementSibling.classList &&
-             anchor.nextElementSibling.classList.contains('gs-sub')) anchor = anchor.nextElementSibling;
-      if (anchor.parentNode) anchor.parentNode.insertBefore(hint, anchor.nextSibling);
+      // #978：提示插在该行【紧后面】。原 #964 是插在该行下面所有 .gs-sub 说明之后——「后台通知」
+      // 那行的说明有六百多字，替代入口被压在整段说明底下，本机用不了的用户根本看不到该点哪里。
+      if (row.parentNode) row.parentNode.insertBefore(hint, row.nextSibling);
     });
   })();
 
@@ -5490,6 +5748,12 @@ try {
       if (!phonePageEl.classList.contains('decor-on')) return;
       // 组件库面板 / 装饰完成条 / 新增页「+ 添加卡片」点击不拦截
       if (e.target.closest('.desk-lib') || e.target.closest('.decor-bar') || e.target.closest('.desk-page-add')) return;
+      // FIX 2026-09-21 #991：头像区不参与「点卡片设背景」——头像盒（.deco-avatar）长在
+      // [data-card-bg="deco"] 卡片内部，装修模式下点它会走到下面 preventDefault+stopPropagation，
+      // 把 label 转发（默认动作）和头像自己的 JS 兜底腿一起掐掉＝装修模式下换不了头像、点昵称也改不了名
+      //（无头实测：装修模式点桌面头像 = 弹出「纪念日卡设置」、选择器 0 次）。头像/昵称是卡片内的
+      // **可点元素**而非卡片背景区，按 #821 同口径各归各：点头像＝换头像，点卡片其余区域＝设背景。
+      if (e.target.closest('.deco-avatar')) return;
       const card = e.target.closest('[data-card-bg]');
       if (!card) return;
       e.preventDefault();
@@ -5770,6 +6034,10 @@ try {
       };
       syncRowUI();
       row.appendChild(ico); row.appendChild(txt); row.appendChild(val);
+      // FIX 2026-09-21 #1002（第九波续）：本行「首页/第 N 页背景图」铺「真·可点 input」层——手指物理落在
+      // 真 input 上，选择器由浏览器原生默认动作弹出，不再依赖 label 转发 / JS 合成 click / showPicker。
+      // owner 写统一入口那个 input 的 id（点按时才建），选完文件转交它并派发 change ⇒ 压缩/落库管线一字未改。
+      if (window.mochiFilePickSurface) window.mochiFilePickSurface(row, { id: 'page-bg-tap-' + i, accept: 'image/*', owner: 'mochi-page-bg-pick' });
       row.addEventListener('click', () => {
         const bg = store.get('page-bg-' + i);
         // FIX 2026-09-18 #755：统一走 window.mochiFilePick（原实现 detached＋无 label＋accept 迟到）
@@ -7764,15 +8032,29 @@ try {
   // display-tune.css 只叠加气泡/输入框/设置行等文字组，零 zoom/scale）。
   // 偏移存根命名空间 LS，跨桌面共用（屏幕是设备属性）；mobile-adapt.js mochiScreenAdj 落层。
   (function () {
+    // #990：每轴带 group 字段＝它「管哪一页」，渲染时按组加小标题（原七轴平铺一列，用户看不出
+    // 哪根滑杆管桌面、哪根管聊天；顺序也按组排：通用位置轴 → 桌面页专有 → 聊天文字）
     const AXES = [
-      { k: 'top', name: '顶部', min: -80, max: 80, hint: '顶部内容被状态栏遮挡=往正拖；离得太远=往负拖' },
-      { k: 'bottom', name: '底部', min: -80, max: 80, hint: '底部被手势条裁掉=往正拖；悬空离底太远=往负拖' },
-      { k: 'h', name: '页面高度', min: -80, max: 80, hint: '页面底部留白=往正撑满；内容超出屏幕被裁=往负收短' },
-      { k: 'desk', name: '桌面图标区', min: -60, max: 60, hint: '全屏时桌面图标/按钮整体偏上=往正拉回' },
-      { k: 'shift', name: '整体位移', min: -60, max: 60, hint: '整页位置偏了：正=整页下移、负=上移' },
-      { k: 'text', name: '文字大小', min: 0, max: 12, hint: '聊天气泡/输入框/设置列表等正文文字整体加大（只放大文字组，非整页缩放）；0=默认' },
-      { k: 'side', name: '左右安全边', min: 0, max: 12, hint: '曲面屏/瀑布屏内容贴到屏幕弧边=往正加（两侧同时内收）；0=默认' }
+      { k: 'top', name: '顶部', min: -80, max: 80, group: 'pos', hint: '顶部内容被状态栏遮挡=往正拖；离得太远=往负拖' },
+      { k: 'bottom', name: '底部', min: -80, max: 80, group: 'pos', hint: '底部被手势条裁掉=往正拖；悬空离底太远=往负拖' },
+      { k: 'h', name: '页面高度', min: -80, max: 80, group: 'pos', hint: '页面底部留白=往正撑满；内容超出屏幕被裁=往负收短' },
+      { k: 'shift', name: '整体位移', min: -60, max: 60, group: 'pos', hint: '整页位置偏了：正=整页下移、负=上移' },
+      { k: 'side', name: '左右安全边', min: 0, max: 12, group: 'pos', hint: '曲面屏/瀑布屏内容贴到屏幕弧边=往正加（两侧同时内收）；0=默认' },
+      { k: 'desk', name: '桌面图标区', min: -60, max: 60, group: 'desk', hint: '全屏时桌面图标/按钮整体偏上=往正拉回（只影响桌面页）' },
+      { k: 'text', name: '文字大小', min: 0, max: 12, group: 'text', hint: '聊天气泡/输入框/设置列表等正文文字整体加大（只放大文字组，非整页缩放）；0=默认' }
     ];
+    // 组表＝「哪根滑杆管哪一页」的单一事实源（新增轴只要给 group 字段即可归类）
+    const AXIS_GROUPS = {
+      pos: '通用位置轴（桌面 / 聊天 / 设置都生效）',
+      desk: '只影响「桌面页」',
+      text: '只影响「聊天页」正文文字（气泡 / 输入框）'
+    };
+    function groupIsCurrent(g) {
+      const nm = adjPageName();
+      if (g === 'desk') return nm === '桌面';
+      if (g === 'text') return nm === '聊天' || nm === '群聊';
+      return false;
+    }
     let panel = null;
     let elGrip = null, elHead = null, elBody = null, elMini = null; // 面板四块（收起态只留胶囊）
     // #940（用户 2026-09-20：「不是和边看边调一样半透明的，而且不能拖动滑动，不能预览其他页面」）
@@ -7785,7 +8067,14 @@ try {
     // 被整条盖死，用户在设置里开了面板就再也走不到桌面/聊天页，只能对着设置列表盲调。
     // 修法三条，零机型分支：①面板与胶囊自动停在底部操作区之上（量出来再让开）；
     // ②收起＝一枚小胶囊（不再横贯底边，点一下展开、拖走可让位），带着它就能切页看现场；
-    // ③面板顶部显示「正在调：桌面/聊天」并给「看桌面 / 看聊天」直达按钮，桌面与聊天各自有入口。
+    // ③面板顶部显示「正在调：桌面/聊天」并给两枚切页按钮（#990 起＝带选中态的页签），桌面与聊天各自有入口。
+    // #990（用户 2026-09-21：「屏幕适配打开了这个功能…没有把调桌面和聊天里的屏幕的功能分开，
+    // 这样用户不知道点哪一个才是」「拖动说明那句没说清在挪什么」）修法：①两枚裸按钮改带选中态
+    // 的页签（当前页那枚反色高亮＝一眼看出在调哪页，点另一枚＝切过去看现场）；②七轴按生效页面
+    // 分三组加小标题，当前页那组打「你正在这一页」标记；③拖动说明从标题行（被按钮挤到省略号，
+    // 用户根本没看到）移到标题下的用法段，标题行只留「按住这行标题上下拖＝把面板挪开」。
+    // 注：本段注释刻意不照抄被替换掉的旧文案（旧句原文会命中 verify-962 的 S22/S24 删除型断言，
+    // 也会命中 #982c 那类 absent 哨兵——注释里的裸标识符会被合并进产物）。
     let adjMini = false;   // true＝收起态小胶囊
     let adjBottom = null;  // null＝自动让开底部操作区；否则＝距视口底 px（用户拖过的位置）
     const toast = (msg) => { if (typeof window.toast === 'function') window.toast(msg); };
@@ -7818,6 +8107,10 @@ try {
       } catch (e) {}
       return gap;
     }
+    // v8.29 #1008：落位写入带短过渡（cssText 里的 transition:bottom .16s ease，拖动期间由
+    // bindAdjDrag 临时置 none）。切页时留白会在「底部导航留白」与「聊天输入栏留白 / 无导航
+    // 14px」之间跳——无头实测：设置页 bottom:90px 一跳 → 聊天设置页 bottom:14px（旧实现
+    // transition all 0s 硬切），76px 的瞬移就是用户报的「切换设置和设置美化还是会闪屏」。
     function applyAdjPos() { if (panel) panel.style.bottom = (adjBottom == null ? bottomReserve() : adjBottom) + 'px'; }
     function syncMiniLabel() {
       if (!panel) return;
@@ -7826,6 +8119,33 @@ try {
       if (pg) pg.textContent = nm;
       const ctx = panel.querySelector('[data-adj-ctx]');
       if (ctx) ctx.textContent = '正在调：' + nm;
+      syncPageSeg();
+    }
+    // #990：页签选中态与分组标记——当前在调的那一页＝页签反色高亮、该页专有的那组滑杆＝
+    // 打「你正在这一页」标记；切页（桌面↔聊天↔设置）随时跟着变，用户不必猜哪一根滑杆管哪页
+    function syncPageSeg() {
+      if (!panel) return;
+      const nm = adjPageName();
+      panel.querySelectorAll('[data-adj-goto]').forEach(function (b) {
+        const on = (b.getAttribute('data-adj-goto') === 'chat') ? (nm === '聊天' || nm === '群聊') : (nm === '桌面');
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        b.style.background = on ? '#111' : 'var(--btn-cancel-bg,#fafafa)';
+        b.style.color = on ? '#fff' : 'var(--ink,#111)';
+        b.style.borderColor = on ? '#111' : 'var(--card-border,#ddd)';
+        b.style.fontWeight = on ? '800' : '600';
+      });
+      panel.querySelectorAll('[data-adj-group]').forEach(function (h) {
+        const mk = h.querySelector('[data-adj-group-mine]');
+        if (mk) mk.style.display = groupIsCurrent(h.getAttribute('data-adj-group')) ? 'inline-block' : 'none';
+      });
+      // 说明行随当前页改写：在设置/其它页开面板时两枚页签都不高亮（那两页都不是当前页），
+      // 这里必须直说「点哪一枚切过去」，否则用户又会问「为什么两个都不亮、我该点哪个」
+      const ch = panel.querySelector('[data-adj-ctxhint]');
+      if (ch) {
+        if (nm === '桌面') ch.textContent = '反色高亮的「桌面」＝你现在正在调的页面；点「聊天」就切到聊天页看现场（面板自动收成小胶囊）。';
+        else if (nm === '聊天' || nm === '群聊') ch.textContent = '反色高亮的「聊天」＝你现在正在调的页面；点「桌面」就切到桌面页看现场（面板自动收成小胶囊）。';
+        else ch.textContent = '当前不在桌面/聊天页（' + nm + '）：点「桌面」或「聊天」切过去看现场（面板自动收成小胶囊），调完点胶囊展开继续。';
+      }
     }
     // 收起/展开：只切四块的显隐与外壳形态（全内联，不依赖新增 CSS 文件）
     function setMini(on) {
@@ -7880,6 +8200,7 @@ try {
         if (e.pointerType === 'mouse' && e.button !== 0) return;
         drag = true; moved = false; sy = e.clientY;
         sb = parseFloat(panel.style.bottom) || bottomReserve();
+        panel.style.transition = 'none'; // #1008：拖动期间关掉 bottom 过渡，保证跟手
         try { el.setPointerCapture(e.pointerId); } catch (er) {}
         e.preventDefault();
       });
@@ -7893,6 +8214,7 @@ try {
       const up = () => {
         if (!drag) return;
         drag = false;
+        panel.style.transition = 'bottom .16s ease'; // #1008：松手恢复过渡（吸附/回自动位都是动画）
         if (tapToOpen && !moved) { setMini(false); return; } // 胶囊：点一下＝展开
         if (adjBottom != null && adjBottom <= bottomReserve() + 6) adjBottom = null; // 拖回自动位＝吸附复位
         applyAdjPos();
@@ -7923,20 +8245,33 @@ try {
       panel.id = 'screen-adj-panel';
       // #940：底色 72% 半透明（color-mix 不支持的老内核自动回落上一句纯色）＋高度 62vh→40vh，
       // 与边看边调抽屉同口径；刻意不加 backdrop-filter——AGENTS 的 iOS 卡顿红线。
-      panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:96;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 14px calc(14px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:6px';
+      panel.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:96;max-height:40vh;background:var(--card-bg,#fff);background:color-mix(in srgb, var(--card-bg,#fff) 72%, transparent);color:var(--ink,#111);box-shadow:0 -6px 24px rgba(0,0,0,.18);border-radius:16px 16px 0 0;overflow-y:auto;overflow-x:hidden;padding:0 14px calc(14px + var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)));box-sizing:border-box;display:flex;flex-direction:column;gap:6px;transition:bottom .16s ease';
       const grip = document.createElement('div');
       grip.style.cssText = 'width:36px;height:4px;border-radius:2px;background:var(--card-border,#ddd);margin:7px auto 2px;flex:none';
       panel.appendChild(grip);
       bindAdjDrag(grip, false);
       elGrip = grip;
       const head = document.createElement('div');
-      head.style.cssText = 'display:flex;align-items:center;gap:8px;flex:none;padding:2px 0 4px';
-      head.innerHTML = '<b style="font-size:14px">屏幕适配微调</b><span style="font-size:11px;color:#888;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">拖标题行可上移 · 本机永久保存</span>';
+      head.style.cssText = 'display:flex;flex-direction:column;gap:5px;flex:none;padding:2px 0 4px';
+      // #990：标题与说明分两行——原来挤成一行时那句拖动提示被右侧按钮压成省略号
+      // （390px 实测只剩不到 40px），用户看不到＝「没有写清楚」；现在这行完整可读
+      const headTop = document.createElement('div');
+      headTop.style.cssText = 'display:flex;align-items:center;gap:8px';
+      headTop.innerHTML = '<b style="font-size:14px;flex:1;min-width:0">屏幕适配微调</b><span style="font-size:11px;color:#666;flex:none">本机永久保存</span>';
+      head.appendChild(headTop);
+      const headTool = document.createElement('div');
+      headTool.style.cssText = 'display:flex;align-items:center;gap:8px';
+      head.appendChild(headTool);
+      const headHint = document.createElement('span');
+      headHint.setAttribute('data-adj-draghint', '');
+      headHint.style.cssText = 'font-size:11px;color:#666;flex:1;min-width:0;line-height:1.3';
+      headHint.textContent = '按住这行标题上下拖＝把面板挪开';
+      headTool.appendChild(headHint);
       const done = document.createElement('button');
       done.textContent = '完成';
       done.style.cssText = 'flex:none;border:none;background:#111;color:#fff;font-size:12px;font-weight:700;border-radius:99px;padding:6px 16px;cursor:pointer';
       done.addEventListener('click', closePanel);
-      head.appendChild(done);
+      headTop.appendChild(done);
       // #794：按住看默认（A/B 对比）——按住期间全部轴临时归零预览出厂形态，
       // 松手恢复按住前的值；拖方向拿不准时按一下就知道该往哪边拖
       const holdBtn = document.createElement('button');
@@ -7958,7 +8293,7 @@ try {
       };
       holdBtn.addEventListener('pointerdown', holdOn);
       ['pointerup', 'pointerleave', 'pointercancel'].forEach(function (ev) { holdBtn.addEventListener(ev, holdOff); });
-      head.insertBefore(holdBtn, done);
+      headTool.insertBefore(holdBtn, headHint);
       // #940：收起＝只剩 grip＋标题行，露出 tabbar 可切到桌面/聊天等页面看六轴现场（同抽屉口径）
       const foldBtn = document.createElement('button');
       foldBtn.textContent = '收起';
@@ -7969,7 +8304,7 @@ try {
       elBody = adjBody;
       // #962：收起＝整块收成小胶囊（原实现只折正文区，外壳仍横贯底边 70px 高、照样盖住底部导航）
       foldBtn.addEventListener('click', () => { setMini(true); });
-      head.insertBefore(foldBtn, holdBtn);
+      headTool.insertBefore(foldBtn, holdBtn);
       panel.appendChild(head);
       elHead = head;
       bindAdjDrag(head, false); // grip 只有 4px 高，标题行才是主拖拽把手
@@ -7982,11 +8317,16 @@ try {
       bindAdjDrag(mini, true);
       panel.appendChild(mini);
       elMini = mini;
+      // #990：用法写在面板最上面（用户报拖动那句没说清在挪什么——原句还被右侧按钮挤成
+      // 省略号）。拖动这条现已挪到标题行那行明说，这里只讲「切页」与「哪根滑杆管哪页」这两件
+      // 最容易点错的事，避免把滑杆挤出首屏
       const tip = document.createElement('div');
-      tip.style.cssText = 'font-size:11px;color:#888;flex:none;line-height:1.5';
-      tip.textContent = '拖动滑杆边看边调，双击滑杆回默认 0；「收起」变成小胶囊、不挡底部导航与输入栏，点「看桌面 / 看聊天」切到现场接着调；配合「屏幕适配诊断」——先诊断差多少 px，再来拖对应轴。';
+      tip.setAttribute('data-adj-usage', '');
+      tip.style.cssText = 'font-size:11px;color:#666;flex:none;line-height:1.5';
+      tip.textContent = '想调哪一页，就点「正在调」旁边那一枚页签——切过去看现场（面板自动收成小胶囊）。下面滑杆按「哪一页生效」分三组，标着「你正在这一页」的那组才是当前页要调的；拖动当场生效、双击滑杆回默认 0。';
       adjBody.appendChild(tip);
-      // #962：现场行——显示当前在给哪一页调，并可一键切到桌面/聊天（切完自动收成胶囊）
+      // #962 现场行 → #990：原来两枚裸按钮（分别写着「看桌面」与「看聊天」）分不出哪一枚是
+      // 「我现在要调的」，用户报「不知道点哪一个才是」——改成带选中态的页签（当前页反色高亮）＋ 一行说明
       const ctx = document.createElement('div');
       ctx.style.cssText = 'flex:none;display:flex;align-items:center;gap:8px;border:1px solid var(--card-border,#eee);border-radius:10px;padding:7px 10px;font-size:12px';
       const ctxTxt = document.createElement('span');
@@ -7994,14 +8334,22 @@ try {
       ctxTxt.style.cssText = 'flex:1;min-width:0;font-weight:600';
       ctxTxt.textContent = '正在调：' + adjPageName();
       ctx.appendChild(ctxTxt);
-      [['page-phone', '看桌面'], ['chat', '看聊天']].forEach(function (pair) {
+      [['page-phone', '桌面'], ['chat', '聊天']].forEach(function (pair) {
         const pb = document.createElement('button');
+        pb.setAttribute('data-adj-goto', pair[0]);
+        pb.setAttribute('aria-pressed', 'false');
+        pb.title = '切到「' + pair[1] + '」页看现场（面板自动收成小胶囊）';
         pb.textContent = pair[1];
-        pb.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:12px;font-weight:600;border-radius:99px;padding:5px 12px;cursor:pointer';
+        pb.style.cssText = 'flex:none;border:1px solid var(--card-border,#ddd);background:var(--btn-cancel-bg,#fafafa);color:var(--ink,#111);font-size:12px;font-weight:600;border-radius:99px;padding:5px 14px;cursor:pointer';
         pb.addEventListener('click', function () { goPage(pair[0]); });
         ctx.appendChild(pb);
       });
       adjBody.appendChild(ctx);
+      const ctxHint = document.createElement('div');
+      ctxHint.setAttribute('data-adj-ctxhint', '');
+      ctxHint.style.cssText = 'font-size:11px;color:#666;flex:none;line-height:1.4;margin-top:-2px';
+      ctxHint.textContent = '点「桌面」或「聊天」切过去看现场（面板自动收成小胶囊），调完点胶囊展开继续。'; // syncPageSeg 随后按当前页改写
+      adjBody.appendChild(ctxHint);
       // #794：诊断建议行——打开面板即现场探测一次（device.js 只读采集+判定同源），
       // 有可修项才显示；点「一键修正」直接写入对应轴，不用再跑诊断报告
       try {
@@ -8028,7 +8376,22 @@ try {
         }
       } catch (eSug) {}
       const cur0 = window.mochiScreenAdj ? window.mochiScreenAdj.all() : {};
+      let lastGroup = '';
       AXES.forEach(ax => {
+        // #990：换组就插一个小标题＝「这根滑杆管哪一页」的唯一说明位，当前页那组带「你正在这一页」
+        if (ax.group !== lastGroup) {
+          lastGroup = ax.group;
+          const gh = document.createElement('div');
+          gh.setAttribute('data-adj-group', ax.group);
+          gh.style.cssText = 'flex:none;display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px;font-weight:800;color:#444;padding-top:7px';
+          gh.textContent = AXIS_GROUPS[ax.group] || '';
+          const mine = document.createElement('span');
+          mine.setAttribute('data-adj-group-mine', '');
+          mine.style.cssText = 'display:none;background:#111;color:#fff;font-size:10px;font-weight:700;border-radius:99px;padding:1px 7px';
+          mine.textContent = '你正在这一页';
+          gh.appendChild(mine);
+          adjBody.appendChild(gh);
+        }
         const row = document.createElement('div');
         row.style.cssText = 'flex:none;border-top:1px solid var(--card-border,#eee);padding:7px 0';
         const line = document.createElement('div');
@@ -8140,7 +8503,7 @@ try {
       watchAdjPages();
     }
     function closePanel() { if (panel) { panel.remove(); panel = null; unwindAdjPages(); } }
-    // #962：切到桌面/聊天现场（面板里的「看桌面 / 看聊天」用）——切完自动收成胶囊，一眼看到那一页
+    // #962：切到桌面/聊天现场（面板里那两枚切页页签用）——切完自动收成胶囊，一眼看到那一页
     function goPage(which) {
       try {
         if (which === 'chat') { if (typeof window.enterChat === 'function') window.enterChat(); }
@@ -8159,17 +8522,14 @@ try {
       refreshVals();
       syncMiniLabel();
     }
-    // #962：三处入口收敛到同一个开面板动作——设置页（原有）＋聊天页「更多 → 工具」＋桌面页「装修模式栏」，
-    // 用户不用先钻进设置：在桌面/聊天现场就能开面板调，调的位置看得见＝不再盲调。
+    // #962/#982：三处入口收敛到同一个开面板动作——设置页「工具」首位（原有）＋聊天页「聊天设置 → 美化」
+    // ＋桌面页「装修模式栏」，用户不用先钻进设置：在桌面/聊天现场就能开面板调，调的位置看得见＝不再盲调。
+    // #982：聊天侧入口由「更多 → 工具」改为「聊天设置 → 美化」（用户直派），按钮 id 随行 id 一并换掉。
     window.mochiOpenScreenAdj = openAdjPanel;
     const entry = document.getElementById('row-screen-adj');
     if (entry) entry.addEventListener('click', openAdjPanel);
-    const chatEntry = document.getElementById('more-screen-adj');
-    if (chatEntry) chatEntry.addEventListener('click', () => {
-      const mp = document.getElementById('chat-more-panel');
-      if (mp) mp.hidden = true; // 与其它 more-item 同口径：点了先把更多面板收掉
-      openAdjPanel();
-    });
+    const chatSetEntry = document.getElementById('cs-screen-adj');
+    if (chatSetEntry) chatSetEntry.addEventListener('click', openAdjPanel);
     const decorEntry = document.getElementById('decor-fit');
     if (decorEntry) decorEntry.addEventListener('click', () => {
       try { if (window.exitDecor) window.exitDecor(); } catch (e) {} // 先退出装修模式再开面板，避免两层叠着看不清
@@ -8226,7 +8586,9 @@ try {
     return c === 'family' ? '亲情纪念日' : c === 'friend' ? '友情纪念日' : '恋爱纪念日';
   }
   function updateLove() {
-    const start = store.get('love-start');
+    // v8.29 #984：统一经 normDateStr 收口——历史脏值（如内核 date 回落 text 时落库的
+    // 「20260601」）不再渲染成「20260601 年 undefined 月 undefined 日」
+    const start = normDateStr(store.get('love-start'));
     const daysEl = document.getElementById('love-days');
     const dateEl = document.getElementById('love-date');
     const mDays = document.getElementById('mem-love-days');
@@ -8263,15 +8625,45 @@ try {
   }
   updateLove();
 
-  // 设置页恋爱纪念日：原生日期选择器（任何浏览器/手机上都能点开）
-  const dateInput = document.getElementById('love-date-input');
+  // 设置页恋爱纪念日：站内月历弹层（openLoveDateModal）
+  // v8.29 #984：原实现是「透明的原生 date 控件铺满假按钮」——按钮本身 pointer-events:none
+  //   且无任何点击处理，点按能否生效、取回的日期字符串是什么形态，全看内核把触摸转发给
+  //   原生控件的行为与内核的 date 支持（date 回落 text 的内核给的是「20260601」这类无连字
+  //   符串，落库即脏值）。iPhone X / iOS16.7 / 夸克实报「点击设置恋爱纪念日无反应」，同族
+  //   机型同现；功能大全「纪念 · 恋爱纪念日」的链式 .click() 也正落在这个没有处理器的按钮
+  //   上（点了没反应）。改为纯 DOM 月历（与「添加纪念日」共用 .mem-cal 渲染），点击、取值、
+  //   校验全在自己手里，零机型分支。
   const dateBtnTxt = document.getElementById('love-date-btn-txt');
   const dateBtn = document.getElementById('love-date-btn');
-  // 把已选的日期显示到按钮文字上（原生 date input 本身被覆盖为不可见）
+  // 日期字符串收口：只接受 YYYY-MM-DD，并容忍内核/历史数据里的无连字符与点/斜杠形态
+  function normDateStr(v) {
+    const s = String(v == null ? '' : v).trim();
+    let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
+    if (!m) m = /^(\d{4})(\d{2})(\d{2})$/.exec(s);
+    if (!m) m = /^(\d{4})[./](\d{1,2})[./](\d{1,2})$/.exec(s);
+    if (!m) return '';
+    const y = +m[1], mo = +m[2], d = +m[3];
+    if (y < 1900 || y > 2999 || mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+    const dt = new Date(y, mo - 1, d);
+    if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return '';
+    return y + '-' + pad2(mo) + '-' + pad2(d);
+  }
+  // 纪念日起值的唯一写入口（月历「确定」与任何外部赋值都走它）：非法值一律不落库
+  function setLoveStart(v) {
+    const ds = normDateStr(v);
+    if (!ds) return false;
+    store.set('love-start', ds);
+    syncLoveDateBtn(ds);
+    updateLove();
+    try { renderDeskAnniv(); } catch (e) {}
+    return true;
+  }
+  // 把已选的日期显示到按钮文字上
   function syncLoveDateBtn(val) {
     if (!dateBtnTxt || !dateBtn) return;
-    if (val) {
-      const parts = val.split('-');
+    const ds = normDateStr(val);
+    if (ds) {
+      const parts = ds.split('-');
       dateBtnTxt.textContent = parts[0] + ' 年 ' + parts[1] + ' 月 ' + parts[2] + ' 日';
       dateBtn.setAttribute('data-set', '1');
     } else {
@@ -8279,18 +8671,8 @@ try {
       dateBtn.setAttribute('data-set', '0');
     }
   }
-  if (dateInput) {
-    const saved = store.get('love-start');
-    if (saved) dateInput.value = saved;
-    syncLoveDateBtn(dateInput.value);
-    dateInput.addEventListener('change', () => {
-      if (dateInput.value) {
-        store.set('love-start', dateInput.value);
-        syncLoveDateBtn(dateInput.value);
-        updateLove();
-      }
-    });
-  }
+  syncLoveDateBtn(store.get('love-start'));
+  if (dateBtn) dateBtn.addEventListener('click', openLoveDateModal);
 
   // v3.26.x：主纪念日关系类型（爱情向/亲情向/友情向）+ 关系称呼（选填）
   // 桌面双方头像之间的图标随类型切换：爱情=爱心 / 亲情=家 / 友情=两人
@@ -8385,44 +8767,63 @@ try {
     memAdd.addEventListener('click', openMemAddModal);
   }
 
-  // ================= 添加纪念日 / 倒数日：日历选择弹层 =================
+  // ================= 纪念日日期选择：月历（「添加纪念日」与「恋爱纪念日」共用） =================
   // v3.5.29：从"文本输入名称+日期"改为可视化月历点选（更直观美观）
-  let memMask = null;      // 弹层单例
+  // v8.29 #984：渲染与导航抽成共用件——两个弹层同一实现，日期控件族的坑只修一处，
+  //   不再逐入口手抄（手抄必漏是本族反复复发的结构性原因）。
+  let memMask = null;      // 添加纪念日弹层单例
   let memSelDate = '';     // 选中日期 'YYYY-MM-DD'
   let memSelType = 'auto'; // auto/ann/count
-  let mvY = 0, mvM = -1;   // 弹层当前查看的年/月（-1=本月）
+  const mvYM = { y: 0, m: -1 }; // 弹层当前查看的年/月（m=-1 表示「本月」，首帧落到当前年月）
   function pad2(n) { return n < 10 ? '0' + n : '' + n; }
   function memToday() {
     const d = new Date();
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
   }
-  function renderMemCal() {
-    if (!memMask) return;
-    const now = new Date();
-    if (mvM < 0) { mvY = now.getFullYear(); mvM = now.getMonth(); }
-    const y = mvY, m = mvM;
-    memMask.querySelector('.mem-cal-title').textContent = y + ' 年 ' + (m + 1) + ' 月';
-    const first = new Date(y, m, 1);
-    const days = new Date(y, m + 1, 0).getDate();
-    const startWd = first.getDay();
+  // 月历导航条：‹‹ ›› 按年跳（选几年前的纪念日不必点几十下），‹ › 按月跳
+  const MEM_CAL_NAV_HTML =
+    '<div class="mem-cal-nav">' +
+      '<button class="mem-cal-btn" data-nav="-12" title="上一年"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M11 17l-5-5 5-5"/><path d="M18 17l-5-5 5-5"/></svg></button>' +
+      '<button class="mem-cal-btn" data-nav="-1" title="上个月"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M15 18l-6-6 6-6"/></svg></button>' +
+      '<span class="mem-cal-title"></span>' +
+      '<button class="mem-cal-btn" data-nav="1" title="下个月"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M9 18l6-6-6-6"/></svg></button>' +
+      '<button class="mem-cal-btn" data-nav="12" title="下一年"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M13 7l5 5-5 5"/><path d="M6 7l5 5-5 5"/></svg></button>' +
+    '</div>';
+  // 画一个月（ym={y,m} 会被就地修正为合法月份；selDate 打选中态、今天打 today 态）
+  function memCalPaint(panel, ym, selDate, onPick) {
+    while (ym.m < 0) { ym.m += 12; ym.y--; }
+    while (ym.m > 11) { ym.m -= 12; ym.y++; }
+    const title = panel.querySelector('.mem-cal-title');
+    const grid = panel.querySelector('.mem-cal-grid');
+    if (!title || !grid) return;
+    title.textContent = ym.y + ' 年 ' + (ym.m + 1) + ' 月';
+    const days = new Date(ym.y, ym.m + 1, 0).getDate();
+    const startWd = new Date(ym.y, ym.m, 1).getDay();
     const wds = ['日', '一', '二', '三', '四', '五', '六'];
     const t = memToday();
     let html = wds.map(w => '<span class="mem-cal-wd">' + w + '</span>').join('');
     for (let i = 0; i < startWd; i++) html += '<span class="mem-cal-cell blank"></span>';
     for (let d = 1; d <= days; d++) {
-      const ds = y + '-' + pad2(m + 1) + '-' + pad2(d);
-      const isToday = ds === t;
-      const isSel = ds === memSelDate;
-      html += '<span class="mem-cal-cell' + (isToday ? ' today' : '') + (isSel ? ' sel' : '') + '" data-d="' + ds + '">' + d + '</span>';
+      const ds = ym.y + '-' + pad2(ym.m + 1) + '-' + pad2(d);
+      html += '<span class="mem-cal-cell' + (ds === t ? ' today' : '') + (ds === selDate ? ' sel' : '') + '" data-d="' + ds + '">' + d + '</span>';
     }
-    const grid = memMask.querySelector('.mem-cal-grid');
     grid.innerHTML = html;
     grid.querySelectorAll('.mem-cal-cell[data-d]').forEach(cell => {
-      cell.addEventListener('click', () => {
-        memSelDate = cell.getAttribute('data-d');
-        renderMemCal();
-      });
+      cell.addEventListener('click', () => { onPick(cell.getAttribute('data-d')); });
     });
+  }
+  function memCalNavBind(panel, ym, onChange) {
+    panel.querySelectorAll('.mem-cal-btn').forEach(b => b.addEventListener('click', () => {
+      ym.m += parseInt(b.getAttribute('data-nav'), 10) || 0;
+      while (ym.m < 0) { ym.m += 12; ym.y--; }
+      while (ym.m > 11) { ym.m -= 12; ym.y++; }
+      onChange();
+    }));
+  }
+  function renderMemCal() {
+    if (!memMask) return;
+    if (mvYM.m < 0) { const now = new Date(); mvYM.y = now.getFullYear(); mvYM.m = now.getMonth(); }
+    memCalPaint(memMask, mvYM, memSelDate, (d) => { memSelDate = d; renderMemCal(); });
   }
   function closeMemAdd() {
     if (memMask) memMask.hidden = true;
@@ -8436,14 +8837,7 @@ try {
         '<div class="mg-panel mem-add-panel">' +
           '<div class="mg-head"><span>添加纪念日 / 倒数日</span><button class="mg-close">✕</button></div>' +
           '<input type="text" class="mem-add-input" placeholder="名称（如：在一起一周年 / 生日）" maxlength="24">' +
-          '<div class="mem-cal">' +
-            '<div class="mem-cal-nav">' +
-              '<button class="mem-cal-btn" data-nav="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M15 18l-6-6 6-6"/></svg></button>' +
-              '<span class="mem-cal-title"></span>' +
-              '<button class="mem-cal-btn" data-nav="1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M9 18l6-6-6-6"/></svg></button>' +
-            '</div>' +
-            '<div class="mem-cal-grid"></div>' +
-          '</div>' +
+          '<div class="mem-cal">' + MEM_CAL_NAV_HTML + '<div class="mem-cal-grid"></div></div>' +
           '<div class="mem-type-row">' +
             '<button class="mem-type-pill sel" data-type="auto">自动</button>' +
             '<button class="mem-type-pill" data-type="ann">纪念日</button>' +
@@ -8459,13 +8853,8 @@ try {
       memMask.querySelector('.mg-close').addEventListener('click', closeMemAdd);
       memMask.addEventListener('click', (e) => { if (e.target === memMask) closeMemAdd(); });
       memMask.querySelector('.mem-add-cancel').addEventListener('click', closeMemAdd);
-      // 月份切换
-      memMask.querySelectorAll('.mem-cal-btn').forEach(b => b.addEventListener('click', () => {
-        mvM += parseInt(b.getAttribute('data-nav'), 10);
-        if (mvM < 0) { mvM = 11; mvY--; }
-        if (mvM > 11) { mvM = 0; mvY++; }
-        renderMemCal();
-      }));
+      // 月份/年份切换（共用件：‹ › 按月、‹‹ ›› 按年）
+      memCalNavBind(memMask, mvYM, renderMemCal);
       // 类型切换
       memMask.querySelectorAll('.mem-type-pill').forEach(b => b.addEventListener('click', () => {
         memSelType = b.getAttribute('data-type');
@@ -8497,9 +8886,54 @@ try {
     const nameInput = memMask.querySelector('input.mem-add-input');
     nameInput.value = '';
     memMask.querySelectorAll('.mem-type-pill').forEach(x => x.classList.toggle('sel', x.getAttribute('data-type') === 'auto'));
-    mvY = 0; mvM = -1;
+    mvYM.y = 0; mvYM.m = -1;
     renderMemCal();
     setTimeout(() => nameInput.focus(), 80);
+  }
+
+  // ================= 恋爱纪念日：选日期弹层（#984） =================
+  // 与「添加纪念日」同一套月历渲染，但只做一件事：选一个日期写进 love-start。
+  // 纯 DOM、按钮自己接点击——不再依赖任何内核的原生日期控件行为。
+  let memDateMask = null;
+  let mdSel = '';
+  const mdYM = { y: 0, m: 0 };
+  function renderMemDateCal() {
+    if (!memDateMask) return;
+    memCalPaint(memDateMask, mdYM, mdSel, (d) => { mdSel = d; renderMemDateCal(); });
+  }
+  function closeMemDateModal() { if (memDateMask) memDateMask.hidden = true; }
+  function openLoveDateModal() {
+    if (!memDateMask) {
+      memDateMask = document.createElement('div');
+      memDateMask.id = 'mem-date-mask';
+      memDateMask.className = 'mg-mask';
+      memDateMask.innerHTML =
+        '<div class="mg-panel mem-add-panel">' +
+          '<div class="mg-head"><span>选择日期</span><button class="mg-close">✕</button></div>' +
+          '<div class="mem-cal">' + MEM_CAL_NAV_HTML + '<div class="mem-cal-grid"></div></div>' +
+          '<div class="mem-type-hint">‹ › 按月换，‹‹ ›› 按年换；点日期选中后按「确定」</div>' +
+          '<div class="mem-add-foot">' +
+            '<button class="mem-add-cancel">取消</button>' +
+            '<button class="mem-add-ok">确定</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(memDateMask);
+      memCalNavBind(memDateMask, mdYM, renderMemDateCal);
+      memDateMask.querySelector('.mg-close').addEventListener('click', closeMemDateModal);
+      memDateMask.addEventListener('click', (e) => { if (e.target === memDateMask) closeMemDateModal(); });
+      memDateMask.querySelector('.mem-add-cancel').addEventListener('click', closeMemDateModal);
+      memDateMask.querySelector('.mem-add-ok').addEventListener('click', () => {
+        if (!setLoveStart(mdSel)) { toast('日期没选上，请再点一次'); return; }
+        closeMemDateModal();
+      });
+    }
+    // 每次打开：已设过就停在那一天（选中态 + 视图年月），没设过就以今天为初始
+    const cur = normDateStr(store.get('love-start')) || memToday();
+    mdSel = cur;
+    const cp = cur.split('-');
+    mdYM.y = +cp[0]; mdYM.m = +cp[1] - 1;
+    memDateMask.hidden = false;
+    renderMemDateCal();
   }
 
   // 纪念页：桌面【纪念】图标进入
@@ -10254,7 +10688,7 @@ try {
     if (!daysEl || !nameEl) return;
     const now = new Date();
     const cands = [];
-    const start = store.get('love-start');
+    const start = normDateStr(store.get('love-start'));
     if (start) {
       const d = new Date(start + 'T00:00:00');
       if (!isNaN(d.getTime())) {

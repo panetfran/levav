@@ -906,7 +906,11 @@ window.showDeskPopup({ name: '信箱', text: '给你回了一封信：' + String
         if (dq) parts.push(dq);
       }
     } catch (eDQ) {}
-    let t = parts.join(' ');
+    // #1198 每两条字卡中间走「拼接符号」池（回复设置 → 信箱「信件拼接随机标点」，默认关＝仍用空格
+    // ＝老样子）。符号池与聊天共用同一套（含内置「换行」，抽到才另起一行；信纸 .mail-paper-body
+    // 本来就是 pre-wrap）；按【发信联系人桌面】读设置，与 mailCfgFor 同口径。
+    const rcf = window.replyCfgFor ? window.replyCfgFor(cid) : null;
+    let t = (window.pyJoinCards && rcf) ? window.pyJoinCards(parts, rcf, rcf['ml-punct-en'] === 1) : parts.join(' ');
     // 颜文字/emoji 附加：自定义对应分类为空时回退默认池（保持原补池行为）
     const kp = pool.kaomoji.length ? pool.kaomoji : pool.defKaomoji;
     const ep = pool.emoji.length ? pool.emoji : pool.defEmoji;
@@ -1048,8 +1052,6 @@ window.showDeskPopup({ name: '信箱', text: '给你回了一封信：' + String
         wm += x.mine || 0; wt += x.ta || 0;
       });
     } catch (e) {}
-    let myName = '我';
-    try { myName = cs.get('lbl-user') || '我'; } catch (e) {}
     const name = partnerNameFor(cid);
     let bestIdx = 0;
     for (let i = 1; i < 7; i++) if (wdSum[i] > wdSum[bestIdx]) bestIdx = i;
@@ -1058,9 +1060,9 @@ window.showDeskPopup({ name: '信箱', text: '给你回了一封信：' + String
     const lines = [
       '本周（' + (start.getMonth() + 1) + '月' + start.getDate() + '日 - ' + (sun.getMonth() + 1) + '月' + sun.getDate() + '日）小结',
       '',
-      '你俩一共摸鱼 ' + totalFish + ' 点（' + myName + ' +' + fm + ' · ' + name + ' +' + ft + '）。',
+      '你和我一共摸鱼 ' + totalFish + ' 点（你 +' + fm + ' · 我 +' + ft + '）。',
       totalFish > 0 ? '最会摸的一天是' + wdNames[bestIdx] + '，加了 ' + wdSum[bestIdx] + ' 点。' : '这一周还没怎么摸鱼呀，都在认真打工吗？',
-      '工作值也一起攒了 ' + (wm + wt) + ' 点（' + myName + ' +' + wm + ' · ' + name + ' +' + wt + '）。',
+      '工作值也一起攒了 ' + (wm + wt) + ' 点（你 +' + wm + ' · 我 +' + wt + '）。',
       '',
       '下周也偷偷一起加油呀。'
     ];
