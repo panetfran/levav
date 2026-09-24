@@ -1,9 +1,21 @@
 // verify-973-splash-top-warn.mjs — #973 开屏最顶端「使用前必看」标红提醒卡（常驻）
+// #981（2026-09-21）用户重写顶卡文案为四段（工具与个人理解 / 需给适应时间或不适用建议不用 / 回复设置概率与功能时间概率全部公开可调、
+//   功能可关 / 聊天字卡可按分组或单张关、默认聊天字卡的词典字卡太多不适用建议关闭），本脚本文案类断言随之更新；
+//   位置/红色形态/摘要口径/门控类断言不变。
+// #1019（2026-09-22）用户追加第 5 段（「字卡回复高频和通话高频都可以自行调整」＋「不要因为帮人修不同手机型号的设备兼容bug，
+//   就把我的功能和设计也当成bug」＋「已无力解释，可自行在功能说明里查看」），段数 4→5、新增 S13b~S13d 三条文案断言；
+//   几何余量实测（390×844）＝顶卡 252px → 357px（限 420px）、#864 指引条 top 607 → 712（vh 844，仍在首屏）（同 tip 纯 HEAD 对照跑过）。
+// #1046（2026-09-22）用户直派追加第 6 段（重申工具属性、好不好用取决于个人 ＋ 任何设置都没自己调整就报不好用/混乱＝开屏里已经
+//   提示和强调过、需按个人使用自行设置），段数 5→6、新增 S13e/S13f 两条文案断言；不加行距收紧时卡高 357→495px 会把
+//   #864 指引条挤出首屏（top 885 > vh 844），同批把顶卡行距 1.8→1.6、段间距/内边距/下边距微收（字号 12.5px、颜色、内容一字不动），
+//   收紧后实测顶卡 495→435px、#864 指引条 top 885→825（vh 844，仍在首屏）；S5 上限随本批 420→470（S6 首屏边界断言不变、仍硬）。
 // 用户直派（2026-09-21）：「开屏顶部最显眼还需要标红提醒：网站内置内容非常非常多，不适用就建议不用这个网站。
 //   或给适应一定时间，回复设置概率什么的，全部都是公开的可以自己调，功能也可以自己设置关闭。」
 //   ＋追补两条：「加上：系统预设字卡觉得不好用，也可以自己关闭，一直都是全部公开的，全部都可以自己调。」
 //               「加上：抱着必定好用的想法是不可能实现的，都需要适应和调整。」
 // 结构（本批定型）：顶卡只留三句（≈270px 高，压在首屏内、不挤掉 #864 指引条），四条可调入口的明细落在必读摘要第 2 条。
+// #976（2026-09-21）：7 张必读卡整组前移到品牌卡之前（#splash-mustread），本脚本 B1 的五张卡选择器随口径平移
+//   （只关心「一张不少」，组内次序与颜色语义由 tools/verify-976-splash-order-colors.mjs 专判）。
 // 无头实机断言：红卡在开屏顶部（.splash-box 首个子节点、排在品牌卡之前、首屏内完整可见）、红色形态（亮/暗主题）、
 //   文案含用户三条口径 + 关键词、摘要两条口径在线/离线一致、其余开屏卡与「滑到底才能进入」门控零回归，
 //   并守住跨批边界：顶卡不得把 #864「公告已精简」指引条挤出首屏。
@@ -67,10 +79,10 @@ const probe = () => page.evaluate(() => {
     noHOverflow: !!(box && box.scrollWidth <= box.clientWidth + 1),
     hls: hls,
     otherCards: {
-      antiScam: document.querySelectorAll('#splash-notice .splash-alert[data-anti-scam="1"]').length,
-      browser: document.querySelectorAll('#splash-notice [data-browser-warn]').length,
-      what: document.querySelectorAll('#splash-notice .splash-alert[data-anti-scam="w"]').length,
-      disclaimer: document.querySelectorAll('#splash-notice .splash-alert[data-anti-scam="d"]').length,
+      antiScam: document.querySelectorAll('#splash-mustread .splash-alert[data-anti-scam="1"]').length,
+      browser: document.querySelectorAll('#splash-mustread [data-browser-warn]').length,
+      what: document.querySelectorAll('#splash-mustread .splash-alert[data-anti-scam="w"]').length,
+      disclaimer: document.querySelectorAll('#splash-mustread .splash-alert[data-anti-scam="d"]').length,
       cardlock: document.querySelectorAll('#splash-cardlock').length,
       stopupdate: document.querySelectorAll('.splash-stopupdate').length,
       abouttip: document.querySelectorAll('[data-about-tip]').length
@@ -89,23 +101,31 @@ ok(s.hasCard, 'S1 开屏存在 #973 红卡 .splash-bigwarn');
 ok(s.firstChild, 'S2 它是 .splash-box 的首个子节点（＝开屏顶部第一位）');
 ok(s.beforeBrand, 'S3 它排在品牌卡 .splash-brandcard 之前（比 #793/#864 更靠前）');
 ok(s.inFirstScreen, 'S4 未滚动时整张卡完整落在首屏内（进页第一眼可见）', JSON.stringify(s.rect));
-ok(s.rect && s.rect.h <= 420, 'S5 顶卡高度受控（≤420px，不喧宾夺主、不把后面内容全推出首屏）', s.rect ? s.rect.h + 'px' : 'null');
+ok(s.rect && s.rect.h <= 470, 'S5 顶卡高度受控（≤470px，#1046 六段＋行距收紧后的上限；不喧宾夺主、真正的首屏边界由 S6 钉）', s.rect ? s.rect.h + 'px' : 'null');
 ok(s.aboutTipTop !== null && s.aboutTipTop < s.vh, 'S6 跨批边界：#864「公告已精简」指引条仍落在首屏滚动区（top < vh，与 #864 脚本同口径；顶卡占第一屏顶位后它被底部卡片压住一截，要完整看需轻微下滑——如需恢复完整可见只能缩短顶卡）', 'top=' + s.aboutTipTop + ' vh=' + s.vh);
 
 // ===== 文案：用户定稿口径 =====
 ok(/使用前必看/.test(s.title) && /本站内容非常多/.test(s.title) && /不适用建议不使用/.test(s.title), 'S7 标题写明「使用前必看 · 本站内容非常多，不适用建议不使用本站」', s.title);
-ok(/网站本质只是工具/.test(s.text) && /使用取决于个人/.test(s.text) && /各种原因都需要适应和调整/.test(s.text), 'S8 正文含「网站本质只是工具，使用取决于个人，各种原因都需要适应和调整」');
-ok(/内置内容非常非常多/.test(s.text) && /不适用建议不使用这个网站/.test(s.text) && /给一定时间适应/.test(s.text), 'S9 正文含「内置内容非常非常多，不适用建议不使用这个网站，或给一定时间适应」');
-ok(/全部都是公开的/.test(s.text) && /可以自己调/.test(s.text) && /时间/.test(s.text) && /概率/.test(s.text), 'S10 正文含「很多功能的时间与概率，全部都是公开的、可以自己调」');
-ok(/一些功能也可以自己设置关闭/.test(s.text), 'S11 正文含「一些功能也可以自己设置关闭」');
-ok(/聊天字卡/.test(s.text) && /单独关闭某个分组/.test(s.text) && /关闭某一张字卡/.test(s.text), 'S12 正文含「聊天字卡可以单独关闭某个分组，或关闭某一张字卡」');
-ok(/必读摘要/.test(s.text), 'S13 顶卡把明细指向下方必读摘要（顶卡保持三句）');
+ok(/网站本质只是工具/.test(s.text) && /使用效果取决于个人使用和个人理解/.test(s.text) && /各种原因都需要适应和调整/.test(s.text), 'S8 第 1 段＝「网站本质只是工具，使用效果取决于个人使用和个人理解，各种原因都需要适应和调整」');
+ok(/内置内容非常非常多/.test(s.text) && /需给一定时间适应和根据个人使用习惯调整/.test(s.text) && /不适用建议不使用这个网站/.test(s.text), 'S9 第 2 段＝「网站内置内容非常非常多，需给一定时间适应和根据个人使用习惯调整，或不适用建议不使用这个网站」');
+ok(/回复设置概率/.test(s.text) && /非常多功能的时间和概率/.test(s.text) && /全部都是公开的可以自己调/.test(s.text), 'S10 第 3 段＝「回复设置概率，非常多功能的时间和概率，全部都是公开的可以自己调」');
+ok(/功能也可以自己设置关闭/.test(s.text), 'S11 第 3 段含「功能也可以自己设置关闭」');
+ok(/聊天字卡也可以单独关闭某个分组或关闭某个单独的字卡/.test(s.text), 'S12 第 4 段＝「聊天字卡也可以单独关闭某个分组或关闭某个单独的字卡」');
+ok(/默认聊天字卡的词典字卡太多，不适用建议关闭/.test(s.text), 'S13 第 4 段新增＝「默认聊天字卡的词典字卡太多，不适用建议关闭」（哨兵 #981a）');
+ok(/字卡回复高频和通话高频都可以自行调整/.test(s.text), 'S13b 第 5 段＝「字卡回复高频和通话高频都可以自行调整」（用户 2026-09-22 直派追加；哨兵 #1019a）');
+ok(/不同手机型号的设备兼容bug/.test(s.text) && /就把我的功能和设计也当成bug啊/.test(s.text), 'S13c 第 5 段＝作者口径「不要因为帮人修不同手机型号的设备兼容bug，就把我的功能和设计也当成bug」逐字保留（哨兵 #1019b）');
+ok(/已无力解释，可自行在功能说明里查看/.test(s.text), 'S13d 第 5 段收尾＝「已无力解释，可自行在功能说明里查看」（指向 settings-help 的「回复设置」「通话设置」两行）');
+ok(/这个字卡网站本质只是工具/.test(s.text) && /好不好用取决于个人/.test(s.text), 'S13e 第 6 段前半＝「这个字卡网站本质只是工具，好不好用取决于个人」（用户 2026-09-22 直派追加；哨兵 #1046a 前半口径）');
+ok(/如果说任何设置都没有自己调整/.test(s.text) && /开屏里已经提示和强调过了需按个人使用自行设置/.test(s.text), 'S13f 第 6 段后半＝「任何设置都没自己调整就报不好用/混乱 ⇒ 开屏里已经提示和强调过了，需按个人使用自行设置」（哨兵 #1046a/#1046b）');
+const paras = await page.evaluate(() => document.querySelectorAll('.splash-bigwarn > p').length);
+ok(paras === 6, 'S14 顶卡正文恰好 6 段（#981 用户四段 ＋ #1019 第 5 段 ＋ #1046 第 6 段，逐字照抄、未增未删）', 'p=' + paras);
 
 // ===== 明细：必读摘要第 2 条（在线渲染 + 静态兜底同口径） =====
 const sum2 = s.hls[1] || '';
 ok(s.hls[0] && /有问题先去「关于」找答案/.test(s.hls[0]), 'S14 摘要首条仍是 #620 的「先去关于找答案」（顶卡插在第 2 条，不动首条口径）', (s.hls[0] || '').slice(0, 24));
 ok(/不适用建议不使用/.test(sum2) && /本质只是工具/.test(sum2), 'S15 摘要第 2 条＝顶卡同口径（不适用建议不使用 + 本质只是工具）', sum2.slice(0, 30));
-ok(/回复设置/.test(sum2) && /调 0 = 不触发/.test(sum2) && /总档/.test(sum2) && /隐藏池/.test(sum2) && /整组停用/.test(sum2) && /搜索框/.test(sum2), 'S16 摘要第 2 条含可调入口明细（回复设置 / 总档 / 隐藏池 / 整组停用 / 搜索框）');
+ok(/回复设置/.test(sum2) && /调 0 = 不触发/.test(sum2) && /总档/.test(sum2) && /隐藏池/.test(sum2) && /整组停用/.test(sum2) && /搜索框/.test(sum2), 'S17 摘要第 2 条含可调入口明细（回复设置 / 总档 / 隐藏池 / 整组停用 / 搜索框）');
+ok(/默认聊天字卡的词典字卡太多/.test(sum2) && /字卡库 → 词典/.test(sum2), 'S18 摘要第 2 条补了「词典字卡在哪关」（字卡库 → 词典；哨兵 #981b）');
 
 // ===== 形态：标红（亮色 + 暗色） =====
 ok(s.borderWidth === '4px' && s.borderColor === 'rgb(210, 52, 48)', 'S17 红色左竖条 4px（#d23430）', s.borderWidth + ' / ' + s.borderColor);
@@ -121,7 +141,7 @@ ok(dk.titleColor === 'rgb(255, 143, 143)' && dk.strongColor === 'rgb(255, 143, 1
 await page.evaluate(() => document.documentElement.removeAttribute('data-theme'));
 
 // ===== 其余开屏卡零回归 =====
-ok(s.otherCards.antiScam === 1 && s.otherCards.browser === 1 && s.otherCards.what === 1 && s.otherCards.disclaimer === 1 && s.otherCards.cardlock === 1, 'B1 公告区五张卡各仍在位（防倒卖/安卓浏览器/使用前提/免责/字卡锁）', JSON.stringify(s.otherCards));
+ok(s.otherCards.antiScam === 1 && s.otherCards.browser === 1 && s.otherCards.what === 1 && s.otherCards.disclaimer === 1 && s.otherCards.cardlock === 1, 'B1 必读卡组五张卡各仍在位（防倒卖/安卓浏览器/使用前提/免责/字卡锁；#976 起在 #splash-mustread）', JSON.stringify(s.otherCards));
 ok(s.otherCards.stopupdate === 1 && s.otherCards.abouttip === 1, 'B2 品牌卡内 #793 停更公告与 #864 公告精简条仍在位', JSON.stringify(s.otherCards));
 
 // ===== 时钟回填 + pwa 5s 看门狗跑过之后，红卡仍在首位（不被摘掉/挪位） =====
