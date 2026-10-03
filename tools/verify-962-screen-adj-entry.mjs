@@ -217,7 +217,9 @@ panelR = await rectOf('#screen-adj-panel');
 tabR = await rectOf('.tabbar');
 check('B3 收起＝小胶囊（不再横贯底边）', !!panelR && panelR.w < 390 * 0.7 && panelR.h < 90, panelR ? ('w=' + panelR.w + ' h=' + panelR.h) : 'null');
 check('B4 胶囊不压底部导航', !!panelR && !!tabR && !overlap(panelR, tabR), 'pill.b=' + (panelR && panelR.y + panelR.h) + ' tab.top=' + (tabR && tabR.y));
-check('B5 胶囊上写着当前页面名（区分桌面/聊天）', String(await evalJs("(function(){var e=document.querySelector('#screen-adj-panel [data-adj-page]');return e?e.textContent:'none';})()")) === '设置');
+// #1409 起设置入口＝开面板＋立刻跳桌面（作者直派『点入口没自动跳到桌面』），所以从设置点进来后
+// 胶囊写的当前页是『桌面』；本判据随口径更新（verify-1315 S7 同款随批改判据）。
+check('B5 胶囊上写着当前页面名（区分桌面/聊天）', String(await evalJs("(function(){var e=document.querySelector('#screen-adj-panel [data-adj-page]');return e?e.textContent:'none';})()")) === '桌面');
 // 点胶囊展开（红侧没有胶囊，这一条必须判红：先确认胶囊真的存在）
 const miniExists = await evalJs("(function(){var m=document.querySelector('#screen-adj-panel [data-adj-mini]');return !!m;})()");
 await evalJs("(function(){var p=document.getElementById('screen-adj-panel');var m=p&&p.querySelector('[data-adj-mini]');if(!m)return false;m.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));m.dispatchEvent(new PointerEvent('pointerup',{bubbles:true}));return true;})()");
@@ -271,7 +273,7 @@ check('B13 装修栏「屏幕适配」开面板', decorRes === true, String(deco
 const structDesk = await evalJs("(function(){var p=document.getElementById('screen-adj-panel');if(!p)return 'no-panel';return {groups:[].slice.call(p.querySelectorAll('[data-adj-group]')).map(function(h){return h.getAttribute('data-adj-group');}),heads:[].slice.call(p.querySelectorAll('[data-adj-group]')).map(function(h){return h.textContent.replace(/你正在这一页/,'').trim().slice(0,18);}),axes:[].slice.call(p.querySelectorAll('[data-adj-slider]')).map(function(s){return s.getAttribute('data-adj-slider');}),vals:p.querySelectorAll('[data-adj-val]').length};})()");
 // 红侧面板结构不存在时 structDesk 是字符串，下列断言必须整体判红而不是抛异常（否则脚本半途死掉）
 const sd = (structDesk && typeof structDesk === 'object') ? structDesk : null;
-check('B16 三组滑杆齐全且顺序＝通用→桌面→聊天（防分组重排漏轴）', !!sd && String(sd.groups) === 'pos,desk,text' && String(sd.axes) === 'top,bottom,h,shift,side,desk,text' && sd.vals === 7, JSON.stringify(structDesk));
+check('B16 三组滑杆齐全且顺序＝通用→桌面→聊天（防分组重排漏轴）', !!sd && String(sd.groups) === 'pos,desk,text' && String(sd.axes) === 'top,bottom,h,shift,side,kbgap,desk,text' && sd.vals === 8, JSON.stringify(structDesk));
 check('B17 组标题写明生效页面（只影响桌面页 / 只影响聊天页正文文字）', !!sd && sd.heads.length === 3 && sd.heads[0].indexOf('通用位置轴') === 0 && sd.heads[1] === '只影响「桌面页」' && sd.heads[2].indexOf('只影响「聊天页」正文文字') === 0, JSON.stringify(sd && sd.heads));
 // 拖动说明：用户原话「拖标题行可上移…没有写清楚」——必须完整可读（不被右侧按钮挤成省略号）
 const dragInfo = await evalJs("(function(){var h=document.querySelector('#screen-adj-panel [data-adj-draghint]');if(!h)return 'no-hint';return {t:h.textContent,clip:h.scrollWidth>h.clientWidth+1,w:h.clientWidth};})()");

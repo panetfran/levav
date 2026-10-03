@@ -54,13 +54,13 @@ console.log('— S 源码接线 —');
     [!tpl.includes('id="dc-size-hint"') && '缺 dc-size-hint', !tpl.includes('id="dict-size-hint"') && '缺 dict-size-hint'].filter(Boolean).join('；'));
   check('S4 红条视觉复用 #390 领词典锁定条（.dc-size-hint 并入同一红色规则）',
     css.includes('.dict-lock-hint, .dc-size-hint {'), 'setting.css 未并入 .dc-size-hint');
-  check('S5 clock.js 解锁成功后弹提醒 + 刷新闸门两条件',
+  check('S5 clock.js 解锁成功后弹提醒 + #1497 解锁就地生效（不刷新）',
     clock.includes("window.openModal('解锁成功 · 字卡使用提醒'") &&
-    clock.includes('if (reloaded || !persisted || !noticeClosed) return;') &&
-    clock.includes("cardLockConfirmPersisted('open', goReloadAfterPersist)"),
+    clock.includes("okState.textContent = '验证通过'") &&
+    !clock.includes("cardLockConfirmPersisted('open', goReloadAfterPersist)"),
     [!clock.includes("window.openModal('解锁成功 · 字卡使用提醒'") && '缺弹窗',
-      !clock.includes('if (reloaded || !persisted || !noticeClosed) return;') && '缺刷新闸门',
-      !clock.includes("cardLockConfirmPersisted('open', goReloadAfterPersist)") && '缺 #404 锚点'].filter(Boolean).join('；'));
+      !clock.includes("okState.textContent = '验证通过'") && '缺就地生效锚',
+      clock.includes("cardLockConfirmPersisted('open', goReloadAfterPersist)") && '#404 解锁刷新锚仍在＝会话闸死循环回流'].filter(Boolean).join('；'));
 }
 
 // ---------------- 起无头浏览器 + 静态服务 ----------------
@@ -157,17 +157,16 @@ check('B3b 提醒正文含体量提醒全文（与字卡库红条同一份文案
 check('B4 提醒弹窗不可点遮罩/取消绕过（取消按钮隐藏＝只能点「知道了」）',
   await ev('(function(){var c=document.getElementById("modal-cancel");return !!c&&c.hidden===true;})()') === true);
 check('B5 提醒未关时页面尚未刷新（标记还在）', await ev('window.__m961mark==="A"') === true);
-// 点「知道了」→ 落库确认 + 关提醒 → 刷新
+// 点「知道了」→ 关提醒；#1497 解锁就地生效＝不刷新（刷新会话闸下＝当场打回锁定）
 await ev('(function(){var b=document.getElementById("modal-ok");if(b)b.click();return true;})()');
 let reloaded = false;
-for (let i = 0; i < 40; i++) {
+for (let i = 0; i < 10; i++) {
   await sleep(300);
   if (await ev('typeof window.__m961mark==="undefined"') === true) { reloaded = true; break; }
 }
-check('B6 点「知道了」后确实刷新（标记随新页面消失）', reloaded);
-await waitReady();
+check('B6 #1497 点「知道了」后不刷新（解锁就地保持）', reloaded === false && await ev('window.cardLockOpen()===true') === true);
 await sleep(600);
-check('B7 刷新后已解锁且字卡库红条仍在',
+check('B7 解锁保持且字卡库红条仍在',
   await ev('window.cardLockOpen()===true') === true &&
   await ev('(function(){var e=document.getElementById("dc-size-hint");return !!(e&&e.textContent.indexOf("' + TIP + '")>-1);})()') === true);
 check('Z1 全程零 pageerror', pageErrors.length === 0, pageErrors.slice(0, 2).join(' | '));

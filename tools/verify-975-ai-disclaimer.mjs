@@ -4,6 +4,9 @@
 // 落点三处：第一页开屏公告两处「建议直接问 AI」下方各补一条（在线权威源 src/pwa/notice.json ＋
 //   离线兜底 src/template.html 两份同步）；第二页强制公告（进入前 · 作者必读公告）底部 note 补同口径
 //   （本页「让 AI 修」＋开屏「问 AI」都只是使用建议，答案自行甄别）。哨兵 #975a~e。
+// #1498（2026-09-30 作者直派「把公告里的【互助群公告】相关内容删掉」）：三处落点里住在「互助群公告」章
+//   的那一处（D1）随整章下线，#975a／#975c 两条哨兵同批退役；口径未失——报修章 D2（#975b／#975d）与
+//   第二页 note D3（#975e）两处仍在。本尺保留这两处，并把原 S1／S2／S6 改口为「该章不得回流」。
 // 断言面：src 两份同步且紧跟原句 ／ 产物（根 notice.json + index.html）接入 ／ 无头实测在线与离线路径
 //   第一页都渲染出口径 ／ 强制公告页 note 带口径且原句未动 ／ 进入流程零回归 ／ 哨兵登记体检。
 // 用法：node tools/verify-975-ai-disclaimer.mjs
@@ -35,46 +38,48 @@ let pass = 0, fail = 0;
 const ok = (c, n, x) => { if (c) { pass++; console.log('  ✓ ' + n); } else { fail++; console.log('  ✗ ' + n + (x !== undefined ? '  [' + x + ']' : '')); } };
 
 // ===== 口径文案（与 src 一字不差；改文案必须连哨兵 #975a~e 一起改） =====
-const D1 = '「可以问 AI」只是使用建议：实际问题时去问 AI，也无法保证 100% 正确——AI 也会出错和骗人，请自行甄别。';
+// #1498 起 D1（「互助群公告」章那条免责原句）随章删除，常量一并撤除；改由 S1／S6 的「该章不得回流」把守。
 const D2 = '注意：AI 的回答无法保证 100% 正确——AI 也会出错和骗人，请自行甄别。';
 const D3 = '另：本页说的「让 AI 修」和开屏公告里的「问 AI」都只是使用建议——AI 无法保证 100% 正确，AI 也会出错和骗人，AI 给的答案请自行甄别。';
 const A1 = '使用问题请先看网站里的使用说明与开屏各章节；基础疑问建议直接问 AI。';
-const A2 = '问「为什么会出现这个问题」这类基础疑问，建议直接问 AI，比作者回复快。';
+// #1498 随批重基线（存量口径过期，非本批引入）：A2 原写作「…建议直接问 AI，比作者回复快。」，
+//   现行两份源与产物都已精简为「…建议直接问 AI。」（HEAD 上同样 0 命中＝S4/S7 在 HEAD 就是红的）；
+//   常量改取现文，S4/S7 恢复真实校验力（免责条确实紧跟报修章原句之后）。
+// #1503（作者直派删「关于 Bug 与设备适配」章）：A2 原句随章下线，免责条改挂「停更公告」章末尾（该章正讲
+//   「拿代码给 AI 调」）；S4/S7 的「紧跟原句」判据随之改口为「原句已下线、免责条仍在」。
+const A2 = '问「为什么会出现这个问题」这类基础疑问，建议直接问 AI。';
 const ANOTE = '使用之前请先看第一页的开屏公告，很多问题上面都写了。说实话是公告越来越长了，但是大部分人就是不看，我也没有办法。';
 
 // ===== S 系列：src 静态（两份同步、紧跟原句、原句未动） =====
 let jsrc = null;
 try { jsrc = JSON.parse(readFileSync(join(root, 'src', 'pwa', 'notice.json'), 'utf8')); } catch (e) {}
 const jText = JSON.stringify(jsrc || '');
-const aj1 = jText.indexOf(A1), ad1 = jText.indexOf(D1);
 const aj2 = jText.indexOf(A2), ad2 = jText.indexOf(D2);
-ok(jsrc && ad1 > 0, 'S1 在线权威源 notice.json：互助群公告章补免责条', jsrc ? 'missing' : 'JSON parse fail');
-ok(aj1 > 0 && ad1 > aj1 && ad1 - aj1 < A1.length + 120, 'S2 在线：免责条紧跟互助群章「建议直接问 AI」原句之后（不打乱章节顺序）', 'a=' + aj1 + ' d=' + ad1);
+ok(jsrc && !jText.includes('互助群'), 'S1 #1498 起在线权威源 notice.json 不再含「互助群公告」章（回流＝联网用户开屏又出现该章）', jsrc ? 'has 互助群' : 'JSON parse fail');
+ok(jsrc && jText.indexOf(A1) < 0, 'S2 #1498 起该章那条「使用问题请先看网站里的使用说明与开屏各章节…建议直接问 AI」原句一并下线（不残留半句；原「紧跟原句」判据随章退役）');
 ok(ad2 > 0, 'S3 在线权威源 notice.json：报修章补免责条');
-ok(aj2 > 0 && ad2 > aj2 && ad2 - aj2 < A2.length + 120, 'S4 在线：免责条紧跟报修章「建议直接问 AI」原句之后', 'a=' + aj2 + ' d=' + ad2);
-ok(jText.indexOf(D1, ad1 + 1) < 0 && jText.indexOf(D2, ad2 + 1) < 0, 'S5 在线：两条免责各只出现一次（不重复刷屏）');
+ok(aj2 < 0 && ad2 > 0, 'S4 #1503 起在线：报修章原句随章下线（不再有「紧跟」关系），免责条仍在（现挂「停更公告」章末尾）', 'a=' + aj2 + ' d=' + ad2);
+ok(jText.indexOf(D2, ad2 + 1) < 0, 'S5 在线：报修章免责只出现一次（不重复刷屏）');
 
 const tpl = readFileSync(join(root, 'src', 'template.html'), 'utf8');
-const t1 = tpl.indexOf(D1), t2 = tpl.indexOf(D2), t3 = tpl.indexOf(D3);
-const ta1 = tpl.indexOf(A1), ta2 = tpl.indexOf(A2), tn = tpl.indexOf(ANOTE);
-ok(t1 > 0 && ta1 > 0 && t1 > ta1 && t1 - ta1 < A1.length + 160, 'S6 离线兜底 template.html：互助群章免责条紧跟原句');
-ok(t2 > 0 && ta2 > 0 && t2 > ta2 && t2 - ta2 < A2.length + 160, 'S7 离线兜底：报修章免责条紧跟原句');
+const t2 = tpl.indexOf(D2), t3 = tpl.indexOf(D3);
+const ta2 = tpl.indexOf(A2), tn = tpl.indexOf(ANOTE);
+ok(!tpl.includes('互助群'), 'S6 #1498 起离线兜底 template.html 不再含「互助群公告」章（回流＝断网/弱网用户又看到该章）');
+ok(t2 > 0 && ta2 < 0, 'S7 #1503 起离线兜底同 S4：原句下线、免责条仍在（停更章末尾）');
 ok(tn > 0 && t3 > 0 && t3 > tn && tpl.indexOf(ANOTE, tn + 1) < 0, 'S8 第二页强制公告 note：原句未动、免责口径追加在同一段内', 'n=' + tn + ' d=' + t3);
 ok(/另：本页说的「让 AI 修」和开屏公告里的「问 AI」都只是使用建议/.test(tpl), 'S9 第二页口径把本页「让 AI 修」与开屏「问 AI」一起纳入免责范围');
 
 // ===== S 系列（续）：哨兵登记体检 =====
 const bm = readFileSync(join(root, 'build.mjs'), 'utf8');
 const s975 = (bm.match(/\{ name: '#975[a-e] /g) || []).length;
-ok(s975 === 5, 'S10 build.mjs 登记 #975a~e 共 5 条哨兵', String(s975));
+ok(s975 === 3, 'S10 build.mjs 登记 #975b／#975d／#975e 共 3 条哨兵（#975a／#975c 随 #1498 该章删除退役）', String(s975));
 const needles = [...bm.matchAll(/needle: '((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]);
-const n975 = ["「可以问 AI」只是使用建议：实际问题时去问 AI", D2, '也无法保证 100% 正确——AI 也会出错和骗人，请自行甄别。</p>', D2 + '</p>', 'AI 给的答案请自行甄别。</div>'];
-ok(new Set(n975).size === 5 && n975.every((n) => needles.filter((v) => v === n).length === 1), 'S11 本批 5 条 needle 两两不同、且在全部哨兵 needle 中各只出现一次（哑哨兵 B 类零新增；既有存量哑哨兵不归本批管）');
+const n975 = [D2, D2 + '</p>', 'AI 给的答案请自行甄别。</div>'];
+ok(new Set(n975).size === 3 && n975.every((n) => needles.filter((v) => v === n).length === 1), 'S11 在役 3 条 needle 两两不同、且在全部哨兵 needle 中各只出现一次（哑哨兵 B 类零新增）');
 const nCheck = [
-  ['#975a', 'pwa/notice.json', n975[0]],
-  ['#975b', 'pwa/notice.json', n975[1]],
-  ['#975c', 'template.html', n975[2]],
-  ['#975d', 'template.html', n975[3]],
-  ['#975e', 'template.html', n975[4]]
+  ['#975b', 'pwa/notice.json', n975[0]],
+  ['#975d', 'template.html', n975[1]],
+  ['#975e', 'template.html', n975[2]]
 ];
 for (const [nm, file, nd] of nCheck) {
   const registered = bm.includes("file: '" + file + "', needle: '" + nd + "'");
@@ -86,9 +91,9 @@ for (const [nm, file, nd] of nCheck) {
 let jprod = null;
 try { jprod = JSON.parse(readFileSync(join(root, 'notice.json'), 'utf8')); } catch (e) {}
 const jp = JSON.stringify(jprod || '');
-ok(jprod && jp.includes(D1) && jp.includes(D2), 'P1 产物根 notice.json 已带两条免责（联网用户可见）', jprod ? 'missing' : 'JSON parse fail');
+ok(jprod && jp.includes(D2) && !jp.includes('互助群'), 'P1 产物根 notice.json 带报修章免责、且已无「互助群公告」章（联网用户可见）', jprod ? 'missing' : 'JSON parse fail');
 const idx = readFileSync(join(root, 'index.html'), 'utf8');
-ok(idx.includes(D1) && idx.includes(D2) && idx.includes(D3), 'P2 产物 index.html 已带离线兜底两条＋第二页 note 口径');
+ok(idx.includes(D2) && idx.includes(D3) && !idx.includes('互助群'), 'P2 产物 index.html 已带离线兜底报修章＋第二页 note 口径，且已无「互助群公告」章');
 
 // ===== B 系列：无头实测 =====
 const browser = await chromium.launch();
@@ -97,16 +102,16 @@ const page = await ctx.newPage();
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(String(e && e.message || e)));
 
-const bodyHas = () => page.evaluate(([d1, d2, d3]) => {
+const bodyHas = () => page.evaluate(([d2, d3]) => {
   const t = document.body.textContent || '';
-  return { d1: t.includes(d1), d2: t.includes(d2), d3: t.includes(d3) };
-}, [D1, D2, D3]);
+  return { d2: t.includes(d2), d3: t.includes(d3), group: t.includes('互助群') };
+}, [D2, D3]);
 
 await page.goto(base + '/index.html', { waitUntil: 'domcontentloaded', timeout: 40000 });
 await page.waitForFunction(() => !!document.querySelector('.splash-notice-list'), null, { timeout: 20000 }).catch(() => {});
 await sleep(1600);
 let b = await bodyHas();
-ok(b.d1 && b.d2, 'B1 第一页开屏（在线路径）渲染出两处免责口径', JSON.stringify(b));
+ok(b.d2 && !b.group, 'B1 第一页开屏（在线路径）渲染出报修章免责、且互助群章不在屏上', JSON.stringify(b));
 
 // 离线兜底：掐掉 notice.json 重载，静态模板路径同样要能看到
 await page.route('**/notice.json*', (r) => r.abort());
@@ -114,7 +119,7 @@ await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => !!document.querySelector('.splash-notice-list'), null, { timeout: 20000 }).catch(() => {});
 await sleep(1600);
 b = await bodyHas();
-ok(b.d1 && b.d2, 'B2 第一页开屏（离线兜底路径）同样渲染出两处免责口径', JSON.stringify(b));
+ok(b.d2 && !b.group, 'B2 第一页开屏（离线兜底路径）同样渲染出报修章免责、且互助群章不在屏上', JSON.stringify(b));
 await page.unroute('**/notice.json*');
 
 // 第二页强制公告：走真实进入流程（勾年龄 → 滑到底 → 我已阅读并知晓 → 强制层弹出）

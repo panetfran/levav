@@ -41,8 +41,9 @@ const cssAll = () => { try { return readFileSync(join(root, 'index.html'), 'utf8
 // ===== ① 静态锚：每个入口的铺层行按精确条数在位 =====
 const installOf = (f) => (jsOf(f).match(/mochiFilePickSurface\(/g) || []).length;
 {
-  // 铺层点＝入口绑定/渲染处一行（feed 含 3 处「重渲染后幂等补挂」；personalize＝桌面头像+页面背景行+手机壁纸面板）
-  const want = [['avatar-lib.js', 1], ['feed.js', 7], ['chat.js', 4], ['group-chat.js', 3], ['personalize.js', 3], ['chat-settings.js', 4]];
+  // 铺层点＝入口绑定/渲染处一行（feed 含 3 处「重渲染后幂等补挂」＋#1311 封面共用的一个武装口；
+  // personalize＝桌面头像+页面背景行+手机壁纸面板）
+  const want = [['avatar-lib.js', 1], ['feed.js', 8], ['chat.js', 4], ['group-chat.js', 3], ['personalize.js', 3], ['chat-settings.js', 4]];
   const bad = want.filter(([f, n]) => installOf(f) !== n).map(([f, n]) => f + '=' + installOf(f) + '(期望' + n + ')');
   ok(bad.length === 0, 'S1 六个文件里各上传入口的「真·可点 input 层」铺层行按精确条数在位', bad.join(' '));
 }
@@ -52,13 +53,18 @@ ok(jsOf('device.js').includes("if (typeof owner === 'string') { try { owner = do
   'S3 owner 可写 id 字符串（统一入口的 input 点按时才建，绑定/渲染时只登记 id）——删＝那些入口选完文件无回调（图被静默丢弃）');
 ok(cssAll().includes('input.mochi-pick-surface::-webkit-file-upload-button { display:none; }') || /mochi-pick-surface::-webkit-file-upload-button/.test(cssAll()),
   'S4 surface 层原生「选择文件」按钮仍由 CSS 藏掉（防入口上浮出原生按钮破相）');
-// 反向：容器里还有别的可点元素的入口**不得**铺层（铺了会吞掉兄弟控件）
+// 封面容器：旧结论「容器里还有别的可点元素就不铺」在 #1311 收窄——不铺＝这一路只剩 JS 合成腿，
+// iOS 26/多家壳内核对合成激活静默拒绝（实报「朋友圈壁纸无法添加」那张诊断单只有 leg:fire＋fb:onscreen）。
+// 现在允许铺，但必须走那个把三件事一起做完的武装口（挪画序＋按背景开关可命中性＋owner 交回原管线）；
+// 行为判据（四处命中各归各、面板没被吞、恢复默认后重新武装）在 tools/verify-1311 的 B 组。
 {
   const feed = jsOf('feed.js');
   const bad = [];
-  if (/mochiFilePickSurface\(feedAllCover/.test(feed)) bad.push('feed-all-cover');
-  if (/mochiFilePickSurface\(coverEl/.test(feed)) bad.push('feed-cover');
-  ok(bad.length === 0, 'S5 封面容器（内含头像/昵称两个可点元素）没有被铺层——铺了会吞掉头像/昵称点击', bad.join(' '));
+  if (!/function armCoverLayer\(el, layerId, ownerId, hasBg\)/.test(feed)) bad.push('封面没走统一武装口');
+  if (!/el\.insertBefore\(layer, el\.firstChild\)/.test(feed)) bad.push('缺「挪成第一个子节点」＝absolute 层压在静态流内的头像/昵称之上＝吞掉兄弟控件');
+  if (!/layer\.style\.pointerEvents = hasBg \? 'none' : 'auto';/.test(feed)) bad.push('缺「按背景开关可命中性」＝已有背景时开不出「更换背景／恢复默认」面板');
+  if (/mochiFilePickSurface\(feedAllCover/.test(feed) || /mochiFilePickSurface\(coverEl/.test(feed)) bad.push('直接对封面容器铺层（绕过画序/开关那两件事）');
+  ok(bad.length === 0, 'S5 封面容器可铺层，但只能经 armCoverLayer（画序＋开关＋交回原管线三件事齐做）', bad.join(' | '));
 }
 
 // 64×64 不透明 PNG（走真选择器投递＝change→FileReader/压缩→落库全链路）

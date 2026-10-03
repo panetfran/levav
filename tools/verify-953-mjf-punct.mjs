@@ -15,7 +15,17 @@
 //   S6 不叠标点：源句自带句尾标点时不出现「！！」式双标点
 //   S7 设置接线锚在位（DEFAULTS 有 mjf-punct、池原串随 replyCfg/replyCfgFor 读出、模板有开关与
 //      输入框、build.mjs 有 #953a~f 哨兵）
-// RED 基线（纯 HEAD）：S1~S7 全红（dreamFreePick 不补标点、mjf-punct 键不存在）
+// —— 以下为 #1396 新契约（「可用标点」换成与 #650/#712 同款 chips 池；纯 HEAD 底本 S8~S14 应全红）——
+//   S8 chips 池只取 on=1、按存盘序进池（等概率，不再句号写三遍）
+//   S9 chips 池选到「空格/换行」也真补得到句尾（旧文本框按空白切分，这两枚永远选不到）
+//   S10 chips 池全关/坏 JSON ⇒ 回落 #953 旧链（旧原串优先），不炸、不是「一枚都不补」
+//   S11 从没点过 chip（新键为空）⇒ 出句池与 #953 当天逐字相同＝存量零变化的直接证据
+//   S12 mjf-punct=0 时新池同样不补（关掉就是关掉，与池内容无关）
+//   S13 新键 reply-mjf-punct-set 随 replyCfg/replyCfgFor 双双附带 ＋ 模板十枚内置 chips 与「＋」钮齐
+//   S14 旧文本框与「可用标点（空格分隔）」那句文案不回流（留着＝两套口径并存）
+// RED 基线（#953 当年，纯 HEAD 底本）：S1~S7 全红（dreamFreePick 不补标点、mjf-punct 键不存在）。
+//   本批（#1396）对照＝同 tip 纯 HEAD 副本只放进本尺：S1~S7 与 S11 皆绿（旧链一字未动），
+//   S8~S10／S11b／S12~S14 红——红在「新池根本不认／新键没人附带／旧文本框还在」，正是本批的增量。
 import { readFileSync, existsSync } from 'node:fs';
 import { join, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -124,8 +134,70 @@ const tailOf = (list) => list.map(t => t.charAt(t.length - 1));
   const b = rs.includes("String(ls.get('reply-mjf-punct-pool') || '')") && rs.includes("String((s || ls).get('reply-mjf-punct-pool') || '')");
   const c = tpl.includes('id="mjf-punct"') && tpl.includes('id="mjf-punct-pool"');
   const d = ['#953a', '#953b', '#953c', '#953d', '#953e', '#953f'].every(n => bm.includes("name: '" + n));
-  ok('S7 设置接线（DEFAULTS 键 / 池读取 / 模板行 / 哨兵）', a && b && c && d,
+  ok('S7 设置接线（DEFAULTS 键 / 池读取 / 模板池容器 / 哨兵）', a && b && c && d,
     [!a && '缺 DEFAULTS mjf-punct', !b && '缺池读取', !c && '缺模板行', !d && '缺哨兵'].filter(Boolean).join('；'));
+}
+// ===== #1396：「可用标点」= 与 #650/#712 同款 chips 池（reply-mjf-punct-set）新契约 =====
+const hasPool = typeof W.dreamFreePunctPool === 'function'; // 新池判据导出（旧底本没有＝下面各支红）
+const poolOf = cfg => (hasPool ? W.dreamFreePunctPool(Object.assign({ 'mjf-punct': 1 }, cfg)) : null);
+const setOf = arr => JSON.stringify(arr);
+const eqArr = (a, b) => Array.isArray(a) && a.length === b.length && a.every((x, i) => x === b[i]);
+const noPool = '未导出 dreamFreePunctPool（＝新池整条不认）';
+// S8 只取 on=1、按存盘序等概率进池（句号不再靠「写三遍」加权）
+{
+  const p = poolOf({ 'mjf-punct-set': setOf([{ s: '？', on: 1 }, { s: '。', on: 0 }, { s: '！', on: 1 }]) });
+  ok('S8 chips 池只取 on=1、按存盘序进池', hasPool && eqArr(p, ['？', '！']), hasPool ? JSON.stringify(p) : noPool);
+  const q = poolOf({ 'mjf-punct-set': setOf([{ s: '', on: 1 }, { s: '1234567', on: 1 }, { s: '。', on: 2 }, { s: '！', on: 1 }]) });
+  ok('S8b 非法项（空 s／超 6 字／on 非 1）不进池', hasPool && eqArr(q, ['！']), hasPool ? JSON.stringify(q) : noPool);
+}
+// S9 「空格／换行」这两枚旧文本框永远选不到的候选，现在真能补到句尾
+{
+  setCorpus(PLAIN);
+  const nl = run({ 'mjf-punct-set': setOf([{ s: '\n', on: 1 }]) }, 150);
+  const sp = run({ 'mjf-punct-set': setOf([{ s: ' ', on: 1 }]) }, 150);
+  ok('S9 选到「换行/空格」也真补得到句尾', nl.length >= 60 && sp.length >= 60
+    && nl.every(t => t.charAt(t.length - 1) === '\n') && sp.every(t => t.charAt(t.length - 1) === ' '),
+    nl.length + '/' + sp.length + ' 条，换行尾样本 ' + JSON.stringify(nl.slice(0, 2)));
+}
+// S10 新池存在但一枚没点亮／串坏掉 ⇒ 回落 #953 旧链（旧原串优先），不是「不补标点」
+{
+  const a = poolOf({ 'mjf-punct-set': setOf([{ s: '。', on: 0 }]), 'mjf-punct-pool': '！|？' });
+  const b = poolOf({ 'mjf-punct-set': 'not-json', 'mjf-punct-pool': '！' });
+  ok('S10 新池全空/坏 JSON ⇒ 回落旧链（旧原串优先）', hasPool && eqArr(a, ['！', '？']) && eqArr(b, ['！']),
+    hasPool ? JSON.stringify([a, b]) : noPool);
+}
+// S11 默认池常量一字未动（存量零变化的底座，两侧皆绿才算诚实）
+{
+  const m = src.match(/const END_PUNCT_DEFAULT = (\[[^\]]*\]);/);
+  ok('S11 内置默认池常量一字未动', !!m && m[1] === "['。', '。', '。', '~', '！', '……']", m ? m[1] : '没找到该行');
+  const p = poolOf({});
+  const q = poolOf({ 'mjf-punct-set': '', 'mjf-punct-pool': '   ' });
+  ok('S11b 没点过 chip 时新代码算出的池 === 那个默认池', hasPool && eqArr(p, ['。', '。', '。', '~', '！', '……']) && eqArr(q, ['。', '。', '。', '~', '！', '……']),
+    hasPool ? JSON.stringify([p, q]) : noPool);
+}
+// S12 「句尾标点」开关关掉＝一枚都不补，与池内容无关
+{
+  const p = poolOf({ 'mjf-punct': 0, 'mjf-punct-set': setOf([{ s: '！', on: 1 }]) });
+  ok('S12 mjf-punct=0 时新池也不补', hasPool && p === null, hasPool ? JSON.stringify(p) : noPool);
+}
+// S13 设置侧接线：新键随两条 cfg 双双附带 ＋ 模板十枚内置 chips 与「＋」钮 ＋ 校验/添加流程在位
+{
+  const rs2 = read('src/js/reply-settings.js');
+  const tpl2 = read('src/template.html');
+  const e = rs2.includes("String(ls.get('reply-mjf-punct-set') || '')") && rs2.includes("String((s || ls).get('reply-mjf-punct-set') || '')");
+  const f = ['sp', 'dou', 'per', 'ex', 'q', 'el', 'dash', 'nl', 'tilde', 'ell'].every(k => tpl2.includes('data-p="' + k + '"')) && tpl2.includes('id="mjfp-add"');
+  const g = rs2.includes('句尾标点至少保留一枚') && rs2.includes("'添加句尾标点'") && rs2.includes('reply-mjf-punct-set');
+  ok('S13 新键附带／十枚内置 chips／「＋」钮／至少一枚与添加流程', e && f && g,
+    [!e && '缺 replyCfg+replyCfgFor 附带', !f && '缺模板 chips 或「＋」', !g && '缺校验或添加流程'].filter(Boolean).join('；'));
+}
+// S14 旧文本框与其文案不回流（两套口径并存＝用户看到哪个？）
+{
+  const rs2 = read('src/js/reply-settings.js');
+  const tpl2 = read('src/template.html');
+  const a = !tpl2.includes('<input type="text" class="tc-input" id="mjf-punct-pool"') && !tpl2.includes('可用标点（空格分隔）');
+  const b = !rs2.includes(".trim().slice(0, 60)");
+  ok('S14 旧文本框＋「（空格分隔）」文案＋60 字符截断均不回流', a && b,
+    [!a && '模板仍有旧输入框或旧文案', !b && '旧截断路径仍在'].filter(Boolean).join('；'));
 }
 
 console.log('\nverify-953：通过 ' + pass + ' / 断言失败 ' + fail);

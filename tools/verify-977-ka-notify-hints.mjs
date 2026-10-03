@@ -37,7 +37,7 @@ chk('S4 红条复用红色视觉类', has('src/template.html', 'class="gs-sub di
 chk('S5 后台通知行补失效停摆口径', has('src/template.html', '保活被截断/页面被丢弃＝后台弹窗一起停摆'));
 chk('S6 后台通知行补恢复口径', has('src/template.html', '失效后彻底关闭网页重新打开，再把两个开关重新打开'));
 chk('S7 使用说明第10节补「挂久了会截断/失效」条', has('src/template.html', '挂久了会截断/失效，怎么恢复'));
-chk('S8 第10节计数 14→15', has('src/template.html', '后台弹窗 · 怎么用（安卓 / 电脑）</span><span class="lg-count">15</span>'));
+chk('S8 第10节计数 15→16（#1473 补「收不到 ④ 勿扰/免打扰」条）', has('src/template.html', '后台弹窗 · 怎么用（安卓 / 电脑）</span><span class="lg-count">16</span>'));
 chk('S9 开启即弹限制弹窗的调用在手动开启分支', has('src/js/bg-keep.js', 'if (keepEnabled) { startKeepAlive(true); kaOpenEnableHints(); }'));
 // #1001 同步：开启弹窗从「两条必知限制」扩成「三条必知」（新增 ③ 开着保活不会在后台自动换新版），
 //   标题与条目一并更新；两条硬限制的文案断言（S11/S12）原样不动。
