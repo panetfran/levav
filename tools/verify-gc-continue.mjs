@@ -100,13 +100,13 @@ await sleep(2500);
 for (let i = 0; i < 40; i++) { if (await evalJs('!!window.__mochiDataReady')) break; await sleep(300); }
 await evalJs("(function(){var s=document.getElementById('splash');if(s&&!s.classList.contains('hide'))s.click();return true;})()");
 await sleep(900);
-// 开局：进群聊页，并刻意把「继续说」按钮的两半开关都关掉（本联系人桌面 cs-trigger-bar ＋
+// 开局：进群聊页，并刻意把「继续说」按钮的两半开关都关掉（本联系人桌面那枚走真路径 saveReplyCfg('cs-trigger-bar',0)＝存储键 reply-cs-trigger-bar ＋
 // 回复设置→群聊 gc-cs-trigger-bar）——顶部那枚恒显按钮已撤销，输入栏这一枚的显隐口径要
 // 与单聊输入栏完全一致：关着就该藏起来，开着才出现。
 // 回复速度钉到 1 秒：群聊默认 1~40 秒随机，不钉死的话「点完等回复」的断言会随机超时。
 // 注意群聊设置的真实存储键是 xy-home-v2:reply-gc-gc-*（reply-settings 的 gcRead/gcWrite 对
 // gc- 前缀的键会再拼一次 'reply-gc-'）——只写 reply-gc-* 读不到，等于没设。
-await evalJs("(function(){document.querySelectorAll('.page').forEach(function(p){p.hidden=(p.id!=='page-group-chat');});try{var st=window.activeStore();st.set('cs-trigger-bar','0');}catch(e){}try{var g=window.xyStore('xy-home-v2');g.set('reply-gc-gc-cs-trigger-bar','0');g.set('reply-gc-gc-rs-min','1');g.set('reply-gc-gc-rs-max','1');}catch(e){}document.dispatchEvent(new Event('continue-say-changed'));document.dispatchEvent(new Event('gc-continue-say-changed'));return true;})()");
+await evalJs("(function(){document.querySelectorAll('.page').forEach(function(p){p.hidden=(p.id!=='page-group-chat');});try{window.saveReplyCfg('cs-trigger-bar', 0);}catch(e){}try{var g=window.xyStore('xy-home-v2');g.set('reply-gc-gc-cs-trigger-bar','0');g.set('reply-gc-gc-rs-min','1');g.set('reply-gc-gc-rs-max','1');}catch(e){}document.dispatchEvent(new Event('continue-say-changed'));document.dispatchEvent(new Event('gc-continue-say-changed'));return true;})()");
 await sleep(400);
 const speed = await evalJs("(function(){try{var c=window.groupChatCfg?window.groupChatCfg():{};return JSON.stringify({min:c['gc-rs-min'],max:c['gc-rs-max']});}catch(e){return ''+e;}})()");
 let sp = null; try { sp = JSON.parse(speed); } catch (e) {}
@@ -147,14 +147,14 @@ check('A3 与单聊同口径：两半开关都关时输入栏按钮隐藏（单�
 
 // ---- B 轴：任一开关打开 → 输入栏按钮出现并可触发成员回复 ----
 const beforeB = await evalJs("(function(){" + countMsgs + "return msgs.length;})()");
-const btn = await evalJs("(function(){try{window.activeStore().set('cs-trigger-bar','1');}catch(e){}document.dispatchEvent(new Event('continue-say-changed'));var b=document.getElementById('gc-continue-btn');if(!b)return 'missing';var d=getComputedStyle(b).display;b.click();return d;})()");
+const btn = await evalJs("(function(){try{window.saveReplyCfg('cs-trigger-bar', 1);}catch(e){}document.dispatchEvent(new Event('continue-say-changed'));var b=document.getElementById('gc-continue-btn');if(!b)return 'missing';var d=getComputedStyle(b).display;b.click();return d;})()");
 await sleep(20000);
 const afterB = await evalJs("(function(){" + countMsgs + "var n=msgs.slice(" + beforeB + ");return JSON.stringify({count:n.length,inCount:n.filter(function(m){return m.side==='in';}).length});})()");
 let bB = null; try { bB = JSON.parse(afterB); } catch (e) {}
 check('B1 打开桌面开关后输入栏继续说按钮显示且可点击', btn !== 'missing' && btn !== 'none', 'display=' + btn);
 check('B2 点输入栏继续说按钮 → 群聊成员回复（新增 in 消息落库）', bB && bB.inCount > 0, afterB);
 // 群聊全局开关那一半单独验一次（关掉桌面开关、只开 gc-cs-trigger-bar）
-const btnG = await evalJs("(function(){try{window.activeStore().set('cs-trigger-bar','0');}catch(e){}" +
+const btnG = await evalJs("(function(){try{window.saveReplyCfg('cs-trigger-bar', 0);}catch(e){}" +
   "try{window.xyStore('xy-home-v2').set('reply-gc-gc-cs-trigger-bar','1');}catch(e){}" +
   "document.dispatchEvent(new Event('continue-say-changed'));document.dispatchEvent(new Event('gc-continue-say-changed'));" +
   "var b=document.getElementById('gc-continue-btn');return b?getComputedStyle(b).display:'missing';})()");

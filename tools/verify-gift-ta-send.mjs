@@ -48,7 +48,7 @@ console.log('S 层：源码口径');
   ok(/recordBoxAt\(cid, gift, 'in', wish\);/.test(gs), 'S15 跨桌面投递时心意柜记录跟着回原桌面');
   ok(/function boxStoreFor\(cid\)/.test(gs), 'S16 指定联系人的心意柜 store 存在');
   ok(!/if \(\(window\.__activeCid \|\| 'default'\) !== myCid\) return;\n\s*const rec/.test(gs), 'S17 旧「切桌面直接 return」投递守卫已移除');
-  ok(/toast\('请填 0~100 的整数'\);/.test(gs), 'S18 概率非法输入就地提示（不再静默写 0）');
+  ok(/const hi = Number\(inp\.max\) \|\| 100;/.test(gs) && /toast\('请填 0~' \+ hi \+ ' 的整数'\);/.test(gs), 'S18 非法输入就地提示（不再静默写 0；#1437 起封顶问输入框自己的 max，概率格仍是 0~100）');
   ok(/inp\.value = String\(cur\[key\]\);/.test(gs), 'S19 概率非法输入恢复原值');
   ok(!/cur\[inp\.dataset\.gsn\] = ok \? n : 0;/.test(gs), 'S20 旧「非法值写 0 + 框改成 0」已消失');
 }

@@ -128,9 +128,22 @@ console.log('【播放元素】（保活机制载体，防文本级回归）');
   // v3.44.x 保活音频可选：自定义音频按 volume=1；#724 起默认静音音频基础档 KA_VOL_BASE=0.2
   //（原 0.05——新内核 audible 判定收紧后豁免丢失＝后台整页冻结/丢弃，K80 实报）。断言锚
   // 「分级常量在位 + 启动/恢复默认两处都吃 KA_VOL_BASE」——近零音量会被 Chrome 无声节流。
+  // #1374 重锚（同一把尺，两种坏法照旧都红）：这两支旧写法把「keepEl.volume = 常数」那一行
+  //   本身当证据，而 #1374 起音量只有一个写入方（kaSetToneLevel/kaApplyToneVolume），且默认档
+  //   在 visible 时被压到 0。尺子改成问同一件事的两种坏法：
+  //   ① 0.05/0.2 那一档还在不在（常量＋两处落点都吃 KA_VOL_BASE）；
+  //   ② hidden 时它会不会被顺手改成近零/被硬写别的常数（gate 的 hidden 分支必须落 kaToneLevel）。
   ok('#724 分级常量在位（KA_VOL_BASE=0.2 / KA_VOL_MAX=0.35）', /const KA_VOL_BASE = 0\.2, KA_VOL_MAX = 0\.35;/.test(src));
-  ok('启动 volume 走基础档（kaCustomAudio ? 1 : KA_VOL_BASE）', /keepEl\.volume\s*=\s*kaCustomAudio\s*\?\s*1\s*:\s*KA_VOL_BASE\s*;/.test(src));
-  ok('恢复默认音频同吃基础档（原硬编码 0.05 已收口）', !/keepAudio\.el\.volume = 0\.05;/.test(src) && /keepAudio\.el\.volume = KA_VOL_BASE;/.test(src));
+  // #1489 重锚（同一把尺，问的还是「基础档在不在、两个入口都落不落得到」）：#1374a 那两处直写
+  //   在 #1489 收进转子构造 kaBuildTransducer（启动传 KA_VOL_BASE、清自定义走 resetBase），
+  //   老拓扑与新拓扑任一在位都算合格——两边都不在＝基础档真丢了。两条直写常数一律不许回流。
+  ok('#724 基础档在位（老拓扑＝两处 kaSetToneLevel(KA_VOL_BASE)；新拓扑＝启动＋清自定义两个入口传基础档）',
+    ((src.match(/kaSetToneLevel\(KA_VOL_BASE\);/g) || []).length === 2 ||
+      (/kaSetToneLevel\(level \|\| KA_VOL_BASE\);/.test(src) && /if \(!kaBuildTransducer\(KA_VOL_BASE\)\)/.test(src) && /resetBase \? KA_VOL_BASE : kaToneLevel/.test(src))) &&
+    !/keepAudio\.el\.volume = 0\.05;/.test(src) && !/keepEl\.volume = 0\.\d+;/.test(src));
+  ok('#724 hidden 档不被顺手调低（唯一落点里 hidden 分支＝kaToneLevel，且不近零）',
+    /kaCustomAudio \? 1 : \(kaVisibleNow\(\) \? 0 : kaToneLevel\)/.test(src) &&
+    !/kaVisibleNow\(\) \? 0 : 0\.0[0-5]/.test(src));
   ok('媒体会话声明 playing 仍在（audible 豁免另一半）', /playbackState\s*=\s*'playing'/.test(src));
 }
 

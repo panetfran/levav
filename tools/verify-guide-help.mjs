@@ -95,8 +95,8 @@ A('S17 #997 独立一节讲清能力边界（无服务器 / 网页没有相册�
   tpl.includes('本站是一个网页，不是 App，也没有服务器') && tpl.includes('网页没有「相册权限 / 存储权限」这回事')
   && tpl.includes('网站能提的建议只有两条') && tpl.includes('换浏览器 / 装到主屏幕不会带走数据')
   && tpl.includes('本站是纯前端网页，能用的能力都是浏览器借给它的'));
-A('S18 #997 第 11 节计数漂移已校正（19→20，与实际条目一致）',
-  tpl.includes('手机卡顿怎么办（安卓 / iPhone）</span><span class="lg-count">20</span>'));
+A('S18 #997 第 11 节计数漂移已校正（19→20，与实际条目一致；#1370 该节加三条 20→23，仍与实条目数一致）',
+  tpl.includes('手机卡顿怎么办（安卓 / iPhone）</span><span class="lg-count">23</span>'));
 const fhAlready = read('js/feature-hub.js');
 A('S19 #997 功能大全「使用说明」条目列全章节并补关键词（搜「批量上传 / 设备限制」要能找到入口）',
   fh.includes('设备限制 浏览器限制 批量上传') && fh.includes('本站只是一个网页（批量上传图片只能选一张')
@@ -212,23 +212,28 @@ mt = await modalText();
 A('P5 设备兼容诊断「功能说明」点名设备/浏览器限制清单', mt.includes('浏览器限制') && mt.includes('第 12 节'));
 await ev(`(()=>{ const m=document.getElementById('modal-mask'); if(m) m.hidden=true; })()`);
 
-// #659 夜间模式行（incoming-requests.js 动态插入）：胶囊在行内、点开＝作用/默认/机制/影响范围，
+// #659 夜间免打扰模式行（incoming-requests.js 动态插入；#1470 前原名「夜间模式」）：胶囊在行内、点开＝作用/默认/机制/影响范围，
 // 且点胶囊不会顺手把开关拨动（胶囊在 .txt 内、与 label.toggle 无关）
 const nightOn = () => ev(`(()=>{ const i=document.getElementById('sf-night-mode'); return !!i && i.checked; })()`);
-A('P5a 夜间模式行「功能说明」胶囊在位（动态行自带、未被 inject 跳过）',
+A('P5a 夜间免打扰模式行「功能说明」胶囊在位（动态行自带、未被 inject 跳过）',
   await ev(`(()=>{ const t=document.querySelector('#sf-night-mode-tag'); const r=document.getElementById('sf-night-mode-row');
     return !!t && !!r && r.querySelector('.txt')===t.parentNode && t.getAttribute('data-setdesc')==='#sf-night-mode-row'; })()`));
 const beforeToggle = await nightOn();
 await clickCapsule('#sf-night-mode-row'); await sleep(200);
 mt = await modalText();
 const nightTitle = await ev(`(()=>{ const t=document.getElementById('modal-title'); return t ? t.textContent : ''; })()`);
-A('P5b 夜间模式「功能说明」= 时段 + 默认 + 机制 + 影响范围四段且不拨开关',
-  nightTitle.indexOf('夜间模式') >= 0 &&
+A('P5b 夜间免打扰模式「功能说明」= 时段 + 默认 + 机制 + 影响范围四段且不拨开关',
+  nightTitle.indexOf('夜间免打扰模式') >= 0 &&
   mt.includes('22:00–次日 07:00') && mt.includes('默认：关闭') && mt.includes('无需手动操作') &&
   mt.includes('跨桌面查岗') && mt.includes('跨桌面来电') &&
   mt.includes('不受影响') && (await nightOn()) === beforeToggle,
   'len=' + (mt ? mt.length : 0) + ' title=' + nightTitle + ' toggle=' + beforeToggle);
 await ev(`(()=>{ const m=document.getElementById('modal-mask'); if(m) m.hidden=true; })()`);
+// #1470 改名落点：行标题本体＝新名，且旧名不再单独出现在标题里（旧名只许作为「原名」说明与搜索别名存在）
+A('P5c 行标题本体＝「夜间免打扰模式」（剥掉胶囊与小字后的标题文本，旧名不回流）',
+  await ev(`(()=>{ const r=document.getElementById('sf-night-mode-row'); if(!r) return false;
+    const c=r.querySelector('.txt').cloneNode(true); c.querySelectorAll('.tag,.sub').forEach(x=>x.remove());
+    const t=c.textContent.replace(/\\s+/g,' ').trim(); return t.indexOf('夜间免打扰模式')>=0 && t.indexOf('夜间模式')<0; })()`));
 
 // 设置搜索：卡顿 / 后台弹窗 / 浏览器限制 都能找到入口行
 await setSearch('卡顿'); await sleep(150);
@@ -241,10 +246,14 @@ await setSearch('浏览器限制'); await sleep(150);
 A('P8 设置搜索「浏览器限制」命中 设备兼容诊断', await rowVisible('#row-diagnostics'));
 // #659：说明文案并入搜索素材（行上胶囊带 data-setdesc，#573 数据驱动）——只出现在说明里的词也能搜到本行
 await setSearch('勿扰'); await sleep(150);
-A('P8b 设置搜索「勿扰」（只在夜间模式说明里）命中夜间模式行', await rowVisible('#sf-night-mode-row'));
+A('P8b 设置搜索「勿扰」（只在夜间免打扰说明里）命中夜间免打扰模式行', await rowVisible('#sf-night-mode-row'));
+// #1470 改名后旧叫法的可发现性：搜「夜间模式」应同时点亮「深色模式」（口语别名，#550 原义不动）与本行（说明里登记的原名）
+await setSearch('夜间模式'); await sleep(150);
+A('P8d 设置搜索旧名「夜间模式」同时命中 深色模式 ＋ 夜间免打扰模式行（改名不把人留在原地）',
+  (await rowVisible('#row-theme-mode')) && (await rowVisible('#sf-night-mode-row')));
 await setSearch('功能说明'); await sleep(150);
 const capsuleNoise = await ev(`(()=>[...document.querySelectorAll('#page-setting .set-row')].filter(r=>r.style.display!=='none').length)()`);
-A('P8c 胶囊文本仍不入搜索素材（搜「功能说明」零命中，夜间模式行不误中）', capsuleNoise === 0, 'hits=' + capsuleNoise);
+A('P8c 胶囊文本仍不入搜索素材（搜「功能说明」零命中，夜间免打扰行不误中）', capsuleNoise === 0, 'hits=' + capsuleNoise);
 await setSearch(''); await sleep(150);
 
 // ---- G 使用说明页：节数 / 计数 / 页内搜索 ----

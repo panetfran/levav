@@ -187,7 +187,7 @@ const opened = await evalJs(`(function(){
 })()`);
 await sleep(600);
 check('B8 点入口仍然打开位置面板（放置与点击行为一字未动）', !!(opened && opened.open === true && opened.full === true), JSON.stringify(opened).slice(0, 120));
-check('B9 位置面板里三个换位开关俱在（副标题承诺的内容真实存在）', !!(opened && opened.switches === 3), opened && ('开关=' + opened.switches + '/3'));
+check('B9 位置面板里三枚换位开关俱在（副标题承诺的内容真实存在；#1436 续批起回到三枚＝感知一下是按钮不是开关）', !!(opened && opened.switches === 3), opened && ('开关=' + opened.switches + '/3'));
 
 // ---- B10. 桌面寻踪页那颗同款 ----
 await evalJs(`(function(){ var p=document.getElementById('loc-panel'); if(p) p.hidden=true; var b=document.getElementById('loc-back'); if(b) b.click(); })()`);

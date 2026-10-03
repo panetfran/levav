@@ -37,8 +37,9 @@ if (!useProduct) {
   const ma = readFileSync(join(root, 'src', 'js', 'mobile-adapt.js'), 'utf8');
   check('A1 syncSafeBottom 键盘在场判据（_kbActive/_iProv/_kbNowLike 三信号）',
     /if \(_kbActive \|\| _iProv \|\| _kbNowLike\(\)\) \{ \/\/ #556/.test(ma));
-  check('A2 键盘期写 0px（判据分支内 setProperty）',
-    /d\.style\.setProperty\('--mochi-safe-bottom', '0px'\); \/\/ #556/.test(ma));
+  // #1416 起这一发走唯一写入点 syncBottomSafe('pin')（落值逐字仍是 0px）；两种写法都算过＝同一把尺能量新旧两版产物
+  check('A2 键盘期写 0px（走唯一写入点；旧写法＝判据分支内直写 setProperty）',
+    /syncBottomSafe\('pin'\); \/\/ #556|setProperty\('--mochi-safe-bottom', '0px'\); \/\/ #556/.test(ma));
   check('A3 键盘开启路径显式调用（syncIosKb 开启分支，防 vv 事件漏触发）',
     /syncSafeBottom\(\); \/\/ #556：键盘开启即归零/.test(ma));
   check('A4 推定停靠路径同样调用（_iProvDock）',
