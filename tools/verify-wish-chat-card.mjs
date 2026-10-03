@@ -31,10 +31,10 @@ console.log('S 层：源码口径');
   const tpl = readFileSync(join(root, 'src/template.html'), 'utf8');
   ok(/wishChatOn: s\.wishChatOn === 0 \? 0 : 1/.test(gs), 'S1 「TA 的心愿发到聊天」开关默认开启（未设置过＝1）');
   ok(/wishChatPct: clampPct\(s\.wishChatPct, 60\)/.test(gs), 'S2 默认概率 60 可被设置覆盖');
-  ok(/const pushed = !!\(st\.wishChatOn && Math\.random\(\) \* 100 < st\.wishChatPct && wishChatPush\(giftW\)\);/.test(gs),
-    'S3 TA 把商品加进清单那一步按开关+概率决定是否发卡');
-  ok(/if \(!pushed\) toast\(partnerName\(\) \+ ' 把「' \+ giftW\.name \+ '」加进了 TA 的心愿单'\);/.test(gs),
-    'S4 发了卡就不再叠旧 toast（没发才回落旧提示）');
+  ok(/const pushed = !!\(quotaLeft && st\.wishChatOn && Math\.random\(\) \* 100 < st\.wishChatPct && wishChatPush\(giftW\)\);/.test(gs),
+    'S3 TA 把商品加进清单那一步按「当日张数＋开关＋概率」决定是否发卡（#1437 补额度这一道闸）');
+  ok(/else if \(quotaLeft\) toast\(partnerName\(\) \+ ' 把「' \+ giftW\.name/.test(gs),
+    'S4 发了卡就不再叠旧 toast；当天张数用完那次连 toast 一并静默（#1437 作者点口径）');
   ok(/function wishChatPush\(gift\) \{/.test(gs), 'S5 发卡函数存在');
   ok(/window\.chatAddGift\(\{/.test(gs) && /special: 'wish'/.test(gs), 'S6 卡片经 chatAddGift 落聊天（special:wish）');
   ok(/wishGiftId: gift\.id, wishGiftName: gift\.name/.test(gs), 'S7 卡片自带商品快照字段（商品日后改动不影响已发卡片）');
@@ -44,13 +44,23 @@ console.log('S 层：源码口径');
   ok(/if \(opts\.onDone\) \{ try \{ opts\.onDone\(\); \} catch \(e\) \{\} \}/.test(gs), 'S11 购买成功才回调（取消/失败不误标已送出）');
   ok(/data-gsw="wishChatOn"/.test(gs), 'S12 设置面板有开关行');
   ok(/data-gsn="wishChatPct"/.test(gs), 'S13 设置面板有概率行');
-  ok(/toast\('请填 0~100 的整数'\);/.test(gs), 'S14 概率输入沿用非法值保护（不清空写 0）');
+  ok(/const hi = Number\(inp\.max\) \|\| 100;/.test(gs) && /toast\('请填 0~' \+ hi \+ ' 的整数'\);/.test(gs), 'S14 概率输入沿用非法值保护（不清空写 0；#1437 起封顶问输入框自己的 max）');
   ok(/function taWishIds\(\) \{[\s\S]{0,260}_taWishIdsFor !== tag/.test(gs), 'S15 TA 心愿 id 缓存按桌面打标（切联系人不再张冠李戴）');
   ok(/if \(rec\.special === 'wish'\) \{/.test(cj), 'S16 聊天有 TA 心愿卡渲染分支');
-  ok(/const wStill = !window\.giftTaWishHas \|\| window\.giftTaWishHas\(rec\.wishGiftId\);/.test(cj), 'S17 待买/已送出按 TA 心愿单实时数据判定');
+  // ⚠️ #1316 重锚（同名换 needle，不算缩尺）：#660 当年把「待买/已送出」全押在「TA 心愿单此刻还有没有
+  //   这件商品」的实时推断上，同一件商品的多张心愿卡因此共用一个状态、成交又只给「点击时捕获的那个节点」
+  //   打一次性补丁（红米 K80 实报「送完礼物按钮还是没消失」）。现在两把判据合成一把：卡片自己的 wishSent
+  //   优先，其次才是实时推断；换装按新数据逐张做。旧 needle 在新形态下必然消失，本条改成认新那一行。
+  ok(/const wStill = wishCardIsPending\(rec\);/.test(cj) && /return !window\.giftTaWishHas \|\| window\.giftTaWishHas\(rec\.wishGiftId\);/.test(cj), 'S17 待买/已送出按「卡片自己记的 wishSent ＋ TA 心愿单实时数据」这一把尺子判定（#1316 重锚）');
   ok(/!window\.giftBuyFromWishCard\) \{ toast[\s\S]{0,80}\nwindow\.giftBuyFromWishCard\(wRec/.test(cj), 'S18 【送 TA】点击走 gift-shop 入口（并入既有卡片点击委派）');
-  ok(/acts\.outerHTML = '<div class="msg-wish-done">/.test(cj), 'S19 成交后卡片就地转已送出（不整窗重建）');
-  ok(/'gift' \|\| rec\.special === 'wish'\);/.test(cj), 'S20 TA 心愿卡并入「值得提醒」消息（未读角标/桌面横幅）');
+  // ⚠️ #1316 重锚：成交换装不再抓「点击时捕获的那个节点」（中途任何一次整窗重画都会让补丁落在脱离文档
+  //   的旧节点上＝静默失效，只有刷新才好），改为报出「这件心愿兑现了」＋按新数据逐张就地换装（仍不整窗重建）。
+  ok(/if \(acts\) acts\.outerHTML = wishDoneHtml\(\);/.test(cj) && /window\.giftBuyFromWishCard\(wRec, function \(\) \{ chatWishSettled\(wRec\.wishGiftId\); \}\);/.test(cj), 'S19 成交后按新数据逐张就地转已送出（不整窗重建，#1316 重锚）');
+  // ⚠️ #1347 重锚：#660 当年这条抓的是【卡片类型名白名单】的尾巴（'gift' || rec.special === 'wish'），
+  // 而那层名单本批整撤了换成结构判据（in 侧内容 − 纯状态回声）——心愿卡的契约由这条更宽的判据承接，
+  // 断言随之改成认新判据（不是放宽：名单复活时这一行消失＝照样红）。行为面另有
+  // tools/verify-1347-badge-covers-cards.mjs 的 A11 真投递断言守着，不只靠文本锚。
+  ok(/const notable = rec\.side === 'in' && rec\.special !== 'read';/.test(cj), 'S20 TA 心愿卡并入「值得提醒」消息（未读角标/桌面横幅；#1347 起由整类结构判据承接）');
   ok(/else if \(special === 'wish'\) \{ q = \(rec\.wishGiftName/.test(cj), 'S21 收藏快照覆盖心愿卡（心形不是点了没反应）');
   ok(/\.msg-wish-buy \{/.test(css), 'S22 卡片按钮样式在位');
   ok(/TA 心愿发到聊天概率/.test(gs), 'S23 使用说明/行标题点明概率可调');

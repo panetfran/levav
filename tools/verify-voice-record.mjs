@@ -201,9 +201,15 @@ for (let t = 0; t < 12; t++) {
 }
 check('B9 重进聊天语音气泡仍在且带播放钮', persist.found === true && persist.srcOk === true && persist.hasPlayBtn === true, JSON.stringify(persist));
 
-// ---- B9b 视觉回归哨兵：浅色 out 气泡（黑底）上播放钮/波形必须用白色系（历史 bug：深色系控件黑底不可见） ----
-const b9b = JSON.parse(await evalJs("(function(){var v=document.querySelector('#chat-body .msg-out .msg-voice');if(!v)return '{}';var pb=v.querySelector('.msg-voice-play');var wi=v.querySelector('.msg-voice-wave i');var cs=pb?getComputedStyle(pb):null;var cs2=wi?getComputedStyle(wi):null;return JSON.stringify({pbBg:cs?cs.backgroundColor:'',pbColor:cs?cs.color:'',waveBg:cs2?cs2.backgroundColor:''});})()") || '{}');
-check('B9b out 气泡播放钮/波形为白色系（黑底可见）', /255,\s*255,\s*255/.test(String(b9b.pbBg)) && /255,\s*255,\s*255/.test(String(b9b.pbColor)) && /255,\s*255,\s*255/.test(String(b9b.waveBg)), JSON.stringify(b9b));
+// ---- B9b 视觉回归哨兵（#1487 重基线）：out 气泡上的播放钮／波形必须吃「气泡自己的字色」 ----
+// 旧断言写死「三处都得是 255,255,255」＝把「out 侧钉白」当成契约，而那枚钉白正是 #1487 的病灶：
+// 用户把「我的消息底色」改成浅色时正文被 #536 自愈翻深、钮却仍是白的＝整块隐形（作者报障原文）。
+// 新口径两半都要成立：① 钮与波形＝气泡字色（默认深色气泡上仍是白，原「黑底不可见」不回退）；
+// ② 那层浅底由 currentColor 现算（挂在 ::before 上），钮自身不铺色。
+const b9b = JSON.parse(await evalJs("(function(){var v=document.querySelector('#chat-body .msg-out .msg-voice');if(!v)return '{}';var pb=v.querySelector('.msg-voice-play');var wi=v.querySelector('.msg-voice-wave i');var bub=v.closest('.msg-bubble');var cs=pb?getComputedStyle(pb):null;var cs2=wi?getComputedStyle(wi):null;var cf=pb?getComputedStyle(pb,'::before'):null;return JSON.stringify({bubColor:bub?getComputedStyle(bub).color:'',pbColor:cs?cs.color:'',pbBg:cs?cs.backgroundColor:'',fillBg:cf?cf.backgroundColor:'',fillOp:cf?cf.opacity:'',waveBg:cs2?cs2.backgroundColor:''});})()") || '{}');
+check('B9b out 气泡播放钮/波形＝气泡字色（#1487：不再钉死白）', b9b.pbColor === b9b.bubColor && b9b.waveBg === b9b.bubColor, JSON.stringify(b9b));
+check('B9b2 默认深色 out 气泡上仍是白色系（原「黑底不可见」不回退）', /255,\s*255,\s*255/.test(String(b9b.bubColor)), JSON.stringify(b9b));
+check('B9b3 钮自身不铺色、浅底改由 currentColor 那层现算（拿回钉色＝这条先红）', String(b9b.pbBg).indexOf('rgba(0, 0, 0, 0') === 0 && b9b.fillBg === b9b.bubColor && parseFloat(b9b.fillOp) > 0 && parseFloat(b9b.fillOp) < 0.5, JSON.stringify(b9b));
 
 // ---- B9c 视觉回归哨兵：试听行 hidden 属性必须真的 display:none（display:flex 压过 UA [hidden] 的坑） ----
 await evalJs("(function(){window.activeStore().set('cs-voice-send','1');document.dispatchEvent(new Event('voice-send-changed'));document.getElementById('chat-mic-btn').click();return 1;})()");
