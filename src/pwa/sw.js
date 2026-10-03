@@ -488,6 +488,10 @@ self.addEventListener('notificationclick', function (e) {
   e.notification.close();
   const tag = (e.notification && e.notification.tag) || '';
   e.waitUntil((async function () {
+    // FIX 2026-09-29 #1443e：页面可能已被系统回收（iPhone 12 Pro 主屏幕模式同机实测回收 26 次），
+    //   这一发 postMessage 就落在「页面还没挂上 message 监听」的空档里＝点了通知没下文。故点击侧同时
+    //   把 tag 写进 IDB 那份小账，页面开机后自取一次（只认 3 分钟内的）。
+    if (tag) { try { await psyncIdbSet('xy-home-v2:__notify-click', JSON.stringify({ tag: tag, ts: Date.now() })); } catch (x0) {} }
     const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     if (cs && cs.length) {
       const c = cs[0];
