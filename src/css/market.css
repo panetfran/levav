@@ -192,6 +192,9 @@
 .giftbox-repl-who { flex: none; color: #c8c8c8; }
 .giftbox-repl-tx { flex: 1; color: #6a6a6a; word-break: break-word; }
 .gb-detail-pending { margin-top: 12px; font-size: 12px; }
+/* #1530：心意柜详情的【领取】——按钮直接复用聊天卡 .msg-gift-claim（视觉同族、暗色行为一致），
+   这里只给容器：面板正文居中布局里按钮独占一行撑满 */
+.gb-detail-claim { display: flex; margin-top: 16px; }
 .gb-detail-repl-title { margin-top: 18px; font-size: 11.5px; color: #b5b5b5; letter-spacing: 0.5px; }
 .gb-detail-repls { margin: 10px 20px 0; }
 
@@ -382,6 +385,11 @@ textarea.gm-input { min-height: 52px; resize: none; }
 .gift-wish-row { padding: 6px 14px 2px; }
 .gift-wish-row button { width: 100%; padding: 10px 0; border-radius: 12px; border: 1px dashed rgba(0, 0, 0, 0.2); background: #f7f7f7; color: #111; font-size: 13px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .gift-wish-row button:active { transform: scale(0.98); background: #f2f2f5; }
+/* #1540：聊天送礼面板里的「上传我的商品」入口（与 .gift-wish-row 同族；添加＝实底描边，看心愿＝虚线） */
+.gift-mine-row { padding: 6px 14px 2px; }
+.gift-mine-row button { width: 100%; padding: 10px 0; border-radius: 12px; border: 1px solid rgba(0, 0, 0, 0.14); background: #f7f7f7; color: #111; font-size: 13px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.gift-mine-row button:active { transform: scale(0.98); background: #f2f2f5; }
 [data-theme="dark"] .gift-item-tawish { background: rgba(245, 245, 245, 0.85); color: #1c1c1e; }
 [data-theme="dark"] #page-market .gift-item-tawish { background: rgba(245, 245, 245, 0.85); color: #1c1c1e; }
 [data-theme="dark"] .gift-wish-row button { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.25); color: #f2f2f2; }
+[data-theme="dark"] .gift-mine-row button { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.25); color: #f2f2f2; }

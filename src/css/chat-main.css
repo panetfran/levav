@@ -1388,6 +1388,28 @@ html.tablet #page-chat.cs-bg-on > #cs-bg-layer { min-height:100vh; min-height:ma
 .msg-inplace .ip-opt-row.sel { border-color:var(--ink); background:rgba(0,0,0,.04); font-weight:600; }
 .msg-inplace .ip-opt-row .ip-opt-t { min-width:0; }
 .msg-inplace .ip-opt-row .ip-opt-reply { flex-shrink:0; font-size:12px; opacity:.6; }
+/* #1415 多选题就地作答：整行点一下＝勾上/取消（左边缘那枚方框是「勾没勾」的唯一读数），
+   勾完必须再点底下那枚「提交」才算落地——单选题是点一下就答，两拍只在多选题上出现。 */
+.msg-inplace .ip-opt-chk { justify-content:flex-start; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+.msg-inplace .ip-opt-chk .ip-opt-t { flex:1 1 auto; text-align:left; }
+.msg-inplace .ip-opt-chk .ip-opt-reply { margin-left:auto; }
+.msg-inplace .ip-opt-box {
+  position:relative; flex:none; width:16px; height:16px; margin-right:9px;
+  box-sizing:border-box; border:1.5px solid rgba(0,0,0,.3); border-radius:5px; background:#fff;
+}
+.msg-inplace .ip-opt-chk.on { border-color:var(--ink); background:rgba(0,0,0,.04); font-weight:600; }
+.msg-inplace .ip-opt-chk.on .ip-opt-box { border-color:var(--ink); background:var(--ink); }
+.msg-inplace .ip-opt-chk.on .ip-opt-box::after {
+  content:''; position:absolute; left:4px; top:1px; width:4px; height:8px;
+  border:solid #fff; border-width:0 2px 2px 0; transform:rotate(45deg);
+}
+.msg-inplace .ip-multi-submit {
+  display:block; width:100%; margin-top:2px; padding:10px 12px; border:none; border-radius:10px;
+  background:var(--ink); color:#fff; font-size:13px; font-weight:600; cursor:pointer;
+  font-family:inherit; -webkit-tap-highlight-color:transparent;
+}
+.msg-inplace .ip-multi-submit:active { opacity:.85; }
+.msg-inplace .ip-multi-submit:disabled { opacity:.42; cursor:default; }
 
 /* ===== TA鐨勮闂?===== */
 /* 鑱婂ぉ閲岀殑璇㈤棶鍗＄墖 */
@@ -1481,15 +1503,19 @@ html.tablet #page-chat.cs-bg-on > #cs-bg-layer { min-height:100vh; min-height:ma
 .msg-voice {
   display:flex; align-items:center; gap:8px; min-width:150px; max-width:220px;
 }
+/* #1487 播放钮的图标色／描边／底纹一律取「所在气泡自己的字色」（color:inherit + currentColor）：
+   气泡字色是 #536 对比度自愈之后真正落在屏上的那个色，钮跟着它翻深翻浅才不会和气泡底色撞色。 */
 .msg-voice-play {
   flex-shrink:0; width:30px; height:30px; border-radius:50%;
-  border:1px solid rgba(0,0,0,.15); background:rgba(0,0,0,.05);
-  color:var(--ink); cursor:pointer;
+  border:1px solid currentColor; background:transparent;
+  color:inherit; cursor:pointer;
+  position:relative; isolation:isolate;
   display:flex; align-items:center; justify-content:center;
-  transition:transform .12s ease, background .15s ease, border-color .15s ease, color .15s ease;
+  transition:transform .12s ease;
 }
+.msg-voice-play::before { content:''; position:absolute; inset:0; border-radius:50%; z-index:-1; background:currentColor; opacity:.16; transition:opacity .15s ease; }
 .msg-voice-play svg { width:13px; height:13px; }
-.msg-voice-play.playing { background:var(--ink); color:#fff; border-color:var(--ink); }
+.msg-voice-play.playing::before { opacity:.5; }
 /* 点按互动反馈：按下微缩；播放中三角换暂停双竖条（录制面板试听钮/群聊语音同款双图标） */
 .msg-voice-play:active { transform:scale(.85); }
 .msg-voice-play .voice-ico-pause { display:none; }
@@ -1499,7 +1525,7 @@ html.tablet #page-chat.cs-bg-on > #cs-bg-layer { min-height:100vh; min-height:ma
   display:flex; align-items:flex-end; gap:2px; height:18px; flex:1;
 }
 .msg-voice-wave i {
-  width:3px; border-radius:2px; background:var(--ink); opacity:.4;
+  width:3px; border-radius:2px; background:currentColor; opacity:.45;
   height:40%; animation:voiceWave .9s ease-in-out infinite alternate;
   animation-play-state:paused;
 }
@@ -1882,10 +1908,10 @@ html.tablet #page-chat.cs-bg-on > #cs-bg-layer { min-height:100vh; min-height:ma
 }
 .voice-send-big:active { opacity:.85; }
 .voice-send-big[disabled] { opacity:.4; pointer-events:none; }
-/* 我发出的语音气泡落在深色 out 气泡上：播放钮/波形原是浅底深色系（为 in 侧设计），黑底上不可见 */
-.msg-out .msg-voice-play { background:rgba(255,255,255,.16); border-color:rgba(255,255,255,.35); color:#fff; }
-.msg-out .msg-voice-play.playing { background:#fff; color:#111; border-color:#fff; }
-.msg-out .msg-voice-wave i { background:#fff; opacity:.55; }
+/* #1487 out 侧不再钉死白色（旧写法为「深色气泡」写死 #fff）：把「我的消息底色」调成浅色时
+   #536 自愈只翻正文、翻不动这枚钉死的白，于是播放钮与波形和气泡底色同色＝整块隐形，
+   用户所见就是「语音发出去变成一条只有字的文字气泡、也没有地方点着听」。钮与波形改吃气泡自己的字色。 */
+.msg-out .msg-voice-play { color:inherit; }
 @media (prefers-reduced-motion: reduce) {
   .voice-card .voice-wave i, .voice-rec-btn.rec, .msg-voice-play { animation:none !important; transition:none !important; }
 }

@@ -163,6 +163,9 @@ html { margin:0; padding:0; }
 .splash-source-line { font-size:9px; color:var(--hint-ink); line-height:1.9; letter-spacing:0; white-space:nowrap; }
 /* v3.26.x：置顶澄清行可换行——nowrap 仅供单行网址/署名，长句澄清不换行会超出手机屏幕 */
 .splash-source-line.splash-clarify { white-space:normal; padding:0 14px; line-height:1.95; }
+/* #1503：品牌卡「许可 · 署名 · 灵感来源」块是长句（署名 / 二传二改四点要求 / 借鉴来源清单），
+   默认 nowrap 会把开屏撑出横向滚动（#973 S20 / #976 S15 实测）→ 仅本块内放开换行，不影响其余品牌行 */
+.splash-license .splash-source-line { white-space:normal; padding:0 14px; }
 .splash-source-url { color:var(--ink); font-weight:600; }
 /* v3.26.x #793：停更公告横幅（品牌卡内·署名行正下方，data-stop-update）——红色警示形态（同 #315b 免责卡红），
    开屏第一屏第一眼必见；品牌卡整体居中排版，横幅自身改左对齐保正文可读性；暗色主题同批适配 */
@@ -206,18 +209,12 @@ html { margin:0; padding:0; }
   margin-bottom:calc(var(--mochi-safe-bottom,env(safe-area-inset-bottom,0px)) + 20px);
   animation:splash-fade-up .6s ease .4s backwards;
 }
-/* v3.8.y：底部版本块——两行：名称+版本(加粗) / 部署时间+实时秒数，去等宽字体、字号加大适配手机 */
+/* v3.8.y：底部版本块；2026-10-01（停更收口）收成静态一行，部署行/检测行样式随批退役 */
 .splash-ver {
   display:flex; flex-flow:row wrap; align-items:baseline; justify-content:center; gap:1px 8px;
   line-height:1.4;
 }
 .splash-ver .sv-app { font-size:11px; font-weight:700; color:var(--ink); letter-spacing:.5px; }
-.splash-ver .sv-deploy { font-size:10px; color:var(--hint-ink); }
-/* #570：开屏新版检测行（ver-check.js）——检测中/失败灰、已是最新绿、有新版红加粗下划线可点 */
-.splash-ver .sv-check { font-size:10.5px; color:var(--hint-ink); }
-.splash-ver .sv-check.ok { color:#1f9d55; }
-.splash-ver .sv-check.stale { color:#e0523c; font-weight:700; }
-.splash-ver .sv-check.warn { opacity:.85; }
 /* v3.5.111：开屏公告卡片（白纸卡片，与全局简约风格一致）；v3.8.y：不再自滚，随 .splash-box 整页滚动 */
 .splash-notice {
   margin:16px auto 0; width:min(324px, 100%); text-align:left;
@@ -233,14 +230,9 @@ html { margin:0; padding:0; }
    章节标题(黑竖条+加粗) > 子标题 > 编号条目(浅灰圆标) > 子列表项(·前缀) */
 .splash { --sp-ink:#111111; --sp-soft:rgba(17,17,17,.055); --sp-line:rgba(17,17,17,.08); --sp-glow:rgba(17,17,17,.045); }
 [data-theme="dark"] .splash { --sp-ink:#e8e8e8; --sp-soft:rgba(255,255,255,.075); --sp-line:rgba(255,255,255,.12); --sp-glow:rgba(255,255,255,.05); }
-/* v3.8.z：必读摘要——深色卡片置顶，承载必读内容，视觉上最醒目 */
-.splash-summary {
-  margin:0 0 16px; padding:14px 15px 15px 16px;
-  background:var(--sp-soft); border-left:3px solid var(--sp-ink); border-radius:12px;
-}
-.splash-summary-title { font-size:12px; font-weight:800; color:var(--ink); margin-bottom:9px; letter-spacing:.8px; }
-.splash-summary p { font-size:12px; line-height:1.8; color:var(--soft-ink); }
-.splash-summary p + p { margin-top:7px; }
+/* v8.44 #1216（2026-09-25 用户直派「必读摘要全部删掉」）：那份置顶「必读摘要」卡片连同样式整块删除，
+   渲染侧的同批拆掉（见 clock.js）。必读口径从此只有两处——开屏最顶必读卡组 ＋ 第一页目录章节；
+   补回第三份必然分叉，勿再添加。 */
 /* v3.26.x #575（用户 2026-09-16 反馈）：开屏「新手上路 3 步」蓝色引导卡已整块删除（DOM 在 template.html
    同批撤除），此处 .splash-onboard* 样式一并清掉。新手引导改由 onboarding.js 弹层承担，勿再补回。 */
 /* v3.27.x：防骗置顶声明——固定在公告最顶部，防收费诈骗醒目提示；
@@ -281,7 +273,11 @@ html { margin:0; padding:0; }
 .splash-alert.splash-cardlock .splash-alert-t { color:#9a6410; }
 .splash-alert.splash-cardlock .splash-alert-t::before { background:#9a6410; }
 .splash-alert.splash-cardlock p { color:#6b4a0e; }
-.cardlock-actions { margin-top:9px; display:flex; gap:8px; flex-wrap:wrap; }
+/* #1273：禁选手势收在动作区容器上（一行覆盖两颗按钮，且与并行批 #1220 挂在 .cardlock-btn 内的
+   那两行不撞 needle）。判据是 CSS 生效事实：user-select / -webkit-touch-callout 可继承，
+   touch-action 虽不继承但按规范会与各祖先的值求交＝容器上的 manipulation 对子树里的按钮同样生效
+   （禁掉双击缩放等待与长按识别候选，长按不再吞掉这一次点按）。 */
+.cardlock-actions { margin-top:9px; display:flex; gap:8px; flex-wrap:wrap; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; touch-action:manipulation; }
 .cardlock-btn {
   appearance:none; border:1.5px solid #9a6410; background:#9a6410; color:#fff;
   font-size:12.5px; font-weight:800; padding:7px 14px; border-radius:8px; letter-spacing:.5px;
@@ -290,19 +286,30 @@ html { margin:0; padding:0; }
 .cardlock-state { font-size:12px; font-weight:700; color:#9a6410; margin-top:8px; min-height:1em; }
 [data-theme="dark"] .splash-alert.splash-cardlock { background:rgba(192,127,31,.15); border-color:#d99a3a; }
 [data-theme="dark"] .splash-alert.splash-cardlock .splash-alert-t { color:#eebb60; }
-/* v8.29 #991：iPhone「添加到主屏幕」提示卡——#976 定的琥珀＝「需要你操作」族（与系统内置字卡锁同色），
-   规则与形状参数照抄该族（字形/内边距/圆角一致），只换文案宿主。哨兵 needle 取 minify 后的单行形态 */
-.splash-alert.splash-ioshome { background:#fdf3e0; border-left:3px solid #c07f1f; border-radius:12px; padding:13px 15px 14px 16px; }
-.splash-alert.splash-ioshome .splash-alert-t { color:#9a6410; font-size:13px; letter-spacing:1px; }
-.splash-alert.splash-ioshome .splash-alert-t::before { background:#9a6410; }
-.splash-alert.splash-ioshome p { color:#6b4a0e; font-size:12.5px; font-weight:700; line-height:1.8; }
-.splash-alert.splash-ioshome p + p { margin-top:6px; }
-.splash-alert.splash-ioshome strong, .splash-alert.splash-ioshome b { color:#9a6410; font-weight:800; }
-[data-theme="dark"] .splash-alert.splash-ioshome { background:rgba(192,127,31,.15); border-color:#d99a3a; }
-[data-theme="dark"] .splash-alert.splash-ioshome .splash-alert-t { color:#eebb60; }
-[data-theme="dark"] .splash-alert.splash-ioshome .splash-alert-t::before { background:#eebb60; color:#3a2504; }
-[data-theme="dark"] .splash-alert.splash-ioshome p { color:#ecd9b0; }
-[data-theme="dark"] .splash-alert.splash-ioshome strong, [data-theme="dark"] .splash-alert.splash-ioshome b { color:#eebb60; }
+/* 2026-10-01 必读卡组两张新卡专属配色（作者直派补备份/数据不互通两卡）：
+   原「安卓浏览器」（#738）与「iPhone 添加到主屏幕」（#991）两卡样式已随卡收进公告目录同批撤除；
+   本批两张新卡沿用 #976 定的两族形态参数——备份卡＝琥珀「需要你操作」族（同系统内置字卡锁）、
+   数据不互通卡＝橙「须知/提醒」族（同停更公告）。哨兵 needle 取 minify 后的单行形态 */
+.splash-alert.splash-backup { background:#fdf3e0; border-left:3px solid #c07f1f; border-radius:12px; padding:13px 15px 14px 16px; }
+.splash-alert.splash-backup .splash-alert-t { color:#9a6410; font-size:13px; letter-spacing:1px; }
+.splash-alert.splash-backup .splash-alert-t::before { background:#9a6410; }
+.splash-alert.splash-backup p { color:#6b4a0e; font-size:12.5px; font-weight:700; line-height:1.8; }
+.splash-alert.splash-backup p + p { margin-top:6px; }
+.splash-alert.splash-backup strong, .splash-alert.splash-backup b { color:#9a6410; font-weight:800; }
+[data-theme="dark"] .splash-alert.splash-backup { background:rgba(192,127,31,.15); border-color:#d99a3a; }
+[data-theme="dark"] .splash-alert.splash-backup .splash-alert-t { color:#eebb60; }
+[data-theme="dark"] .splash-alert.splash-backup .splash-alert-t::before { background:#eebb60; color:#3a2504; }
+[data-theme="dark"] .splash-alert.splash-backup p { color:#ecd9b0; }
+[data-theme="dark"] .splash-alert.splash-backup strong, [data-theme="dark"] .splash-alert.splash-backup b { color:#eebb60; }
+.splash-alert.splash-storesplit {
+  padding:13px 15px 14px 16px;
+  background:#fff3e6; border-left:3px solid #e8590c; border-radius:12px;
+}
+.splash-alert.splash-storesplit .splash-alert-t { color:#c2410c; font-size:13px; letter-spacing:1px; }
+.splash-alert.splash-storesplit .splash-alert-t::before { background:#e8590c; }
+.splash-alert.splash-storesplit p { color:#8a3d05; font-size:12.5px; font-weight:700; line-height:1.8; }
+.splash-alert.splash-storesplit strong { color:#c2410c; font-weight:800; }
+[data-theme="dark"] .splash-alert.splash-storesplit { background:rgba(232,89,12,.16); border-color:#ff8a3d; box-shadow:none; }
 /* v8.29 #991：真·可点 file input（surface 层，device.js mochiFilePickSurface）的原生小按钮要藏掉——
    元素本身保持可见（opacity:1 + 真实尺寸，见 device.js 里的内联样式），只藏它的可见外观：
    不支持该伪元素的旧内核回退为 font-size:0 + 透明前景/背景，同样看不见。
@@ -407,14 +414,10 @@ input.mochi-pick-surface::-webkit-file-upload-button { display:none; }
   background:var(--sp-soft); color:var(--sp-ink);
   font-size:10px; font-weight:800;
 }
-/* 高亮条目：关键提醒用显眼橙色加粗标出（如「基础疑问可直接问 AI」）；
-   双选择器压过 .splash-notice-list p / .splash-summary p 的软墨色 */
-.splash-notice-list .splash-hl, .splash-summary .splash-hl { color:#e8590c; font-weight:800; }
-/* #1024 观感（用户 2026-09-22 选定「必读摘要不再全部橙色」）——改前实测摘要 9 条全是同一橙色
-   #e8590c / 同字重 800，同色同重等于没有重点、整块像警告墙。现在只保留三条红线（防倒卖 /
-   转载侵权 / 18 禁）为橙色加粗，其余条目标 splash-plain＝普通墨色小字（正文原字号不变）。
-   三条红线的 DOM 一字不动（build.mjs #613 的锚点仍逐字命中），章节正文里的 .splash-hl 不受影响。 */
-.splash-summary .splash-hl.splash-plain { color:var(--ink); font-weight:400; }
+/* 高亮条目：关键提醒用显眼橙色加粗标出（如「基础疑问可直接问 AI」）；压过 .splash-notice-list p 的软墨色 */
+.splash-notice-list .splash-hl { color:#e8590c; font-weight:800; }
+/* #1024 观感（用户 2026-09-22 选定「橙色加粗只留给真正的红线，同色同重等于没有重点」）口径不变：
+   章节正文里要显眼就写 .splash-hl，其余保持正文墨色。 */
 /* 子列表项：黑色 · 前缀，与编号条目文字对齐 */
 .splash-bullet { position:relative; padding-left:24px; margin-bottom:7px; line-height:1.75; }
 .splash-bullet::before {
@@ -453,6 +456,24 @@ input.mochi-pick-surface::-webkit-file-upload-button { display:none; }
   accent-color:var(--btn-bg); cursor:pointer;
 }
 .splash-age[hidden] { display:none; }
+/* #1453：勾选行内「查看免责声明」锚点——点它滚回上面那张免责卡（clock.js 接线）。
+   红色沿用免责卡的警示红族（浅色 #c22b27；暗色覆写在 dark.css）；margin-left:auto 靠行尾，
+   不挤占勾选文案的换行宽度。只做查看入口，与门控无关（未勾选仍进不去） */
+.splash-age-view {
+  flex:none; margin-left:auto; padding-left:8px;
+  color:#c22b27; font-weight:700; text-decoration:underline; text-underline-offset:2px;
+  cursor:pointer; -webkit-tap-highlight-color:transparent;
+}
+/* 折叠公告按钮：勾选已读后显示，点击折叠/展开详细说明章节（置顶必读卡与品牌卡始终保留） */
+.splash-fold-toggle {
+  margin:8px auto 0; padding:6px 18px; text-align:center;
+  font-size:13px; color:var(--hint-ink); cursor:pointer;
+  border:1px solid var(--card-border,#ddd); border-radius:8px;
+  background:var(--card-bg,#f8f8f8); -webkit-tap-highlight-color:transparent;
+  user-select:none;
+}
+.splash-fold-toggle[hidden] { display:none; }
+.splash-box.splash-folded .splash-notice { display:none; }
 /* v3.8.y：底部操作区——「点击进入」按钮（居中，间距由卡片 padding 控制） */
 .splash-btns {
   display:flex; align-items:center; justify-content:center; gap:10px;
@@ -542,8 +563,22 @@ input.mochi-pick-surface::-webkit-file-upload-button { display:none; }
 .splash-mandatory-body .mnum::before { content:"·"; position:absolute; left:3px; top:0; color:var(--sp-ink); font-weight:800; }
 /* 落款标签（右对齐小灰字） */
 .splash-mandatory-body .mtag { text-align:right; font-size:10.5px; color:var(--hint-ink); margin-top:10px; }
+/* v8.44 #1215b（2026-09-25 用户「最新的放最顶上默认打开，其他的折叠起来」）：更早公告的整体折叠块。
+   原生 details/summary，零 JS、零动画——本页可见性绝不许再依赖动画播完（#1182 白屏教训，build.mjs 有 absent 哨兵）；
+   收起时正文仍在 DOM 里（textContent / 页内查找都拿得到），只是不占阅读高度；
+   左侧竖条用次级灰（--hint-ink）＝视觉上让位于默认展开的最新一批；变量与 .splash-mandatory-card 同一套，明暗主题自适应。 */
+.splash-mandatory-fold { margin-bottom:14px; }
+.splash-mandatory-fold-sum {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:12px 15px; font-size:11.5px; font-weight:700; letter-spacing:.3px; color:var(--ink);
+  background:var(--sp-soft); border-left:3px solid var(--hint-ink); border-radius:10px;
+  cursor:pointer; list-style:none; -webkit-tap-highlight-color:transparent;
+}
+.splash-mandatory-fold-sum::-webkit-details-marker { display:none; }
+.splash-mandatory-fold-sum::after { content:"▾"; font-size:11px; color:var(--hint-ink); }
+.splash-mandatory-fold[open] > .splash-mandatory-fold-sum { margin-bottom:12px; }
+.splash-mandatory-fold[open] > .splash-mandatory-fold-sum::after { content:"▴"; }
 .splash-mandatory-end { text-align:center; font-size:11px; color:var(--hint-ink); letter-spacing:2px; padding:2px 0 4px; }
-.splash-mandatory-note { margin-top:14px; padding:10px 12px; font-size:11px; line-height:1.7; color:var(--hint-ink); background:var(--card-soft, rgba(0,0,0,0.03)); border-radius:8px; }
 /* 底部确认区（常驻不随内容滚动）：提示 + 确认按钮 */
 .splash-mandatory-foot {
   width:min(322px, 100%); margin:0 auto; box-sizing:border-box;
@@ -621,6 +656,22 @@ input.mochi-pick-surface::-webkit-file-upload-button { display:none; }
      （收键盘动画/内核 vv 上报有延迟）露出的那一条由「大片灰底」变成与页面同色，观感
      不突兀；桌面宽屏外壳不在此媒体查询内，模拟器灰底照旧。零机型分支、纯视觉兜底。 */
   html, body { padding:0; min-height:100vh; min-height:100svh; min-height:100dvh; background:var(--bg-b, #fff); }
+  /* FIX 2026-09-27 #1340 竖屏形态的文档不变量：根不可滚、壳顶对齐（与机型／内核无关）。
+     #185（iPad 独立应用「文档可滚时橡皮筋把整页来回拽＝滑动位置会飞、一弹一弹」）与
+     #537（iOS 覆盖形态「flex 居中把 .phone 整块挪走 31px＝顶部重叠＋底部白带」）早就各自
+     量到过同一处物理后果，但两道收口都写死在 iOS standalone 的选择器上；竖屏浏览器形态
+     （inner==vv、.phone==100dvh、只有 overflow-x 被锁）从来没有这一对约束，于是壳与视口
+     之间只要差出一格——内核 dvh 滞留、#916 过期内联钉高、键盘残留、用户手调偏移——那一格
+     既成白带又成可拖走量，同一缺陷在红米／OPPO／小米15 上分别长成「页面可以上下滑飞出屏
+     幕」「全屏也会有空白」「顶部白条」。本批把它升成形态无关的不变量：整页是永不滚动的
+     裁剪框（#399 早已把 .phone 定为裁剪框、纵向滚动只属于 .page／#chat-body，根却是漏的）。
+     顶对齐＝差出来的那一格一律留在下沿：上沿是状态栏与返回键，永不该动；旧写法居中时同一
+     格被劈成上下两条（实测 762→822 那 2~3s 里顶 45／底 15）。
+     健康态里两条都是空操作：.phone 与 body 同为 100dvh、彼此相等，既不居中位移也无
+     可滚量——只在两者 disagreement（＝正在发病）时起作用＝零观感回归。
+     刻意排除 .ios-pwa-standalone：那一路的形态（覆盖／保留／iPad）各有一条自己的高度与
+     锁法（#114/#148/#185/#537 的针都在那里），本批不越过去动它＝iOS 主屏幕零变化。 */
+  html:not(.ios-pwa-standalone), html:not(.ios-pwa-standalone) body { overflow:hidden; align-items:flex-start; }
   .phone {
     /* v3.5.139：显式声明——padding(0 18px 18px) 必须算进 100dvh 内，
        否则实际高度超视口、底部导航栏/组件被截 */
@@ -650,6 +701,9 @@ input.mochi-pick-surface::-webkit-file-upload-button { display:none; }
 /* #542：同 @media(max-width:900px)——UA 桌面伪装兜底形态 body 底色也跟 .phone（--bg-b），
    键盘收缩露出的那一条不再是大片灰底 */
 html.force-mobile, html.force-mobile body { padding:0; min-height:100vh; min-height:100svh; min-height:100dvh; background:var(--bg-b, #fff); }
+/* #1340：同一条文档不变量——force-mobile 复刻的就是上方竖屏形态（手机伪装桌面 UA 时媒体
+   查询不命中、只能靠这个类复刻），漏一份就等于「桌面站点」模式下整页照旧可被拖走 */
+html.force-mobile:not(.ios-pwa-standalone), html.force-mobile:not(.ios-pwa-standalone) body { overflow:hidden; align-items:flex-start; }
 html.force-mobile .phone {
   box-sizing:border-box;
   width:100vw; height:100vh;
@@ -1385,6 +1439,14 @@ html.ios-cover-top .phone .statusbar {
   margin-bottom:14px; white-space:pre-wrap; word-break:break-word;
 }
 .modal-static[hidden] { display:none; }
+/* FIX 2026-09-25 #1266：长说明弹窗的正文框也要「高度上限 + 框内滚动」——备份提醒（pwa.js 每天
+   进桌面必弹的那一层）正文实量 715px，而弹窗整体被 .modal 的 max-height:min(78vh,100%-24px) 截断，
+   胶囊行与「确定」排在正文之后落在裁剪区外（390×844 实测胶囊 rect.top 873、「确定」923 ＞ 视口 844，
+   elementFromPoint 取不到＝点不着），而 v3.25.x 按用户偏好隐藏了 .modal 的滚动条＝看不见也滑不着，
+   于是这一层遮罩长期在场＝用户所见「整屏发灰、页面按钮按不动」（iPhone 12 Pro Max／iOS 16.6 Safari
+   实报，多机型同现＝纯布局事实，零机型／零 UA 分支）。与 .modal-textarea.ce-box（v3.23.x）、
+   .modal-group-chips（#295）同一族做法；#612 口径保留 overscroll-behavior:auto，框内滚到边界仍放行给 .modal */
+.modal-static { max-height:38vh; overflow-y:auto; overscroll-behavior:auto; }
 
 /* ===== PWA 安装按钮 / iOS 提示 ===== */
 .pwa-install {
@@ -1523,18 +1585,6 @@ img.media-tok-missing { background: rgba(0,0,0,.06); min-width: 48px; min-height
    整页相对偏移，治「某些屏幕整体位置偏上/偏下导致顶部或底部被遮挡」。正=下移、负=上移。
    .phone 本就 position:relative（base.css 顶部主规则），top 位移不改文档流、无缩放（技术红线只禁 zoom/scale） */
 .phone { top: var(--mochi-shift-adj, 0px); }
-
-/* v3.26.x #738：安卓自带浏览器兼容警示卡；v8.29 #976 换色——用户 2026-09-21 定「红只留给使用红线（顶卡 + 免责声明）」，
-   本卡改「须知/提醒」橙族（与「公告已精简」同色），文案一字未改；内边距/圆角/字号等形态参数原样保留 */
-.splash-alert.splash-browser {
-  padding:13px 15px 14px 16px;
-  background:#fff3e6; border-left:3px solid #e8590c; border-radius:12px;
-}
-.splash-alert.splash-browser .splash-alert-t { color:#c2410c; font-size:13px; letter-spacing:1px; }
-.splash-alert.splash-browser .splash-alert-t::before { background:#e8590c; }
-.splash-alert.splash-browser p { color:#8a3d05; font-size:12.5px; font-weight:700; line-height:1.8; }
-.splash-alert.splash-browser strong { color:#c2410c; font-weight:800; }
-[data-theme="dark"] .splash-alert.splash-browser { background:rgba(232,89,12,.16); border-color:#ff8a3d; box-shadow:none; }
 
 /* FIX 2026-09-20 #913 手机发烫收口②：切后台全局暂停动画的落点（mobile-adapt.js 在 document.hidden 时挂类；回前台移除即刻恢复） */
 body.mochi-bg-pause *, body.mochi-bg-pause *::before, body.mochi-bg-pause *::after { animation-play-state: paused !important; }

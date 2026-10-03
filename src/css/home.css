@@ -70,6 +70,12 @@
    动起来时把模糊摘掉（运动中肉眼几乎无感），停下 150ms 后自动恢复，观感与静态一致。
    仅作用在用户自己开了「背景模糊」的桌面（.desk-blur-on），未开模糊者零影响。 */
 html.desk-swiping .phone.desk-blur-on #phone-bg-layer { filter:none !important; -webkit-filter:none !important; }
+/* #1466 滑动期临时提层：与 #754 同一病灶的另一半——没开「整页背景」的桌面三张 .page-slide
+   不是独立合成层，翻页时新页瓦片现场栅格化＝滑动半路只画出一半（iPhone 15 Pro Max 实报
+   「别的页面屏幕只显示一半」；同机诊断切回桌面最慢 5539ms，与 #754 报障机同型号）。
+   desktop-slider.js 在起手（touchstart）到落定后 150ms 给容器挂 .swipe-warm，只有手势窗口
+   里有三张层的显存开销、停下即还——#1225 反对的「常驻」一字不沾。 */
+.desktop-pages.swipe-warm .page-slide { will-change: transform; }
 /* v3.6.x：桌面字号/卡片大小可调。
    ⚠️ iOS 卡顿红线（AGENTS.md / WORKLOG）：zoom 是 WebKit 已知卡顿源，会把元素踢出
    GPU 合成路径、滚动时每帧 CPU 重排重绘——只在桌面（>900px 模拟器/浏览器）生效，
@@ -403,7 +409,18 @@ html.desk-zoom-card .week-card, html.desk-zoom-card .desk-period, html.desk-zoom
    ⚠️ 门控说明（防跨机型回归）：①仅触屏设备（hover:none + pointer:coarse）——电脑端外壳
    布局与图层行为零变化；②无整页背景图不挂类＝零额外显存（纯文字/图标页无收益故不付代价）。 */
 @media (hover: none) and (pointer: coarse) {
+  /* FIX 2026-09-25 #1225：`html.desk-layer-cold` 时释放这三张全屏合成层（类由 desktop-slider.js
+     按「亮屏且离开桌面 ≥60s」挂上、回到桌面前摘掉）。提升的唯一受益窗口是**桌面可见时**的左右
+     翻页（#754 实测翻页 平均186ms→17ms 就是它的功劳），而 perfcheck 实证用户 76% 的帧在 设置、
+     桌面只占 17%——人不在桌面时这层纹理纯属白占：440×956@3x 每张 ≈15MB、三张 ≈45MB。
+     这台 iPhone 16 Pro Max 的诊断正是「本页被系统回收过 28 次」→ 每次回收＝切回来整站冷启动
+     （5.2MB 脚本重编＋十几 MB 本地数据重回填）→ 报告里那串「前台冻结 32 次／最慢一帧 2449ms／
+     切回桌面 p90 764ms」，同时也是一次把未提交的写库窗口掐掉的机会（聊天记录丢失同源）。
+     零视觉变化：整页背景图画在 .page-slide 自己身上，桌面页 hidden 时这三张层根本不上屏；
+     回到桌面那一帧前类已摘掉＝#147「退聊天回桌面巨卡」那条常驻语义在正常来回里一字未动。
+     零机型／零 UA 分支：判据只有「亮屏离开桌面多久」。 */
   .desktop-pages.has-page-bg .page-slide { will-change: transform; }
+  html.desk-layer-cold .desktop-pages.has-page-bg .page-slide { will-change: auto; }
 }
 
 /* 分页指示器（v3.6.x：不再占一整行——悬浮在桌面底部中央，不挤占/遮挡功能图标） */
@@ -468,6 +485,13 @@ html.desk-zoom-card .week-card, html.desk-zoom-card .desk-period, html.desk-zoom
 .desk-text-widget, .desk-countdown-widget {
   border-radius:var(--desk-card-radius, 20px);
 }
+/* v8.56 #1516 六类 glass-only 小组件补齐全局外观三件套（背景/边框/透明度）——此前它们只有
+   .glass 的 --glass-bg 底，设置页「小组件颜色/边框颜色/透明度」三个全局设置对它们全部无效
+   ＝「设置了小组件颜色桌面没任何变化/没有全部小组件统一颜色」（周卡/时钟/月历/计时/纪念日
+   倒计时/经期卡；荣耀畅玩40 Plus/夸克实报）。规则行按 minify 形态单行书写＝哨兵 #1516a 两边
+   同形。用 background-color 不用 shorthand：六类都接 [data-card-bg] 内联 background-image
+   卡片背景图，shorthand 会在级联上重置 image 系子属性，background-color 只覆盖颜色位。 */
+.week-card,.desk-clock,.desk-cal,.desk-timer,.desk-anniv,.desk-period{background-color:var(--widget-bg);border:1px solid var(--widget-border);opacity:var(--widget-opacity)}
 
 /* v3.6.x：组件库面板（新增页点「添加卡片」弹出） */
 .desk-lib {
@@ -532,8 +556,10 @@ html.desk-zoom-card .week-card, html.desk-zoom-card .desk-period, html.desk-zoom
 
 /* v3.7.x：新增桌面小组件（时钟 / 月历 / 计时器 / 纪念日倒计时）
    v3.15.x：补 14px 下边距——被用户添加到页面时与相邻卡片保持全站统一间距 */
-.desk-clock { padding:14px 16px; margin:0 0 14px; text-align:center; }
-.desk-clock .dc-time { font-size:32px; font-weight:700; letter-spacing:2px; color:var(--ink,#111); line-height:1.1; }
+/* #1306（重放 2026-09-28）：时钟组件收小一号——32px/46px 在桌面上视觉占比过大（用户报「太大、显得丑」）；
+   时间 22px＋内边距收窄，与 mini-card 一族同量级；平板档同步收（46→30、16→13） */
+.desk-clock { padding:10px 14px; margin:0 0 14px; text-align:center; }
+.desk-clock .dc-time { font-size:22px; font-weight:700; letter-spacing:1px; color:var(--ink,#111); line-height:1.1; }
 .desk-clock .dc-date { font-size:12px; color:var(--muted,#888); margin-top:4px; }
 .desk-cal { padding:12px 14px; margin:0 0 14px; }
 .desk-cal .dcal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
@@ -845,6 +871,12 @@ html.desk-zoom-card .week-card, html.desk-zoom-card .desk-period, html.desk-zoom
 .desk-move-mode .page-slide { touch-action: pan-x pan-y; -webkit-touch-callout: none; }
 .desk-move-mode .app,
 .desk-move-mode [data-desk-widget]:not(.app-grid) { touch-action: none; cursor: grab; }
+/* #1278（跨域改动见 WORKLOG）：文字/图片/倒计时自绘组件纳入拖拽——
+   不加 touch-action:none 则安卓浏览器按 pan 手势接管触摸序列，pointermove
+   被抢占→自绘组件拖不动（标准组件 #134 同款兜底） */
+.desk-move-mode [data-desk-text],
+.desk-move-mode [data-desk-image],
+.desk-move-mode [data-desk-countdown] { touch-action: none; cursor: grab; }
 /* 拖拽中源项半透明占位 */
 .desk-dragging { opacity: .22 !important; animation: none !important; }
 /* 拖拽跟手 clone */
@@ -997,8 +1029,8 @@ html.tablet .desk-period .dpd-sub { font-size:17px; }
 html.tablet .desk-period .dpd-bar-cap { font-size:14px; }
 
 /* —— 组件库其余组件（时钟/月历/计时器/纪念日倒计时/文案/倒计时）：文字数字上一档 —— */
-html.tablet .desk-clock .dc-time { font-size:46px; }
-html.tablet .desk-clock .dc-date { font-size:16px; }
+html.tablet .desk-clock .dc-time { font-size:30px; } /* #1306：与手机档同量级收小（原 46px） */
+html.tablet .desk-clock .dc-date { font-size:13px; } /* #1306 */
 html.tablet .desk-cal .dcal-title { font-size:17px; }
 html.tablet .desk-cal .dcal-cell { font-size:15px; height:34px; line-height:34px; }
 html.tablet .desk-timer .dt-disp { font-size:40px; }

@@ -127,7 +127,19 @@
 }
 .card-search-input::placeholder { color:var(--muted); letter-spacing:.5px; }
 
-.card-list { flex:1; overflow-y:auto; scrollbar-width:none; -ms-overflow-style:none; padding-bottom:6px; }
+/* FIX 2026-09-29 #1411：字卡库列表页「只有字卡列表能翻动，其它地方翻不动」＝一页两根滚动轴。
+   旧默认 flex:1 + overflow-y:auto 让列表自己成一根轴：头部（返回条＋tab＋两排工具条＋分组条＋
+   搜索框＋说明）按内容把列表压到 cc 148px / mc 6px / tm 84px / rc 103px（OPPO Reno6 5G 360×663
+   实测），于是 .page 的 scrollHeight==clientHeight＝整页零滚动区间，屏上除那条窄列表外全都
+   「跟着屏幕一起固定」。base.css 的 .card-list{overscroll-behavior:contain} 又掐断滚动链，
+   窄列表滚到底也接不上外层＝#239（2026-09-07 同一台雨见报「下面无法滑动显示字卡」）与 #350 的
+   同族病。那两批按页面 id 逐页打补丁（dc/fc/dk/dict 四条），漏了 cc/mc/tm/rc 四页——本轮把口径
+   收到类上：列表一律随内容自然生长，滚动只由 .page 承担，新增字卡页无需再登记任何 per-id 规则。
+   判据零机型／零 UA 分支，也不依赖 :has()（老内核上静默不生效＝病灶原地复发）。
+   ⚠ 不要改回 flex:1/overflow-y:auto：default-cards.js 的虚拟窗口按「谁真在裁剪内容」选滚动容器
+     （guessScroller），列表不再裁剪时它会走 .page；把列表重新变成裁剪容器＝窗口与滚动容器再度错位。
+   旧的四条 per-id 规则（#239a/#350 等哨兵焊着的）保留不动，与本行同值＝幂等。 */
+.card-list { flex:0 0 auto; overflow:visible; min-height:0; -webkit-overflow-scrolling:auto; overscroll-behavior:auto; scrollbar-width:none; -ms-overflow-style:none; padding-bottom:6px; }
 .card-list::-webkit-scrollbar { display:none; }
 .cc-item {
   display:flex; align-items:center; gap:12px;
@@ -832,6 +844,10 @@
 .period-ovu-line { font-size:12px; color:#f5a623; margin-bottom:10px; font-weight:600; }
 /* PMS 经前综合征指数行 */
 .period-pms-line { display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+/* #1321（重放）：下次经期的日期行——状态卡以前只报「距下次约 N 天」这一个数，全页没有一处把
+   nextStart 写成日期；日历又只画当月格＝下次落到下个月时本月一格预测都没有。用中性墨色（--muted
+   随主题自动翻），不再新增第四种强调色 */
+.period-next-line { font-size:12px; color:var(--muted,#666); margin-bottom:10px; font-weight:600; }
 .pms-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700; }
 .pms-badge.pms-none { background:#f0f0f0; color:#888; }
 .pms-badge.pms-light { background:#e8f5e9; color:#2e7d32; }
@@ -839,6 +855,9 @@
 .pms-badge.pms-heavy { background:#fde2ee; color:#c44a78; }
 .pms-tip { font-size:11px; color:var(--muted,#666); }
 .period-action-row { display:flex; gap:10px; }
+/* #1321：动作行加上「记一次经期」之后，12px 的左右内边距让「标记今天开始」
+   六字标签折成两行。只收这一行的横向留白（纵向 12px 与点击高度不动，弹层里的 .dp-save 不受影响）。 */
+.period-action-row .period-btn { padding-left:8px; padding-right:8px; }
 .period-btn {
   flex:1; padding:12px; font-size:13px; font-weight:600; border-radius:14px;
   border:1px solid rgba(0,0,0,.12); background:rgba(255,255,255,.92); color:var(--ink);
@@ -868,7 +887,8 @@
   font-size:12px; color:#777; background:rgba(255,255,255,.92); border:1px solid rgba(0,0,0,.1);
   cursor:pointer; position:relative;
 }
-.period-grid .pc-cell.blank { background:transparent; border:none; cursor:default; }
+/* 月首月尾补进来的相邻月日子：真格子、照常涂色可点，只压一档透明度区分归属（旧写法是点不动的死格）*/
+.period-grid .pc-cell.pc-out { opacity:.45; }
 .period-grid .pc-cell.today { outline:2px solid var(--ink); outline-offset:-2px; }
 .period-grid .pc-cell.ph-period { background:#e85a8f; color:#fff; font-weight:700; border-color:#e85a8f; }
 /* 经量热力图：经期日按经量深浅着色（medium 用默认 ph-period 色）*/
@@ -876,8 +896,16 @@
 .period-grid .pc-cell.ph-period.pc-flow-light { background:#f48aa8; }
 .period-grid .pc-cell.ph-period.pc-flow-heavy { background:#d6336c; }
 .period-grid .pc-cell.ph-predict { background:#fde2ee; color:#c44a78; border:1px dashed #e85a8f; }
-.period-grid .pc-cell:not(.blank):active { opacity:.7; }
+.period-grid .pc-cell:active { opacity:.7; }
 .period-card-title { font-size:14px; font-weight:700; letter-spacing:.5px; margin-bottom:10px; display:flex; align-items:center; justify-content:space-between; gap:8px; }
+/* 症状缓解建议卡右上角删除（#1490：卡片是每日症状记录派生，就近给删除入口） */
+.period-card-title .pc-del {
+  width:24px; height:24px; border:none; background:transparent; color:#bbb; cursor:pointer;
+  display:flex; align-items:center; justify-content:center; padding:0; flex-shrink:0;
+  -webkit-tap-highlight-color:transparent;
+}
+.period-card-title .pc-del svg { width:14px; height:14px; }
+.period-card-title .pc-del:active { color:#e85a8f; }
 .period-history { display:flex; flex-direction:column; gap:8px; }
 .period-hist-row {
   display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:12px;
@@ -1578,7 +1606,7 @@
 /* ===== TA在身边·位置面板 ===== */
 /* v3.26.x #875：入口常显化。它藏在寻踪里是产品设计（位置面板的唯一入口就在寻踪半框与寻踪页），
    但原形态是全宽浅色虚线的次要按钮、排在面板最底部，被读成寻踪的附加说明——用户既不知道这是独立
-   功能，也找不到只住在位置面板里的三个换位开关（TA 自动换位 / 换位提醒弹窗 / 换位发到聊天）。
+   功能，也找不到只住在位置面板里的三枚换位开关（TA 自动换位 / 换位提醒弹窗 / 换位发到聊天）。
    改图标＋主副两行＋箭头的功能卡；放置与点击行为一字未动（仍是这两颗 id → openLocPanel）。
    dark.css 里 [data-theme="dark"] 的三条覆盖（border-color / background / :active）原样适用，
    故暗色下仍是同一张卡：强调靠图标块与字号，不靠底色，两个主题下都成立。 */
@@ -2402,6 +2430,25 @@
 .mail-tag.new { color:#fff; background:var(--ink); border-color:var(--ink); }
 .mail-item-desc { font-size:12px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .mail-item-time { font-size:10px; color:var(--muted); flex-shrink:0; }
+/* #1402 信箱按时间分组：分组小标题＋按月折叠条（观感沿用统计页 stats-fold 那一档：只吃主题变量，暗色自动跟随） */
+.mail-sec-label { font-size:11px; font-weight:600; color:var(--muted); margin:2px 0 8px; }
+.mail-fold { margin-bottom:10px; }
+.mail-fold-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:11px 12px; background:var(--static-bg); border-radius:10px; cursor:pointer; }
+.mail-fold-head:active { opacity:.55; }
+.mail-fold-title { font-size:13px; font-weight:600; color:var(--ink); }
+.mail-fold-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.mail-fold-count { font-size:10px; color:var(--muted); background:var(--card-bg); padding:2px 8px; border-radius:99px; }
+.mail-fold-caret { font-size:11px; color:var(--muted); transition:transform .18s; }
+.mail-fold.open .mail-fold-caret { transform:rotate(180deg); }
+.mail-fold:not(.open) > .mail-fold-body { display:none; }
+.mail-fold-body { padding-top:10px; }
+/* #1417：未读跟着自己的时间落进月份组之后，这一枚是组标题上的「未读封数」——
+   组默认开着（见 mailFoldHtml），红字只是让「哪一组里有红点信」一眼可见 */
+.mail-fold-unread { font-size:10px; font-weight:600; color:var(--danger-ink); background:var(--danger-soft); padding:2px 8px; border-radius:99px; flex-shrink:0; }
+/* #1417：读到旧账/读空时列表最上方那张提示条＋「从本地库找回」按钮 */
+.mail-rescue-tip { display:flex; align-items:center; gap:8px; margin:0 0 10px; padding:10px 12px; background:var(--static-bg); border-radius:10px; }
+.mail-rescue-txt { flex:1; font-size:11px; color:var(--muted); line-height:1.5; }
+.mail-rescue-tip .cc-tool { flex-shrink:0; width:auto; padding:8px 12px; }
 
 /* 信纸（简约卡片，非米色信封） */
 .mail-paper {
@@ -2503,6 +2550,29 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
   font-size:12px; font-family:inherit; cursor:pointer;
 }
 .feed-more-btn:active { background:rgba(0,0,0,.12); }
+/* #1406 朋友圈「本周＋按月」翻页条：默认只看本周，更早的按月折起来手动切。
+   sticky 挂在 .cal-scroll（本页真正的滚动容器）顶端＝翻长列表时切换入口不跟着跑掉；
+   横向滑动只作用在胶囊行自己那一条上，列表区保持纯纵向滚动（不与安卓上下滑打架）。
+   底色/边框/阴影复用 .glass，暗色随主题变量走，不另开一套。 */
+.feed-range-bar { position:sticky; top:0; z-index:6; display:flex; align-items:center; gap:4px; margin:0 0 12px; padding:5px; border-radius:14px; }
+.feed-range-bar[hidden] { display:none; }
+.feed-range-pills { display:flex; gap:4px; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none; -ms-overflow-style:none; }
+.feed-range-pills::-webkit-scrollbar { display:none; }
+.feed-range-pill, .feed-range-nav {
+  flex-shrink:0; display:inline-flex; align-items:center; gap:5px;
+  min-height:28px; padding:4px 10px; border-radius:14px;
+  border:1px solid var(--pill-border, rgba(0,0,0,.1)); background:none;
+  color:var(--muted); font-size:12px; font-family:inherit; cursor:pointer; white-space:nowrap;
+}
+.feed-range-nav { padding:4px 6px; }
+.feed-range-pill.on { background:var(--ink); border-color:var(--ink); color:var(--card-bg); }
+.feed-range-nav[disabled] { opacity:.3; }
+.feed-range-n { font-size:10px; opacity:.72; }
+/* #1406 长信/长动态折叠：正文收成 6 行（行高跟着 .feed-content 的 1.6），展开就地放开；
+   评论区/配图区是 .feed-body 的兄弟节点，不受这一层裁剪 */
+.feed-clamp { display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; overflow:hidden; }
+.feed-expand { background:none; border:none; padding:4px 0 0; cursor:pointer; font-size:12px; font-family:inherit; color:var(--muted); }
+.feed-expand:active { opacity:.6; }
 /* 评论区（v3.14.x 重设计：统一灰底圆角面板——删除文件后段重复定义的 border-top 冲突规则，
    灰底面板内不再有一道横线；楼中楼改「左引导线 + 我/TA 统一缩进」对称对齐；
    「A 回复 B」的回复分隔徽章化，双方名字同权重高亮） */
@@ -3032,6 +3102,10 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
 .feed-cover::after {
   content:''; position:absolute; top:-30px; right:-20px; width:120px; height:120px;
   border:1px solid rgba(255,255,255,.15); border-radius:50%;
+  /* FIX 2026-09-26 #1311：纯装饰的圆环不吃命中——它按「最后一个子节点」绘制，压在封面那张
+     「真·可点 input 层」上方（absolute 定位层），右上 120×120 那块点下去会被它接住、转交封面自己的
+     合成腿＝iOS 上「点了没反应」的那条老路。让路后这一整块仍是那张层。 */
+  pointer-events:none;
 }
 .feed-cover.has-bg { background-size:cover; background-position:center; }
 .feed-cover-av {
@@ -3040,7 +3114,9 @@ body.mail-emoji-mode #emoji-panel { bottom: calc(64px + var(--mochi-safe-bottom,
   display:flex; align-items:center; justify-content:center;
 }
 .feed-cover-av img { width:100%; height:100%; object-fit:cover; display:block; }
-.feed-cover-name { font-size:16px; font-weight:700; color:#fff; letter-spacing:1px; text-shadow:0 1px 3px rgba(0,0,0,.4); }
+/* FIX 2026-09-26 #1311：昵称抬到封面那张「真·可点 input 层」之上（按 #821 桌面昵称同一口径）。
+   它是静态流内元素，绘制与命中都排在定位层之后＝不抬会被整层盖住＝点昵称变成选图片。 */
+.feed-cover-name { position:relative; z-index:1; font-size:16px; font-weight:700; color:#fff; letter-spacing:1px; text-shadow:0 1px 3px rgba(0,0,0,.4); }
 .feed-post {
   background:rgba(255,255,255,.92); border:1px solid rgba(0,0,0,.1);
   border-radius:14px; padding:14px; margin-bottom:12px;
