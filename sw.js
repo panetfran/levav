@@ -6,9 +6,9 @@
 // 会一直显示「正在安装」永不完成（WebAPK 安装要经 SW 拉 start_url/图标）。
 // 现在每个请求最多等 NETWORK_TIMEOUT 毫秒，超时立即回退缓存（没缓存则快速
 // 失败），SW 最迟约 10 秒内必然激活，安装/加载都不再无限挂起。
-const CACHE = 'mochi-mufgn66z';
-const BUILD_INFO = '部署于 2026-09-24 19:40';
-const PRECACHE = ["./","./index.html","./manifest.json","./icon-192.png","./icon-512.png","./icon-180.png","./js/idb.js","./js/contacts.js","./js/applock.js","./js/card-lock.js","./js/dcp-master.js","./js/media-pool.js","./js/storage-slim.js","./js/perf-check.js","./js/energy-check.js","./js/flash-check.js","./js/img-compress.js","./js/clock.js","./js/tabs.js","./js/desktop-slider.js","./js/quote-cards.js","./js/personalize.js","./js/chat.js","./js/group-chat.js","./js/chatcard.js","./js/chat-settings.js","./js/reply-settings.js","./js/fav-settings.js","./js/default-cards-data.js","./js/dict-ext-data.js","./js/default-cards.js","./js/quote-spell.js","./js/dream-free.js","./js/mood-followup-data.js","./js/mood-reply-cards.js","./js/ta-mood-data.js","./js/ta-mood.js","./js/music-player.js","./js/calendar.js","./js/divination.js","./js/avatar-lib.js","./js/ta-ask.js","./js/ck-question.js","./js/incoming-requests.js","./js/ta-invite.js","./js/bg-keep.js","./js/records.js","./js/call.js","./js/mail.js","./js/feed.js","./js/loc-lib.js","./js/p2-features.js","./js/gift-shop.js","./js/memo-app.js","./js/memo-arc.js","./js/my-arc.js","./js/period.js","./js/accounting.js","./js/garden.js","./js/room.js","./js/drift-bottle.js","./js/decision.js","./js/group-decision.js","./js/pong.js","./js/snake-game.js","./js/breakout.js","./js/connect-four.js","./js/coop-mine.js","./js/fishing.js","./js/memory-game.js","./js/gomoku.js","./js/linkup.js","./js/match3.js","./js/auction.js","./js/arcade.js","./js/mood-diary.js","./js/sfx.js","./js/fullscreen.js","./js/data-backup.js","./js/feature-data.js","./js/cjian.js","./js/feature-hub.js","./js/settings-help.js","./js/onboarding.js","./js/page-coach.js","./js/card-audit.js","./js/mobile-adapt.js"];
+const CACHE = 'mochi-mupq6lis';
+const BUILD_INFO = '部署于 2026-10-02 00:05';
+const PRECACHE = ["./","./index.html","./manifest.json","./icon-192.png","./icon-512.png","./icon-180.png","./js/idb.js","./js/contacts.js","./js/applock.js","./js/card-lock.js","./js/dcp-master.js","./js/media-pool.js","./js/storage-slim.js","./js/perf-check.js","./js/energy-check.js","./js/flash-check.js","./js/img-compress.js","./js/img-ingest.js","./js/clock.js","./js/tabs.js","./js/desktop-slider.js","./js/quote-cards.js","./js/personalize.js","./js/chat.js","./js/group-chat.js","./js/chatcard.js","./js/chat-settings.js","./js/reply-settings.js","./js/fav-settings.js","./js/default-cards-data.js","./js/dict-ext-data.js","./js/default-cards.js","./js/quote-spell.js","./js/dream-free.js","./js/mood-followup-data.js","./js/mood-reply-cards.js","./js/ta-mood-data.js","./js/ta-mood.js","./js/music-player.js","./js/calendar.js","./js/divination.js","./js/avatar-lib.js","./js/ta-ask.js","./js/ck-question.js","./js/incoming-requests.js","./js/ta-invite.js","./js/bg-keep.js","./js/records.js","./js/call.js","./js/mail.js","./js/feed.js","./js/loc-lib.js","./js/p2-features.js","./js/gift-shop.js","./js/memo-app.js","./js/memo-arc.js","./js/my-arc.js","./js/period.js","./js/accounting.js","./js/garden.js","./js/room.js","./js/drift-bottle.js","./js/decision.js","./js/group-decision.js","./js/pong.js","./js/snake-game.js","./js/breakout.js","./js/connect-four.js","./js/coop-mine.js","./js/fishing.js","./js/memory-game.js","./js/gomoku.js","./js/linkup.js","./js/match3.js","./js/auction.js","./js/arcade.js","./js/mood-diary.js","./js/sfx.js","./js/fullscreen.js","./js/data-backup.js","./js/feature-data.js","./js/cjian.js","./js/feature-hub.js","./js/settings-help.js","./js/onboarding.js","./js/page-coach.js","./js/card-audit.js","./js/storage-guide.js","./js/mobile-adapt.js"];
 // v3.10.x：网络优先超时从 8000 → 3500ms。GitHub Pages 国内访问经常 >8s，
 // 原 8s 超时导致手机端 fetch 频繁超时 → 回退 SW 缓存旧 index.html → 用户永远
 // 看不到新版。缩短到 3.5s：慢网络下页面秒开（回退缓存），配合页面版本检测 +
@@ -488,6 +488,10 @@ self.addEventListener('notificationclick', function (e) {
   e.notification.close();
   const tag = (e.notification && e.notification.tag) || '';
   e.waitUntil((async function () {
+    // FIX 2026-09-29 #1443e：页面可能已被系统回收（iPhone 12 Pro 主屏幕模式同机实测回收 26 次），
+    //   这一发 postMessage 就落在「页面还没挂上 message 监听」的空档里＝点了通知没下文。故点击侧同时
+    //   把 tag 写进 IDB 那份小账，页面开机后自取一次（只认 3 分钟内的）。
+    if (tag) { try { await psyncIdbSet('xy-home-v2:__notify-click', JSON.stringify({ tag: tag, ts: Date.now() })); } catch (x0) {} }
     const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     if (cs && cs.length) {
       const c = cs[0];
