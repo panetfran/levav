@@ -9,6 +9,10 @@
 //   手机端切后台会自动退出全屏，这个是设备限制不是 bug」＋「聊天设置那份全屏开关保留、提到顶部」
 //   → ①#sf-fullscreen 自「系统」段提到「通用」段首位独立成组，行下 #sf-fullscreen-sub 首条写设备限制；
 //      ②聊天设置「功能」页的全屏组提到页顶、不带 data-tag 故不参与二级标签过滤（三个二级标签下都常显）。
+// #1408（2026-09-29 作者直派「这个功能放错位置了，应该放在设置的【工具】里，现在错误放在信息诊断里了」）：
+//   「顶部避让修正」开关自 #961 的「信息诊断」段搬回「工具」段（紧跟「屏幕适配微调」，同一件事：
+//   屏幕对不齐自己修）。它是个会改渲染落值的开关，不是只读报告——S16/B15/B17 即这条归属，
+//   搬回旧段当场红。开关 id（safe-top-force）一字未动＝功能说明胶囊与形态判定照旧。
 // 判别器：①src 静态——row-reset / row-export / row-import / sf-fullscreen-row 都在 basic 段内、
 //   不在 tools/about/system 段；聊天设置全屏组不带 data-tag；
 //   ②产物行为——点「通用」tag 后各行可见、清除可点开确认弹窗；点「关于」tag 后该行隐藏；
@@ -60,7 +64,10 @@ const MOVED_IDS = ['row-diagnostics','row-screen-diag','row-func-diag','row-perf
 ok(iDiagRaw > 0 && iDiag > iTools && iDiag < iAbout, 'S13 「信息诊断」段(data-sec=diag) 存在且排在 工具 与 关于 之间', 'iDiag=' + iDiagRaw);
 ok(MOVED_IDS.every(function (id) { return diagSrc.includes('id="' + id + '"'); }), 'S14 诊断/自测行全部落在「信息诊断」段内', MOVED_IDS.filter(function (id) { return !diagSrc.includes('id="' + id + '"'); }).join(','));
 ok(MOVED_IDS.every(function (id) { return !toolsSrc.includes('id="' + id + '"'); }), 'S15 这些行不再留在「工具」段（搬走＝不重复 id）', MOVED_IDS.filter(function (id) { return toolsSrc.includes('id="' + id + '"'); }).join(','));
-ok(diagSrc.includes('id="safe-top-force"'), 'S16 顶部避让修正开关随诊断组搬入「信息诊断」段');
+// #1408：这一行原先断言 safe-top-force 在 diag 段（#961 随诊断组一起搬过去的），作者点名放错位置
+//   ＝方向反过来：它属「工具」（与屏幕适配微调同一件事），「信息诊断」只留只读报告与自测。
+ok(toolsSrc.includes('id="safe-top-force"'), 'S16a 顶部避让修正开关落在「工具」段（#1408 作者点名：不该在信息诊断）');
+ok(!diagSrc.includes('id="safe-top-force"'), 'S16b 「信息诊断」段不再承载顶部避让修正开关（搬回＝同一开关两处出现，另一处永远点不着）');
 ok(toolsSrc.includes('id="row-storage-view"') && toolsSrc.includes('id="row-img-compress"'), 'S17 查看存储/压缩图片仍留「工具」段（数据管理面）');
 ok(toolsSrc.includes('id="row-card-audit"') && toolsSrc.includes('id="row-screen-adj"'), 'S18 字卡自检/屏幕适配微调仍留「工具」段（#532/#764 口径不动）');
 ok(diagSrc.includes('id="perf-help-sub"') && diagSrc.includes('id="heat-help-sub"'), 'S19 卡顿/发烫两条排查说明随自测行搬入「信息诊断」段');
@@ -214,16 +221,19 @@ ok(nest.tabbarInSetting === false, 'B9 #page-setting 已正确闭合（tabbar �
 // B15 #961 「信息诊断」tag：诊断行可见、工具段数据行隐藏
 await evalJs(`(function(){var t=document.querySelector('#set-tabs .them-tab[data-tab="diag"]');if(t)t.click();return true;})()`);
 await sleep(220);
-const dState = J(await evalJs(`(function(){function v(id){var r=document.getElementById(id);return r?(r.offsetParent!==null):null;}function s(id){var r=document.getElementById(id);return r&&r.closest('.them-sec')?r.closest('.them-sec').dataset.sec:null;}return JSON.stringify({diagRow:v('row-diagnostics'),perfRow:v('row-perf-check'),flashRow:v('row-flash-check'),storageRow:v('row-storage-view'),imgRow:v('row-img-compress'),diagSec:s('row-diagnostics'),perfSec:s('row-perf-check')});})()`));
+const dState = J(await evalJs(`(function(){function v(id){var r=document.getElementById(id);return r?(r.offsetParent!==null):null;}function s(id){var r=document.getElementById(id);return r&&r.closest('.them-sec')?r.closest('.them-sec').dataset.sec:null;}function tv(){var i=document.getElementById('safe-top-force');if(!i)return null;var row=i.closest('.set-row');return row?(row.offsetParent!==null):null;}return JSON.stringify({diagRow:v('row-diagnostics'),perfRow:v('row-perf-check'),flashRow:v('row-flash-check'),storageRow:v('row-storage-view'),imgRow:v('row-img-compress'),diagSec:s('row-diagnostics'),perfSec:s('row-perf-check'),safeTopVisible:tv(),safeTopSec:s('safe-top-force')});})()`));
 ok(dState.diagRow === true && dState.perfRow === true && dState.flashRow === true && dState.diagSec === 'diag' && dState.perfSec === 'diag', 'B15 点「信息诊断」tag＝诊断/自测行可见且祖先段＝diag', JSON.stringify(dState));
 ok(dState.storageRow === false && dState.imgRow === false, 'B16 同 tag 下「查看存储/压缩图片」隐藏（仍在「工具」段，不在本 tag 再现）', JSON.stringify(dState));
+ok(dState.safeTopVisible === false && dState.safeTopSec === 'tools', 'B16b 同 tag 下「顶部避让修正」隐藏且祖先段＝tools（#1408 自本段搬出，不留第二份）', JSON.stringify({ vis: dState.safeTopVisible, sec: dState.safeTopSec }));
 
 // B17 切回「工具」tag：数据行可见、诊断行隐藏（两 tag 互斥、无重复入口）
 await evalJs(`(function(){var t=document.querySelector('#set-tabs .them-tab[data-tab="tools"]');if(t)t.click();return true;})()`);
 await sleep(220);
-const tState = J(await evalJs(`(function(){function v(id){var r=document.getElementById(id);return r?(r.offsetParent!==null):null;}function s(id){var r=document.getElementById(id);return r&&r.closest('.them-sec')?r.closest('.them-sec').dataset.sec:null;}return JSON.stringify({storageRow:v('row-storage-view'),imgRow:v('row-img-compress'),cardRow:v('row-card-audit'),diagRow:v('row-diagnostics'),storageSec:s('row-storage-view')});})()`));
+const tState = J(await evalJs(`(function(){function v(id){var r=document.getElementById(id);return r?(r.offsetParent!==null):null;}function s(id){var r=document.getElementById(id);return r&&r.closest('.them-sec')?r.closest('.them-sec').dataset.sec:null;}function tv(){var i=document.getElementById('safe-top-force');if(!i)return null;var row=i.closest('.set-row');return row?(row.offsetParent!==null):null;}var ti=document.getElementById('safe-top-force');var row=ti?ti.closest('.set-row'):null;var tb=row?row.getBoundingClientRect():null;return JSON.stringify({storageRow:v('row-storage-view'),imgRow:v('row-img-compress'),cardRow:v('row-card-audit'),diagRow:v('row-diagnostics'),storageSec:s('row-storage-view'),safeTopVisible:tv(),safeTopSec:s('safe-top-force'),safeTopH:tb?Math.round(tb.height):null,safeTopHelp:row?!!row.querySelector('[data-setdesc]'):null});})()`));
 ok(tState.storageRow === true && tState.imgRow === true && tState.cardRow === true && tState.storageSec === 'tools', 'B17 「工具」tag 仍留数据管理与自检行（查看存储/压缩图片/字卡自检）', JSON.stringify(tState));
 ok(tState.diagRow === false, 'B18 「工具」tag 下诊断行已隐藏（无重复入口）', JSON.stringify(tState));
+ok(tState.safeTopVisible === true && tState.safeTopSec === 'tools' && tState.safeTopH > 0, 'B18b 「工具」tag 下「顶部避让修正」可见、几何非零且祖先段＝tools（#1408 落点）', JSON.stringify({ vis: tState.safeTopVisible, sec: tState.safeTopSec, h: tState.safeTopH }));
+ok(tState.safeTopHelp === true, 'B18c 该行「功能说明」胶囊仍在（settings-help 按 #safe-top-force 注入，搬段后接线没断）', JSON.stringify({ help: tState.safeTopHelp }));
 
 // ===== B10~B14 #927 全屏模式：通用段首位 + 聊天设置功能页顶部常显 =====
 // B10 切回「通用」：全屏行可见、是通用段第一组的第一行、且排在导出数据之前

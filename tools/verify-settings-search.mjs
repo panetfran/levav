@@ -118,6 +118,9 @@ await search('夜间模式');
 A('B4a 搜「夜间模式」命中「深色模式」', await rowVisible('#row-theme-mode'));
 await search('夜间 模式');
 A('B4b 多词 AND「夜间 模式」命中「深色模式」', await rowVisible('#row-theme-mode'));
+// #1470：设置里那行开关更名「夜间免打扰模式」——新名要能搜到本行，旧名「夜间模式」也不能把人留在原地（说明里登记的原名＋深色模式口语别名同时在列）
+await search('夜间免打扰');
+A('B4c 搜「夜间免打扰」命中「夜间免打扰模式」行（新名可搜）', await rowVisible('#sf-night-mode-row'));
 
 // B5 大小写
 await search('iOS');

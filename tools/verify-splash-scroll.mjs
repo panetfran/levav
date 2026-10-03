@@ -73,14 +73,12 @@ async function runViewport(w, h) {
   check(w+'x'+h+' 开屏加载早期 splash-box 有正高度', early.sb && early.sb.ch > 50, JSON.stringify(early));
   check(w+'x'+h+' 开屏加载早期 splash-box overflow-y 生效', early.sb && (early.sb.ov==='auto'||early.sb.ov==='scroll'), early.sb&&early.sb.ov);
 
-  // 等待数据就绪 + 公告渲染后 → 直接强制显示强制公告容器（绕过低滚门槛，专测几何）
+  // 等待数据就绪 + 公告渲染后采样一次（2026-10-01 #1536 同批收口：原「强制公告容器/滚动容器」三断言随
+  //   d88075d「开屏改1页」退役——#splash-mandatory 独立容器已删，强制公告内容并入第一页底部由 .splash-box
+  //   统一滚动（overflow 断言由上面 splash-box 两条承担），纯 origin/main 副本实测同红＝存量债非本批引入）
   await sleep(3000);
-  await evalJs("(function(){var md=document.getElementById('splash-mandatory');if(md)md.hidden=false;var sc=document.getElementById('splash-mandatory-scroll');if(sc)sc.style.display='';return true;})()");
-  await sleep(400);
-  const mid = JSON.parse(await evalJs("(function(){function box(el){if(!el)return null;var r=el.getBoundingClientRect();var cs=getComputedStyle(el);return {ch:Math.round(el.clientHeight),sh:Math.round(el.scrollHeight),top:Math.round(r.top),bot:Math.round(r.bottom),ov:cs.overflowY,overflow:el.scrollHeight>el.clientHeight+1};}var sm=document.getElementById('splash-mandatory-scroll');var md=document.getElementById('splash-mandatory');return JSON.stringify({innerH:innerHeight,sm:box(sm),md:box(md)});})()") || '{}');
-  check(w+'x'+h+' 强制公告容器有正高度', mid.md && mid.md.ch>50, mid.md?JSON.stringify(mid.md):'md 缺失');
-  check(w+'x'+h+' 强制滚动容器有正高度', mid.sm && mid.sm.ch>50, mid.sm?JSON.stringify(mid.sm):'sm 缺失');
-  check(w+'x'+h+' 强制滚动容器可溢出（内容超视口，需滚动才到底）', mid.sm && mid.sm.overflow === true, mid.sm?('sh='+mid.sm.sh+' ch='+mid.sm.ch):'');
+  const mid = JSON.parse(await evalJs("(function(){function box(el){if(!el)return null;var r=el.getBoundingClientRect();var cs=getComputedStyle(el);return {ch:Math.round(el.clientHeight),sh:Math.round(el.scrollHeight),top:Math.round(r.top),bot:Math.round(r.bottom),ov:cs.overflowY,overflow:el.scrollHeight>el.clientHeight+1};}var sb=document.getElementById('splash-box');return JSON.stringify({innerH:innerHeight,sb:box(sb)});})()") || '{}');
+  check(w+'x'+h+' 渲染完成后 splash-box 仍正高度且可滚（并入的强制公告内容超视口）', mid.sb && mid.sb.ch > 50 && mid.sb.overflow === true, mid.sb?('sh='+mid.sb.sh+' ch='+mid.sb.ch):'');
 }
 
 for (const [w,h] of [[390,844],[360,640]]) { try{ await runViewport(w,h); }catch(e){ console.error('视口 '+w+'x'+h+' 异常: '+e); } }

@@ -155,26 +155,20 @@ try {
   J('B3 开屏开始隐藏（.hide）后 .phone 立即恢复可见、无残留隐藏态（淡出正常露出桌面）', b3ok);
   if (!b3ok) console.log('  B3 现场值: ' + JSON.stringify(b3));
 
-  // B4 走完真实进入流程（开屏 → 强制公告 → 桌面）。开屏门控：需已勾年满18 + 滑到底；
-  //    先把「年满18」记入（正式用户确认过一次也走这条路），再带重试地点进入按钮，
-  //    避免某一次点击时按钮还在 is-disabled（未判定到底）导致流程没走完。
-  await evalJs(`(function(){ try{ localStorage.setItem('xy-home-v2:age-confirmed','1'); }catch(e){} })()`);
+  // B4 走完真实进入流程（开屏 → 桌面）。开屏门控：需已勾年满18 + 滑到底。
+  //    2026-10-01 #1536 同批收口两处存量债（纯 origin/main 副本实测同红＝非本批引入）：
+  //    ① d88075d「开屏改1页」删了 #splash-mandatory 独立层＝点进入即收场，原两阶段重试随流程退役；
+  //    ② #1475 起同意存证改版本化 JSON（旧裸 '1' 不认），改为页面内直接勾选（dispatch change）＝跨声明版本稳。
   await cdp('Page.navigate', { url: baseUrl + '/index.html' });
   for (let i = 0; i < 100; i++) { try { if (await evalJs('!!window.__mochiDataReady')) break; } catch (e) {} await sleep(200); }
   await sleep(900);
-  // 阶段一：滑到底 + 点「我已阅读并知晓」（重试至强制公告出现）
-  let enteredMand = false;
-  for (let i = 0; i < 15 && !enteredMand; i++) {
-    await evalJs(`(function(){ var b=document.getElementById('splash-box'); if(b) b.scrollTop=b.scrollHeight+9999;
-      var e=document.getElementById('splash-enter'); if(e && !e.classList.contains('is-disabled')) e.click(); })()`);
-    await sleep(400);
-    enteredMand = await evalJs(`(function(){ var m=document.getElementById('splash-mandatory'); return !!(m && !m.hidden); })()`);
-  }
-  // 阶段二：强制公告滑到底 + 点确认进入（重试至开屏消失）
+  await evalJs(`(function(){ var c=document.getElementById('splash-age-check');
+    if (c && !c.checked) { c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); } return true; })()`);
+  // 滑到底 + 点「点击进入」（重试至开屏消失；带重试避免某一次点击时按钮还在 is-disabled）
   let gone = false;
   for (let i = 0; i < 15 && !gone; i++) {
-    await evalJs(`(function(){ var m=document.getElementById('splash-mandatory-scroll'); if(m) m.scrollTop=m.scrollHeight+9999;
-      var e=document.getElementById('splash-mandatory-enter'); if(e && !e.classList.contains('is-disabled')) e.click(); })()`);
+    await evalJs(`(function(){ var b=document.getElementById('splash-box'); if(b) b.scrollTop=b.scrollHeight+9999;
+      var e=document.getElementById('splash-enter'); if(e && !e.classList.contains('is-disabled')) e.click(); })()`);
     await sleep(400);
     gone = await evalJs(`(function(){ var sp=document.getElementById('splash');
       return !sp || sp.classList.contains('hide') || getComputedStyle(sp).display==='none'; })()`);

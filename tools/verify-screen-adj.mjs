@@ -144,8 +144,20 @@ const sim = await evalJs(`(function(){
   return JSON.stringify(out);
 })()`);
 const sv = JSON.parse(sim || '{}');
-check('B2 模拟写入方 set 800px → DOM 落 824px（基准+偏移双层）', sv.h === '824px', sim);
-check('B3 模拟写入方 set 62px → DOM 落 74px（基准+偏移双层）', sv.top === '74px', sim);
+// B2/B3 换锚（2026-09-27 #1318）：旧两支测的是「#707 包装 documentElement.style 的 set/get，
+//   于是谁写 800px 都落 824px」这一【机制】。#1318 把那层包装删了——包装后的 getPropertyValue
+//   把「基准＋偏移」原样还给写入方自己的比较，#189 的 ≥6px 迟滞因此被偏移量本身顶开（该机
+//   高度轴=-15 ⇒ |基准−读数| 恒为 15），等于每抖 1px 就真写一次 .phone/html/body 共用的整页
+//   高度；同一层包装对底部那一格完全够不着，只好再补一条按秒复述 calc 的定时器＝一个属性两个
+//   主人。现在偏移由写入方在落 DOM 时叠加（screenVarPx / bottomSafeCss），机制换路、行为契约
+//   不变 ⇒ 同名换 needle＝合法重锚，不算缩尺。这里改测两侧都成立的契约：轴改值后 all() 与 LS
+//   同步、无需刷新即生效。至于「偏移确实体现在系统写入方那一次写值上」的可判别强断言，挪到
+//   tools/verify-1318-screen-adj-single-owner.mjs 的 A3/C2（那边把 standalone＋iOS UA＋440×956
+//   铺成 16PM 那一档几何；本脚本没铺，硬断言只会把环境缺口报成回归——本仓规矩：SKIP 不算红）。
+const ax = await evalJs('(function(){ return JSON.stringify(window.mochiScreenAdj.all()); })()');
+const axo = JSON.parse(ax || '{}');
+check('B2 高度轴改值后 all() 与 LS 同步（面板即时生效，不依赖刷新）', axo.h === 24, 'all=' + ax);
+check('B3 顶部轴改值后 all() 与 LS 同步', axo.top === 12, 'all=' + ax);
 check('B3b 写入方 removeProperty 后偏移层一并摘除（不留幽灵值）', sv.afterRemove === '', sim);
 const deskv = await evalJs("(function(){ localStorage.setItem('xy-home-v2:screen-adj-desk','30'); location.reload(); return true; })()");
 await sleep(3000);
