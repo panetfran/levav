@@ -106,15 +106,16 @@ const browser = await chromium.launch();
   check('S3', '正常服务：/js/* 全部 200 且有请求', srv1.stat.js200 >= 20 && srv1.stat.js404 === 0, '200=' + srv1.stat.js200 + ' 404=' + srv1.stat.js404);
   check('S4', '正常服务：数据链就绪（__mochiDataReady）', state.dataReady === true, 'dataReady=' + state.dataReady);
   // S5（#860 D2 执行序守卫）：__mochiLoaded 的执行序必须与产物 defer 标签序逐位一致
-  // （前 3 位=内联系统件 device/pwa/ver-check，其后=EXT_TAG_ORDER）。标签序被改（如改回
+  // （前 2 位=内联系统件 device/pwa，其后=EXT_TAG_ORDER；2026-10-01 停更收口起 ver-check 退役）。
+  // 标签序被改（如改回
   // 「全 jsFiles 序」）＝存在「晚执行才安全」加载期依赖的文件被整体提前，行为脚本会静默翻红。
   const htmlArt = readFileSync(join(root, 'index.html'), 'utf8');
   const tagOrder = [...htmlArt.matchAll(/<script defer src="js\/([a-z0-9-]+\.js)"/g)].map((m) => m[1]);
   const loaded = state.loaded || [];
-  const expectOrder = ['device.js', 'pwa.js', 'ver-check.js'].concat(tagOrder);
+  const expectOrder = ['device.js', 'pwa.js'].concat(tagOrder);
   let orderOk = loaded.length === expectOrder.length;
   if (orderOk) for (let i = 0; i < expectOrder.length; i++) if (loaded[i] !== expectOrder[i]) { orderOk = false; break; }
-  check('S5', '#860 执行序守卫：__mochiLoaded 逐位等于「3 内联件 + defer 标签序」', orderOk, orderOk ? '前6=' + loaded.slice(0, 6).join(',') : '首处差异 @' + loaded.findIndex((n, i) => n !== expectOrder[i]));
+  check('S5', '#860 执行序守卫：__mochiLoaded 逐位等于「2 内联件 + defer 标签序」', orderOk, orderOk ? '前6=' + loaded.slice(0, 6).join(',') : '首处差异 @' + loaded.findIndex((n, i) => n !== expectOrder[i]));
   srv1.srv.close();
 }
 

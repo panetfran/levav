@@ -28,13 +28,17 @@ if (typeof WebSocket !== 'function') { console.error('需要 Node 21+'); process
 
 // ---- 静态断言：产物含本功能接线 ----
 const built = readFileSync(join(root, 'index.html'), 'utf8');
+// #1488 尺子重基线：模块自 #860 起外置为 js/feature-data.js，S3/S5/S6 的锚在外置产物里——
+// 旧写法只读 index.html＝恒红假锚。两基底并认（内联/外置 whichever 在）＝基底中立。
+const builtFd = (() => { try { return readFileSync(join(root, 'js', 'feature-data.js'), 'utf8'); } catch (e) { return ''; } })();
+const builtAll = built + '\n' + builtFd;
 const staticChecks = [
   ['S1 设置页入口行 #row-feature-data 在位', built.includes('id="row-feature-data"')],
   ['S2 独立页面 #page-feature-data 在位', built.includes('id="page-feature-data"')],
-  ['S3 模块已接入产物（window.mochiFeatureData）', built.includes('window.mochiFeatureData = {')],
+  ['S3 模块已接入产物（window.mochiFeatureData）', builtAll.includes('window.mochiFeatureData = {')],
   ['S4 页面渲染容器与按钮样式类在位', built.includes('id="feature-data-body"') && built.includes('.fd-btn')],
-  ['S5 媒体池/字体包排除逻辑在位（清空不得误删共享资源）', built.includes("info.suffix.indexOf(MEDIA_PREFIX) === 0 || info.suffix.indexOf(BLOB_PREFIX) === 0")],
-  ['S6 导入/清空后强制刷新（内存缓存与落盘一致）', built.includes('function scheduleReload()')],
+  ['S5 媒体池/字体包排除逻辑在位（清空不得误删共享资源）', builtAll.includes("info.suffix.indexOf(MEDIA_PREFIX) === 0 || info.suffix.indexOf(BLOB_PREFIX) === 0")],
+  ['S6 导入/清空后强制刷新（内存缓存与落盘一致）', builtAll.includes('function scheduleReload()')],
 ];
 let allOk = true;
 for (const [d, ok] of staticChecks) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + d); if (!ok) allOk = false; }

@@ -128,7 +128,14 @@ await evalJs("localStorage.removeItem('xy-home-v2:fhub-seen'); try { if (window.
 await openCold(true);
 let bar = await barInfo();
 ok('B0 横幅文案形态（无「undefined/NaN」占位）', bar.exists === true && /^还没试过：\d+ 个功能/.test(bar.text), JSON.stringify(bar));
+// #1452（阶段 A）：目录行改「首开才建」——先走一次真实入口（设置行）把目录行建出来，再对账总数；
+// 随后回桌面，保持 B2「从桌面点图标」的起始态（契约不变：开页后仍是全量行）。
+// 注：横幅/角标本身仍随启动就位，故 B0 的 bar.exists/badge 不受影响。
+await evalJs("document.getElementById('row-featurehub').click(); return true;");
+await sleep(500);
 const total = await hubTotal();
+await evalJs("document.querySelector('.tab[data-page=\"page-phone\"]').click(); return true;");
+await sleep(400);
 let seen = await seenObj();
 ok('B1 全新环境横幅计数＝目录条目数（N=total−已到达，与 seen 集合对账）',
   bar.n !== null && bar.n >= 1 && total - Object.keys(seen).length === bar.n, 'total=' + total + ' seen=' + Object.keys(seen).length + ' n=' + bar.n);

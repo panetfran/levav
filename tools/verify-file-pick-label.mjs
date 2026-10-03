@@ -165,17 +165,19 @@ const after5 = J(await evalJs(snap));
 ok(after5.n === before5 + 1 && after5.last && after5.last.id === 'avlib-upload-file-pick' && after5.last.isFile === true && after5.last.connected === true,
   'B5 点「添加头像」的 label → 原生激活对应池选择器（常驻、挂文档）', JSON.stringify({ before: before5, after: after5 }));
 
-// B6 开屏红色警示卡在位（用户直派「安卓不建议自带浏览器，开屏显眼处标红」）
+// B6 开屏「安卓·请勿使用自带浏览器」指引在位（用户直派「安卓不建议自带浏览器」）
+// 2026-10-01 用户直派「收进【Mochi字卡 · 开屏说明】新增目录」：原必读组警示卡撤除，内容改由公告目录第 4 章
+//   「浏览器兼容提醒（安卓用户必读）」承载（在线 notice.json 与模板静态兜底两份同标题），本断言改判目录章在位
+//   （原断言在 #splash-notice 里找必读组卡，#976 搬卡起即失配属存量红，本次随卡退役一并转正）
 const b6 = J(await evalJs(`(function(){
-  var n=document.getElementById('splash-notice');if(!n)return JSON.stringify({err:'no-notice'});
-  var c=n.querySelector('.splash-alert.splash-browser[data-browser-warn="1"]');
-  if(!c)return JSON.stringify({err:'no-card'});
-  var t=c.querySelector('.splash-alert-t');
-  var cs=getComputedStyle(c);
-  return JSON.stringify({title:t?t.textContent:'',border:cs.borderLeftColor,hidden:!!(c.offsetParent===null&&getComputedStyle(c).position!=='fixed')});
+  var secs=[].slice.call(document.querySelectorAll('.splash-sec-wrap > .splash-sec'));
+  var h=secs.filter(function(s){return s.textContent.indexOf('浏览器兼容提醒')>=0;})[0];
+  if(!h)return JSON.stringify({err:'no-sec'});
+  var body=h.parentNode.textContent||'';
+  return JSON.stringify({title:h.textContent.trim(),hasTip:body.indexOf('自带浏览器')>=0&&body.indexOf('Chrome')>=0});
 })()`));
-ok(b6.title && b6.title.indexOf('自带浏览器') >= 0 && String(b6.border).indexOf('210, 52, 48') >= 0,
-  'B6 开屏「安卓·请勿使用自带浏览器」红色警示卡在位且为红色警示形态', JSON.stringify(b6));
+ok(b6.title && b6.title.indexOf('浏览器兼容提醒') >= 0 && b6.hasTip === true,
+  'B6 开屏公告目录第 4 章「浏览器兼容提醒（安卓用户必读）」在位且含自带浏览器/Chrome 指引', JSON.stringify(b6));
 
 const errs = await evalJs("(function(){return JSON.stringify(window.__jsErrors||[]);})()");
 ok(String(errs) === '[]' || String(errs) === 'null', 'Z 全程零 JS 异常', errs);

@@ -239,7 +239,10 @@ await evalJs(`(function(){ var b = document.querySelector('#feed-list .feed-act[
 await sleep(2600);
 const b = await evalJs(`(function(){ var v = localStorage.getItem('${SNAP}') || ''; return { len: v.length, tok: v.indexOf('@@m:a1b2c3d4e5f60718293a4b5c6d7e8f01') >= 0, tok2: v.indexOf('@@m:a1b2c3d4e5f60718293a4b5c6d7e8f02') >= 0, big: v.indexOf('iVBORw0KGgo') >= 0, ph: v.indexOf('[图片]') >= 0 }; })()`);
 check('B1 快照保留媒体池令牌（修复前令牌被剥成 [图片]）', !!b && b.tok && b.tok2, JSON.stringify(b));
-check('B2 快照仍剥大体积 dataURL（只剥图本体，不剥令牌）', !!b && b.big === false && b.ph === true, JSON.stringify(b));
+// ⚠ #1363 重锚（不是放宽）：那一发巨型载荷如今在落盘前就被换成媒体池引用，快照侧根本没有东西可剥成
+//   「[图片]」了——占位符出现与否不再是「有没有剥图」的证据。本条改按「快照既不许带巨型载荷、也不许丢
+//   引用」这一对事实取证：#667 两种坏法（连令牌一起剥＝B1 的 tok 红；不剥图本体＝big 红）仍然都拦得住。
+check('B2 快照仍不带大体积 dataURL（#1363 重锚：该载荷已被换成可自愈引用，无物可剥＝无占位符）', !!b && b.big === false && (b.ph === true || (b.tok && b.tok2)), JSON.stringify(b));
 check('B3 快照体积仍 ≤200KB 预算', !!b && b.len > 0 && b.len <= 200 * 1024, b ? String(b.len) : '');
 const bDump = await evalJs(`(function(){
   var out = { ls: (window.__ls || []) };
@@ -269,7 +272,10 @@ await evalJs(`(function(){ try { localStorage.setItem('${FEED}', window.__mkFeed
 await evalJs(`(function(){ var b = document.querySelector('#feed-list .feed-act[data-like]'); if (b) b.click(); return !!b; })()`);
 await sleep(3500);
 const d = await evalJs(`(function(){ var v = (window.__w.last['${FEED}'] || ''); return { hasBig: v.indexOf('iVBORw0KGgo') >= 0, hasTok: v.indexOf('@@m:a1b2c3d4e5f60718293a4b5c6d7e8f01') >= 0, hasPh: v.indexOf('[图片]') >= 0, wrote: (window.__w.list || []).filter(function(x){ return x.k === '${FEED}'; }).length, len: v.length }; })()`);
-check('D1 权威恢复可读后写回用完整版（修复前被剥图版掉包）', !!d && d.wrote > 0 && d.hasBig && d.hasTok, JSON.stringify(d));
+// ⚠ #1363 重锚（不是放宽）：「完整版」的证据原来是「那份大 dataURL 还在原文里」，而 #1363 之后那份载荷已在池里、
+//   以引用在场（写回带 @@m: 且不含 [图片] 占位＝完整）。#187/#188 那种「剥图版掉包」照旧红：掉包必然带
+//   [图片] 占位、且引用会丢（B1 那把尺同拦）。
+check('D1 权威恢复可读后写回用完整版（#1363 重锚：认引用不带占位符，不认巨型载荷原文）', !!d && d.wrote > 0 && d.hasTok === true && d.hasPh === false, JSON.stringify(d));
 check('D2 写回内容不含「[图片]」占位', !!d && d.hasPh === false, JSON.stringify(d));
 const d2 = await commentImgs();
 check('D3 同会话自愈：评论区大图恢复渲染', !!d2 && d2.src.filter(s => s.indexOf('data:image/png') === 0).length >= 4, d2 ? ('img=' + d2.n + ' text=' + (d2.text || '').slice(0, 40)) : '');

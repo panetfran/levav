@@ -314,7 +314,13 @@ try {
     ok('手动触发跨桌面查岗成功（开关开+题库有题）', first === true && st1.maskOpen && /来查岗了/.test(st1.maskTitle), { first, title: st1.maskTitle });
     const second = await s7.page.evaluate(() => window.triggerIncomingCheckin('cmtprobe1'));
     const st2 = await s7.state();
-    ok('同一联系人未处理期间不重复投递（不叠弹窗、不叠记录）', second === false && st2.queue.filter((x) => x.cid === 'cmtprobe1').length === 1, { second, q: st2.queue.map((x) => x.cid + ':' + x.status) });
+    // #1478 重基线（本批改的是「什么时候落盘」，不是「要不要记这一条」）：库里这一键还没回话的窗口里，
+    //   整包写回会被扣一拍、等权威并集再落，所以「LS 立刻看得见这一条」不再是契约。判据改成
+    //   「LS 那份有且只有这一条，或页面自己那本账（探针 qids）记着这一条 pending」——两个读数都拿不到
+    //   才算红；LS 里叠出第二条仍然算红。核心守卫一字未减：同一联系人未处理期间不许再投第二条。
+    const t8Ls = st2.queue.filter((x) => x.cid === 'cmtprobe1');
+    const t8Page = ((st2.probe || {}).qids || []).filter((s) => s.indexOf('cmtprobe1:pending') === 0);
+    ok('同一联系人未处理期间不重复投递（不叠弹窗、不叠记录）', second === false && t8Ls.length <= 1 && (t8Ls.length === 1 || t8Page.length === 1), { second, q: st2.queue.map((x) => x.cid + ':' + x.status), qids: (st2.probe || {}).qids });
     const clicked = await s7.page.evaluate(() => {
       const pills = Array.prototype.slice.call(document.querySelectorAll('#modal-pills .pill'));
       const later = pills.filter((b) => /稍后/.test(b.textContent))[0];

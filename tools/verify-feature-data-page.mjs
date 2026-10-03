@@ -31,10 +31,13 @@ if (!chromePath) { console.error('找不到 Chrome/Edge'); process.exit(1); }
 if (typeof WebSocket !== 'function') { console.error('需要 Node 21+'); process.exit(1); }
 
 const built = readFileSync(join(root, 'index.html'), 'utf8');
+// #1488 尺子重基线：同 verify-feature-data——注入引擎在外置 js/feature-data.js，两基底并认。
+const builtFd = (() => { try { return readFileSync(join(root, 'js', 'feature-data.js'), 'utf8'); } catch (e) { return ''; } })();
+const builtAll = built + '\n' + builtFd;
 const staticChecks = [
-  ['S1 注入引擎在产物里（mountFdBars / data-fbar）', built.includes('mountFdBars') && built.includes("setAttribute('data-fbar'")],
+  ['S1 注入引擎在产物里（mountFdBars / data-fbar）', builtAll.includes('mountFdBars') && builtAll.includes("setAttribute('data-fbar'")],
   ['S2 功能页数据卡样式类在产物里', built.includes('.fd-fbar')],
-  ['S3 已有自带入口的功能页会被跳过（f.btns 判定）', built.includes('if (!f.page || f.btns) return;')],
+  ['S3 已有自带入口的功能页会被跳过（f.btns 判定）', builtAll.includes('if (!f.page || f.btns) return;')],
 ];
 let allOk = true;
 for (const [d, ok] of staticChecks) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + d); if (!ok) allOk = false; }

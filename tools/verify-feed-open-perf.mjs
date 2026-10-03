@@ -58,13 +58,18 @@ async function evalJs(expr) {
 const boot = `
 (function () {
   var T = Date.now();
+  // #1434：朋友圈改成「本周＋按月」翻页折叠——本尺量的是「同一次运行内首开 vs 再开」的整包
+  //   重建代价，种子必须整批落在本自然周里（原写法每小时一条、200 条横跨 8.3 天＝会被折到
+  //   上一整月，K1 数的就不是这 200 条了）。步长按「本周已经走过的时间」均分，周一凌晨跑也不外溢。
+  var WS = (function () { var d = new Date(T); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); })();
+  var WEEK_STEP = Math.max(1, T - WS) / 240;
   var post = function (i) {
     // 贴近真实：800px JPEG 压缩产物量级（≈40KB dataURL），不是 1×1 占位
     var pad = new Array(8200).join('A');
     var img = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD' + pad;
     return { id: 'f_' + (1700000000000 + i) + '_default', role: i % 3 === 0 ? 'me' : 'ta', owner: 'default',
       authorName: '小桃', authorAv: '', taName: '小桃', taAv: '', content: '第' + i + '条动态 ' + new Array(40).join('内容'),
-      imgs: [img, img], ts: T - i * 3600000, likes: ['我', '小桃'],
+      imgs: [img, img], ts: T - Math.round(i * WEEK_STEP), likes: ['我', '小桃'],
       comments: [
         { role: 'ta', owner: 'default', authorName: '小桃', authorAv: '', content: '评论一 ' + i, ts: T - i * 3600000 + 1000, replies: [{ role: 'me', owner: 'default', authorName: '我', authorAv: '', content: '回复 ' + i, ts: T - i * 3600000 + 2000 }] },
         { role: 'me', owner: 'default', authorName: '我', authorAv: '', content: '评论二 ' + i, ts: T - i * 3600000 + 3000, replies: [] }

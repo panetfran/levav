@@ -132,7 +132,7 @@ check('A1 贴纸分组函数在（含 emoji 组）', /function feedStickerGroups
 check('A2 面板与 TA 回贴共用同源 emoji 池（不再各写一份常量）', /function feedStickerEmojiPool\(\)/.test(feedSrc) && /items: feedStickerEmojiPool\(\)/.test(feedSrc) && /const em = feedStickerEmojiPool\(\);/.test(feedSrc) && !/return \{ emoji: FEED_STICKER_EMOJI\[/.test(feedSrc));
 check('A2b emoji 池来源＝自建 emoji 字卡优先、系统预设兜底', /window\.getScopedGroups\('emoji', sc\)/.test(feedSrc) && /window\.getDefaultCardGroups\('emoji'\)/.test(feedSrc) && /if \(!out\.length\) FEED_STICKER_EMOJI\.forEach\(add\);/.test(feedSrc));
 check('A3 贴纸落位支持 emoji（feedPickStickerPos 第三参 + 传给 addFeedSticker）', /function feedPickStickerPos\(pid, src, emoji\)/.test(feedSrc) && /addFeedSticker\(pid, \{ src: src, emoji: emoji, x: x, y: y \}\)/.test(feedSrc));
-check('A4 渲染签名覆盖窗口内动态身份/赞/评论/贴纸/配图', /function feedRenderSignature\(posts, shown, name, memId\)/.test(feedSrc) && /\(p\.likes \|\| \[\]\)\.join\('\/'\)/.test(feedSrc) && /if \(sig === feedRenderSig && listEl\.firstChild\) return;/.test(feedSrc));
+check('A4 渲染签名覆盖窗口内动态身份/赞/评论/贴纸/配图', /function feedRenderSignature\(posts, shown, name, memId, rangeKey\)/.test(feedSrc) && /\(p\.likes \|\| \[\]\)\.join\('\/'\)/.test(feedSrc) && /if \(sig === feedRenderSig && listEl\.firstChild\) return;/.test(feedSrc));
 
 // ================= B. 打开贴纸面板：分类 + emoji 贴纸 =================
 await evalJs(`(function(){ var el = document.querySelector('.app[data-app="feed"]'); if (el) el.click(); return !!el; })()`);

@@ -18,6 +18,10 @@
 //   ⑩ jitter：电量计抖（掉一格回一格、净掉电 0）＝各段速率封顶到净值、报出抖动量（#947 缺陷 1）
 //   ⑪ throttle：后台心跳被内核节流＝归「不确定」段而非「与本站无关」的未运行段（#947 缺陷 2）
 //   ⑫ pendlast：挂着未读报告关页重开＝开屏离场后补弹一次并清 pending（#947 缺陷 4）
+// #1418（用户直派「电量消耗自测 闪屏自测 发烫自测，功能测试时间太短，并且还能怎么优化」）追加三场景：
+//   ⑬ heat2：发烫档位胶囊 4 档 + 判级看整窗趋势（6 段）+ 短档照实标「快测」
+//   ⑭ heat3：提前结束＝当场出报告并标明中途结束；页面不可见＝负载时钟暂停（不虚走、不后台烧电）
+//   ⑮ coarse：电量 5~15 分钟的段标粗测、≥15 分钟的段仍给正式参考带（旧版只有 <5 分钟才标粗测）
 // 用法：node tools/verify-energy-check.mjs（需先 node build.mjs；MOCHI_ROOT 可指仓外副本）
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -30,7 +34,9 @@ const target = process.env.MOCHI_ROOT ? normalize(process.env.MOCHI_ROOT) : root
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0;
-const ok = (name, cond) => { if (cond) { pass++; console.log('✅ ' + name); } else { fail++; console.log('❌ ' + name); } };
+// #1412：红侧必须把读数带出来——旧写法收了第三个参数却从不打印，B14/C18 这类红只能看到「红了」看不到
+//   当时屏上是什么、pauseMs 是多少，排查全靠重跑猜。打印只发生在失败分支，绿侧输出不变。
+const ok = (name, cond, extra) => { if (cond) { pass++; console.log('✅ ' + name); } else { fail++; console.log('❌ ' + name + (extra === undefined ? '' : ' | 读数: ' + (typeof extra === 'string' ? extra : JSON.stringify(extra)))); } };
 
 // ---- S 组：产物静态锚（energy-check.js 自带上线即外置件 js/energy-check.js）----
 let jsEc = '', idx = '', jsContacts = '';
@@ -54,6 +60,14 @@ ok('S13 不确定段独立归档（删＝节流那段又并进「与本站无关
 ok('S14 停摆归段只认三种证据（删＝不查证据，#947 缺陷 2 复发）', jsEc.includes("if (_freshReload || wasDiscarded() || run.lastSt === 'fg') return 'gap';"));
 ok('S15 关页重开补弹闸（删＝挂起的报告永久烂在 pending，#947 缺陷 4 复发）', jsEc.includes('if (splashGone()) { popPending(); return; }') && jsEc.includes('whenModalReady(function () { restoreRun(); popPendingAtBoot(); });'));
 
+// #1418b：第二轮修掉的六处（判级门槛/窗口后缀/心跳分母/重复采样状态/负载时钟/收尾暂停）——都是
+// 「代码在、逻辑被改回去就复发」的逻辑锚，按 v3.27.x 铁律收成 src 里唯一的表达式。
+ok('S16 电量判级门槛与粗测门槛对齐（改回 SEG_MIN_MS＝5 分钟的段又能一边标「粗测、仅供参考」一边驱动「结论：异常」）', jsEc.includes("if (run.fgMs >= SEG_COARSE_MS) cands.push({ n: '前台使用'"));
+ok('S17 电量窗口后缀按用户选的档位（改回 totalMs＝含 gapMs，页面被关掉 50 分钟也照样算满 1 小时）', jsEc.includes('var winMs = run.ms || totalMs;'));
+ok('S18 心跳平均间隔只摊页面活着的时间（改回含 gapMs＝一边印「页面未运行 48 分钟」一边指控内核节流）', jsEc.includes('var liveMs = run.fgMs + run.bgMs + unkMs + run.chgMs;'));
+ok('S19 重复采样也要记状态（删＝「切出去 <500ms 又切回」的可见事件被吞，一整段记到后台段上）', jsEc.includes("if (dt < 500) { run.last = now; run.lastSt = ch ? 'chg' : (document.hidden ? 'bg' : 'fg'); return; }"));
+ok('S20 发烫负载时钟只算真在算的时间（改回 actMs += now - actAt＝3 分钟档只压约 2.7 分钟）', jsEc.includes('actMs += dur;'));
+ok('S21 发烫收尾结算后台暂停段（删＝静置/收尾期正处后台的暂停时长被整块丢掉）', jsEc.includes('if (hidAt) { rep.pauseMs += performance.now() - hidAt; hidAt = 0; }'));
 // ---- B 组：无头行为 ----
 const candidates = [
   process.env.CHROME_PATH,
@@ -130,6 +144,18 @@ const stub = `(function(){
       localStorage.setItem('xy-home-v2:battery-check-run', JSON.stringify(${FAKE_RUN}));
     }
     if (scn === 'badrun') { localStorage.setItem('xy-home-v2:battery-check-run', '{"t0":1,"ms":0}'); localStorage.removeItem('xy-home-v2:battery-check-last'); }
+    // #1418：前台段 10 分钟（该标粗测）、后台段 20 分钟（该给正式参考带）——判别「5~15 分钟也标粗测」
+    // #1418b：只有 5~15 分钟的段（前台 10 分钟）——该给「数据不足」而不是「异常」
+    if (scn === 'coarse5') {
+      var C5 = { t0: Date.now() - 1800000, ms: 1800000, iv: 20000, last: Date.now() - 1000, lastLv: 0.5, lastSt: 'fg',
+        fgMs: 600000, bgMs: 0, gapMs: 1200000, unkMs: 0, chgMs: 0, fgDrop: 3, bgDrop: 0, gapDrop: 0, unkDrop: 0, net: 3, lv0: 0.53, lvEnd: 0.5, n: 30 };
+      localStorage.setItem('xy-home-v2:battery-check-run', JSON.stringify(C5));
+    }
+    if (scn === 'coarse') {
+      var C = { t0: Date.now() - 1800000, ms: 1800000, iv: 20000, last: Date.now() - 1000, lastLv: 0.5, lastSt: 'fg',
+        fgMs: 600000, bgMs: 1200000, gapMs: 0, unkMs: 0, chgMs: 0, fgDrop: 5, bgDrop: 4, gapDrop: 0, unkDrop: 0, net: 9, lv0: 0.59, lvEnd: 0.5, n: 90 };
+      localStorage.setItem('xy-home-v2:battery-check-run', JSON.stringify(C));
+    }
     if (scn === 'seed2') Object.defineProperty(document, 'hidden', { value: true, configurable: true });
     // #947 缺陷 1：抖动的电量计——每被读一次就在 0.79/0.80 之间翻转（产品侧每次采样正好读一遍 level）。
     // 毛和（只记下降）稳定增长、有符号净掉电恒 ≤0＝真实世界「掉一格又回一格」的形状。
@@ -162,7 +188,16 @@ async function nav(scn) {
   await cdp('Page.navigate', { url: baseUrl + '/index.html?scn=' + scn });
   for (let i = 0; i < 60; i++) {
     const r = await evalJs("(function(){ return document.readyState + '|' + (typeof window.mochiEnergyCheck); })()");
-    if (r === 'complete|object') return true;
+    if (r === 'complete|object') {
+      // #1412 夹具消音（不是改产品）：本站的「数据会被自动清空 · 备份提醒」在新 profile 里必弹，
+      //   而本套尺子拿「屏上有没有弹窗」当判据（B14＝API 直调不许自行弹窗），常驻弹窗会把后面每个
+      //   场景的 modalState 一起污染。冷却标记必须走应用自己那份 store（pwa.js 的 flagSet 读写的就是
+      //   window.xyStore('xy-home-v2')）——实测 boot 前裸写 localStorage 读不到、照样弹。
+      await evalJs("(function(){ try { if (window.xyStore) window.xyStore('xy-home-v2').set('__last-backup-remind', String(Date.now())); } catch (e) {} try { localStorage.setItem('xy-home-v2:__last-backup-remind', String(Date.now())); } catch (e) {} return 1; })()");
+      await evalJs("(function(){ try { var pl = document.getElementById('modal-pills'); if (pl) { for (var i = 0; i < pl.children.length; i++) { if (String(pl.children[i].textContent || '').indexOf('稍后') >= 0) { pl.children[i].click(); return 'later'; } } } } catch (e) {} return 'none'; })()");
+      await sleep(250);
+      return true;
+    }
     await sleep(150);
   }
   return false;
@@ -202,6 +237,10 @@ try {
     const m1 = await modalState();
     ok('B3 点电量行＝弹时长选择（标题对＋5 个档位胶囊）', !!(m1 && m1.vis && m1.title === '电量消耗自测' && m1.pillsVis && m1.pills.length === 5));
     ok('B4 确定按钮文案被覆盖为「开始测」（ctl.okText 生效；写 opts.okText 无效）', !!(m1 && m1.ok === '开始测'));
+    // #1418：默认档从 30 分钟提到 1 小时（工具自己的报告就写着「1 小时以上才有参考价值」）
+    const bPill = await evalJs("(function(){ var p=document.querySelector('#modal-pills .pill.on'); return p ? p.textContent : ''; })()");
+    ok('B4b 电量默认档＝1 小时、短档标「粗测」、弹窗点明短档只能看趋势（删＝默认值给不出可用数字，用户选了短档再拿到一句「数据不足」）',
+      !!(bPill === '1 小时' && m1.pills.join('|').indexOf('粗测') >= 0 && m1.staticText.indexOf('只能看趋势') >= 0), { on: bPill, pills: m1 && m1.pills });
     await clickId('modal-cancel');
     await sleep(200);
     const run0 = await evalJs("localStorage.getItem('xy-home-v2:battery-check-run')");
@@ -225,10 +264,17 @@ try {
     const mRate = (rep && rep.text) ? rep.text.match(/前台使用（屏幕亮着用本站）：约 ([0-9.]+)%\/小时/) : null;
     ok('B11 掉电被归进前台段（粗测速率 >0%/小时，不是只计时不记账）', !!(mRate && Number(mRate[1]) > 0));
     ok('B12 短窗口给「粗测」速率行（不足 5 分钟不给正式判级、不误导）', !!(rep && rep.text.indexOf('前台使用（屏幕亮着用本站）') >= 0 && rep.text.indexOf('粗测') >= 0));
+    ok('B12b 短窗口结论行标明「窗口不足 1 小时，属粗测」（删＝12 秒窗口的数字被当成结论）',
+      !!(rep && rep.text.indexOf('结论：数据不足') === 0 && rep.text.indexOf('· 窗口不足 1 小时，属粗测') >= 0));
     const after = await evalJs("(function(){ return { run: localStorage.getItem('xy-home-v2:battery-check-run'), last: localStorage.getItem('xy-home-v2:battery-check-last') }; })()");
     let lastJ = null; try { lastJ = JSON.parse(after.last); } catch (e) {}
     ok('B13 跑完清 run 键、写 last 键（仍留 run＝下次开页误续测）', after.run === null && !!(lastJ && lastJ.text && lastJ.text.indexOf('结论：') === 0));
-    ok('B14 API 直调路径不自行弹窗（交付归调用方，防双弹）', m && m.vis === false);
+    // #1412 判据收窄：这条要证的是「API 直调不许自己弹*自测自己的*报告」（交付归调用方、防双弹），
+    //   不是「屏上恰好什么弹窗都没有」。本站的「数据会被自动清空 · 备份提醒」在新 profile 里到点必弹
+    //   （受保护的产品功能，AGENTS.md 明令不得动），旧写法把它的在场算成自测双弹＝假红（实测红侧读数
+    //   逐字就是那句提醒的标题）。按标题族判定，不看「有没有弹窗」。
+    const ownPop = !!(m && m.vis && /自测|报告|电量消耗|发烫/.test(String(m.title || '')));
+    ok('B14 API 直调路径不自行弹出自测自己的弹窗（交付归调用方，防双弹）', m && !ownPop, { vis: m && m.vis, title: m && m.title });
     await collectErrs();
   } catch (e) { fail++; console.error('❌ 场景② drain 执行失败: ' + e.message); }
 
@@ -301,15 +347,23 @@ try {
     await sleep(300);
     const mh = await modalState();
     ok('B30 点发烫行＝确认弹窗（讲清「读不到温度、测的是降频后果」）', !!(mh && mh.vis && mh.title === '发烫自测' && mh.staticText.indexOf('读不到手机温度') >= 0));
-    ok('B31 确定按钮文案含档位耗时（约 10 秒）', !!(mh && mh.ok.indexOf('约 10 秒') >= 0));
+    // #1418：时长不再写死，改成 4 档胶囊（10 秒·快测 / 1 分钟 / 3 分钟 / 5 分钟），默认 3 分钟
+    const hPill = await evalJs("(function(){ var p=document.querySelector('#modal-pills .pill.on'); return p ? p.textContent : ''; })()");
+    ok('B31 发烫档位胶囊 4 档、默认 3 分钟（删档位＝又回到写死的 10 秒，用户报的「测试时间太短」复发）',
+      !!(mh && mh.pills.length === 4 && mh.ok.indexOf('开始') >= 0 && hPill === '3 分钟'), { pills: mh && mh.pills, on: hPill, ok: mh && mh.ok });
     await clickId('modal-cancel');
     await sleep(200);
     const hr0 = await evalJs("localStorage.getItem('xy-home-v2:heat-check-last')");
     ok('B32 取消＝不发车（删＝点取消也跑满负载，白耗电）', hr0 === null);
     const hrep = await evalJs('window.mochiEnergyCheck.startHeat()');
-    ok('B33 固定负载跑满 10 轮且按本机速度现场校准（workN ≥ 2000）', !!(hrep && hrep.rounds && hrep.rounds.length === 10 && hrep.workN >= 2000));
+    // #1418：负载改 60ms 切片（原 10 轮 ×700ms 同步阻塞，时长一拉长页面就无响应）
+    ok('B33 固定负载按 60ms 切片跑满整档且按本机速度现场校准（10 秒档 ≥100 片、workN ≥ 500）',
+      !!(hrep && hrep.slices && hrep.slices.length >= 100 && hrep.workN >= 500 && hrep.loadMs >= 9000), { n: hrep && hrep.slices && hrep.slices.length, loadMs: hrep && hrep.loadMs, n2: hrep && hrep.workN });
     const hExp = hrep ? (hrep.slow >= 0.25 ? '明显降频' : (hrep.slow >= 0.10 ? '轻度降频' : '未见降频')) : '';
-    ok('B34 判级与实测数字一致（开头 3 轮 vs 最后 3 轮；改档/写死＝结论与数字对不上）', !!(hrep && hrep.text.indexOf('结论：' + hExp) === 0 && hrep.text.indexOf('负载耗时：开头 3 轮中位') >= 0 && typeof hrep.slow === 'number'));
+    ok('B34 判级与实测数字一致（首尾 10% 中位 + 6 段趋势；改档/写死＝结论与数字对不上）',
+      !!(hrep && hrep.text.indexOf('结论：' + hExp) === 0 && hrep.text.indexOf('负载耗时趋势（整窗按时间分成 6 段的中位）') >= 0 && typeof hrep.slow === 'number' && hrep.bins && hrep.bins.length === 6), { bins: hrep && hrep.bins });
+    ok('B34b 短档照实标「快测」（10 秒档热不起来，报告要点明「只说明此刻有没有被限速」）',
+      !!(hrep && hrep.short === true && hrep.text.indexOf('秒快测：只说明') >= 0));
     ok('B35 说明如实（读不到温度＝测的是后果，全平台口径）', !!(hrep && hrep.text.indexOf('浏览器读不到手机温度') >= 0 && hrep.text.indexOf('固定负载') >= 0));
     const hl = await evalJs("(function(){ var v = localStorage.getItem('xy-home-v2:heat-check-last'); var o = v ? JSON.parse(v) : null; return { v: o ? o.verdict : '', t: o ? o.text : '', p: o ? o.pending : -1 }; })()");
     ok('B36 结果落 last 键（行小字/翻查用；pending=0 表示已交付）', !!(hl && hl.v && hl.t && hl.p === 0));
@@ -398,7 +452,192 @@ try {
     await collectErrs();
   } catch (e) { fail++; console.error('❌ 场景⑫ pendlast 执行失败: ' + e.message); }
 
-  ok('Z 零 JS 异常（十二场景全程）', jsErrors.length === 0);
+  // ⑬ #1418 heat2：档位 + 整窗趋势 + 快测口径（发烫自测时长放开后的判级形态）
+  try {
+    if (!(await nav('heat'))) throw new Error('页面 boot 超时');
+    await clickId('row-heat-check');
+    await sleep(300);
+    const mh2 = await modalState();
+    const hOn = await evalJs("(function(){ var p=document.querySelector('#modal-pills .pill.on'); return p ? p.textContent : ''; })()");
+    ok('C1 发烫弹窗默认选中 3 分钟档（默认值必须真能测出「越跑越慢」——手机从冷到热要 1 分钟以上）',
+      !!(mh2 && mh2.pills.length === 4 && hOn === '3 分钟' && mh2.staticText.indexOf('10 秒档只能答') >= 0), { on: hOn, static: (mh2 && mh2.staticText || '').slice(0, 40) });
+    await clickId('modal-cancel');
+    await sleep(200);
+    const h2 = await evalJs('window.mochiEnergyCheck.startHeat(null, 10000)');
+    ok('C2 报告给出 6 段趋势线（删＝又只剩开头/末尾两个点，热降频的中途回升看不见）',
+      !!(h2 && h2.bins && h2.bins.length === 6 && h2.text.indexOf('负载耗时趋势（整窗按时间分成 6 段的中位）') >= 0));
+    ok('C3 判级只取首尾 10% 中位且阈值口径不变（<10% 未见 / 10~25% 轻度 / ≥25% 明显）',
+      !!(h2 && h2.text.indexOf('开头 10% 中位') >= 0 && h2.text.indexOf('最后 10% 中位') >= 0 && h2.text.indexOf('判级：<10% 未见降频') >= 0));
+    ok('C4 说明段写明「短档只答此刻、要看趋势用 3 分钟档」（删＝用户以为 10 秒能测发烫）',
+      !!(h2 && h2.text.indexOf('短档只答') >= 0 && h2.text.indexOf('3 分钟档') >= 0));
+    ok('C5 帧率口径如实：负载前/负载后各一段，负载期掉帧标明「属预期」（自己占满 CPU 不是缺陷）',
+      !!(h2 && h2.text.indexOf('负载前静置约') >= 0 && h2.text.indexOf('负载后静置约') >= 0 && h2.text.indexOf('属预期') >= 0));
+    await collectErrs();
+  } catch (e) { fail++; console.error('❌ 场景⑬ heat2 执行失败: ' + e.message); }
+
+  // ⑭ #1418 heat3：提前结束出口 + 页面不可见暂停（长窗口的两条生命线）
+  try {
+    if (!(await nav('heat'))) throw new Error('页面 boot 超时');
+    const h3 = await evalJs(`(async function(){
+      var p = window.mochiEnergyCheck.startHeat(null, 60000);
+      await new Promise(function(r){ setTimeout(r, 1200); });
+      var wasRunning = window.mochiEnergyCheck.heatRunning();
+      window.mochiEnergyCheck.stopHeat();
+      var rep = await p;
+      return { running: wasRunning, stopped: rep ? rep.stopped : -1, text: rep ? rep.text : '', n: rep ? rep.slices.length : 0 };
+    })()`);
+    ok('C6 进行中有提前结束出口（stopHeat 生效；删＝3 分钟档点下去出不来，用户只能干等或杀页面）',
+      !!(h3 && h3.running === true && h3.stopped === 1 && h3.text.indexOf('本次提前结束') >= 0), { running: h3 && h3.running, n: h3 && h3.n });
+    // 出口要连 UI 一起测：走弹窗起一轮（默认 3 分钟档）不等它跑完，再点本行拿「提前结束并出报告」
+    await clickId('row-heat-check');
+    await sleep(300);
+    await clickId('modal-ok');
+    await sleep(1500);
+    const runOn = await evalJs("window.mochiEnergyCheck.heatRunning()");
+    await clickId('row-heat-check');
+    await sleep(300);
+    const mRun = await modalState();
+    ok('C7 进行中再点本行＝「提前结束并出报告」弹窗（不是没反应）',
+      !!(runOn === true && mRun && mRun.vis && mRun.title === '发烫自测进行中' && mRun.ok === '提前结束并出报告'), { run: runOn, t: mRun && mRun.title });
+    await clickId('modal-ok');
+    await sleep(1600);
+    const mAfter = await modalState();
+    ok('C8 点「提前结束并出报告」＝报告紧接着出（嵌套弹窗不互相吞）', !!(mAfter && mAfter.vis && mAfter.title === '发烫自测报告'), { t: mAfter && mAfter.title });
+    await clickId('modal-cancel');
+    await sleep(200);
+    const h4 = await evalJs(`(async function(){
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      var p = window.mochiEnergyCheck.startHeat(null, 10000);
+      await new Promise(function(r){ setTimeout(r, 5000); });
+      Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.mochiEnergyCheck.stopHeat();
+      var rep = await p;
+      return { pauseMs: rep ? rep.pauseMs : -1, loadMs: rep ? rep.loadMs : -1, n: rep ? rep.slices.length : -1, text: rep ? rep.text : '' };
+    })()`);
+    ok('C9 页面不可见＝负载暂停（不可见的那几秒不被算成负载、也不在后台白烧电）',
+      !!(h4 && h4.pauseMs >= 1500 && h4.loadMs < 3000 && h4.n < 40), { pauseMs: h4 && h4.pauseMs, loadMs: h4 && h4.loadMs, n: h4 && h4.n });
+    ok('C10 暂停时长在报告里如实标出（删＝用户看到「负载没跑满」却不知道是切后台了）',
+      !!(h4 && h4.text.indexOf('中途页面不可见') >= 0));
+    await collectErrs();
+  } catch (e) { fail++; console.error('❌ 场景⑭ heat3 执行失败: ' + e.message); }
+
+  // ⑮ #1418 coarse：电量分段粗测口径（5~15 分钟不再长得像 1 小时的段）
+  try {
+    if (!(await nav('coarse'))) throw new Error('页面 boot 超时');
+    await sleep(500);
+    const mc = await modalState();
+    const tc = (mc && mc.text) || '';
+    await clickId('modal-cancel');
+    ok('C11 5~15 分钟的段也标粗测（10 分钟的前台段；旧版只有 <5 分钟才标，用户会拿它当结论）',
+      tc.indexOf('前台使用（屏幕亮着用本站）：约') >= 0 && tc.indexOf('不足 15 分钟，粗测') >= 0, { seg: (tc.match(/· 前台使用[^\n]*/) || [''])[0] });
+    ok('C12 ≥15 分钟的段照旧给正式参考带（防一刀切把长窗口的结论也标成粗测）',
+      tc.indexOf('后台页面自身（切出去了、页面还在跑，多与「后台保活」相关）：约') >= 0 && tc.indexOf('参考：≤3 正常 / 3~8 偏高 / >8 异常') >= 0, { seg: (tc.match(/· 后台页面自身[^\n]*/) || [''])[0] });
+    await collectErrs();
+  } catch (e) { fail++; console.error('❌ 场景⑮ coarse 执行失败: ' + e.message); }
+
+  // ⑯ #1418b coarse5：5~15 分钟的段不得驱动判级（1% 颗粒度下 5 分钟一段＝±12%/小时，比整条参考带还宽）
+  try {
+    if (!(await nav('coarse5'))) throw new Error('页面 boot 超时');
+    await sleep(500);
+    const m5 = await modalState();
+    const t5 = (m5 && m5.text) || '';
+    await clickId('modal-cancel');
+    ok('C13 只有 5~15 分钟的段时不判级（旧版：10 分钟的前台段直接给出「结论：异常」＋「关掉后台保活」的建议，而同一份报告的明细行写着「粗测、仅供参考」）',
+      t5.indexOf('结论：数据不足') === 0 && t5.indexOf('各段样本都不足 15 分钟') >= 0 && t5.indexOf('结论：异常') < 0, { head: t5.slice(0, 90) });
+    ok('C14 窗口后缀按用户选的档位判（30 分钟档＝属粗测；旧版按 totalMs 算，页面被系统关掉的那段也算进窗口）',
+      t5.indexOf('· 窗口不足 1 小时，属粗测') >= 0);
+    await collectErrs();
+  } catch (e) { fail++; console.error('❌ 场景⑯ coarse5 执行失败: ' + e.message); }
+
+  // ⑰ #1418b heat4：负载时钟只算真在算的时间 + 静置/收尾的边界口径
+  try {
+    if (!(await nav('heat'))) throw new Error('页面 boot 超时');
+    const h5 = await evalJs('window.mochiEnergyCheck.startHeat(null, 10000)');
+    const sum = h5 && h5.slices ? h5.slices.reduce(function (a, b) { return a + b; }, 0) : -1;
+    const ratio = h5 && h5.loadMs > 0 ? sum / h5.loadMs : -1;
+    ok('C15 负载时钟只累计「真在算」的时间（sum(每片) / loadMs ≈ 1；旧写法把片间 setTimeout 往返也算进去，比值恒约 0.88＝3 分钟档只压 2.7 分钟）',
+      !!(ratio > 0.95 && ratio <= 1.0001), { ratio: ratio, sum: sum, loadMs: h5 && h5.loadMs });
+    ok('C16 报告印实测每片中位（不再把设计目标 60ms 说成实情）',
+      !!(h5 && h5.text.indexOf('每片实测算') >= 0 && h5.text.indexOf('片 × 约 60ms') < 0));
+    ok('C17 帧率行不印 0fps（测不到就说「未测到」；0fps 会被读成卡死，而真相是那段页面不可见）',
+      !!(h5 && h5.text.indexOf('约 0fps') < 0 && (h5.text.indexOf('负载前静置约') >= 0 || h5.text.indexOf('负载前静置：未测到') >= 0)));
+    await collectErrs();
+  } catch (e) { fail++; console.error('❌ 场景⑰ heat4 执行失败: ' + e.message); }
+
+  // ⑱ #1418b heat5：收尾期（负载已跑完、正在静置）切后台，暂停时长仍要进报告
+  try {
+    if (!(await nav('heat'))) throw new Error('页面 boot 超时');
+    const h6 = await evalJs(`(async function(){
+      Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+      var p = window.mochiEnergyCheck.startHeat(null, 10000);
+      await new Promise(function(r){ setTimeout(r, 14000); });          // 静置 3s + 负载 10s → 此刻在收尾静置里
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      await new Promise(function(r){ setTimeout(r, 1500); });
+      Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+      document.dispatchEvent(new Event('visibilitychange'));
+      var rep = await p;
+      return { pauseMs: rep ? rep.pauseMs : -1, text: rep ? rep.text : '' };
+    })()`);
+    ok('C18 收尾期被切后台＝暂停时长照样进报告（旧版只让 slice() 结算，静置/收尾期的暂停被整块丢掉，报告只字不提）',
+      !!(h6 && h6.pauseMs >= 1200 && h6.text.indexOf('中途页面不可见') >= 0), { pauseMs: h6 && h6.pauseMs });
+    await collectErrs();
+  } catch (e) { fail++; console.error('❌ 场景⑱ heat5 执行失败: ' + e.message); }
+
+
+  // ⑲ #1412 heat6：发烫自测不覆盖常驻长任务账本 ＋ 绝对基准入库与跨轮对照
+  // （缺陷面实测＝跑一轮把 __diag-lt 环形 8 格全灌成自测自己的负载片；落库只有 t/verdict/pending/text，
+  //   同机三轮绝对吞吐降 9.2% 而三轮各自判级全是「未见降频」＝账面无从对照）
+  try {
+    if (!(await nav('heat'))) throw new Error('页面 boot 超时');
+    await evalJs(`(function(){
+      try { localStorage.removeItem('xy-home-v2:heat-check-last'); } catch(e){}
+      try { localStorage.setItem('xy-home-v2:__diag-lt', JSON.stringify([{ t: Date.now() - 60000, d: 220 }, { t: Date.now() - 55000, d: 340 }])); } catch(e){}
+      return true;
+    })()`);
+    const h7 = await evalJs(`(async function(){
+      var t0wall = Date.now();
+      var p = window.mochiEnergyCheck.startHeat(null, 10000);
+      await new Promise(function(r){ setTimeout(r, 5000); });
+      // 夹具自己在负载窗内制造一发「真长任务」（300ms 同步阻塞）。为什么要人造：本机切片实测约 7ms/片
+      //   （校准样本与稳态速度差一个量级），低于内核 50ms 的长任务线＝观察器整窗零投递，D1/D2 会变成
+      //   空跑假绿。注入这一发同时证两件事：观察器活着、以及封回确实把「窗内」的条目丢掉（这条丢弃
+      //   正是设计取舍：负载窗内把 CPU 占满是本测自己，任何一发长任务都无从归因给本站）。
+      await new Promise(function(r){ setTimeout(function(){ var t = Date.now(); while (Date.now() - t < 300) {} r(); }, 100); });
+      await new Promise(function(r){ setTimeout(r, 500); });
+      var midRing = [];
+      try { midRing = JSON.parse(localStorage.getItem('xy-home-v2:__diag-lt') || '[]'); } catch(e){}
+      var rep = await p;
+      var ring = []; try { ring = JSON.parse(localStorage.getItem('xy-home-v2:__diag-lt') || '[]'); } catch(e){}
+      var last = null; try { last = JSON.parse(localStorage.getItem('xy-home-v2:heat-check-last') || 'null'); } catch(e){}
+      return { text: rep.text, slices: rep.slices.length, sliceMed: rep.slices && rep.slices.length ? rep.slices.sort(function(a,b){return a-b;})[Math.floor(rep.slices.length/2)] : 0, thr: rep.thr, t0wall: t0wall,
+               midInWindow: midRing.filter(function(x){ return x.t >= t0wall; }).length,
+               ring: ring, lastKeys: last ? Object.keys(last).sort() : [], lastThr: last ? last.thr : null, lastLoadMs: last ? last.loadMs : null };
+    })()`);
+    ok('D0 夹具自证：负载窗内那一发 300ms 真长任务被常驻观察器记到了（这一格为 0＝观察器没活着，D1/D2 就是空跑假绿，不许算通过）',
+      !!(h7 && h7.midInWindow > 0), { midInWindow: h7 && h7.midInWindow, slices: h7 && h7.slices, 每片中位ms: h7 && h7.sliceMed });
+    ok('D1 跑完自测＝负载片一条都不留在常驻账本里（删 sealLtRing＝实测灌满 8 格）',
+      !!(h7 && h7.slices > 5 && h7.ring.every(function (x) { return x.t < h7.t0wall; })),
+      { 窗内残留: h7 && h7.ring.filter(function (x) { return x.t >= h7.t0wall; }).length, 环长: h7 && h7.ring.length });
+    ok('D2 测前那两条「用户真的卡过」一条不丢（旧写法＝被自测整本顶掉，诊断单再也看不见那一发）',
+      !!(h7 && h7.ring.length === 2 && h7.ring[0].d === 220 && h7.ring[1].d === 340), { 环: h7 && h7.ring.map(function (x) { return x.d; }) });
+    ok('D3 报告给得出跨轮可比的绝对吞吐（旧版把校准值用完就丢＝只剩轮内漂移）',
+      !!(h7 && /本机单核吞吐 ≈ [\d.]+ 万次运算\/秒/.test(h7.text)), { 行: h7 && (h7.text.match(/· 本机单核吞吐[^\n]*/) || [''])[0] });
+    ok('D4 绝对值与所选负载时长一起入库（旧版落库只有 t/verdict/pending/text 四键）',
+      !!(h7 && typeof h7.lastThr === 'number' && h7.lastThr > 0 && typeof h7.lastLoadMs === 'number' && h7.lastLoadMs > 0), { 键: h7 && h7.lastKeys.join('/') });
+    ok('D5 首轮没有可比记录时不许凭空造「与上次对比」行（防修过头：拿默认值冒充上次）',
+      !!(h7 && h7.text.indexOf('与上次对比') < 0));
+    ok('D6 那句「负载期约 Nfps」假读数不得回流（掉帧数恒等于轮数、报出的最长间隔恒小于计数阈值＝自相矛盾）',
+      !!(h7 && h7.text.indexOf('负载期约') < 0), { 行: h7 && (h7.text.match(/· 帧率[^\n]*/) || [''])[0] });
+    const h8 = await evalJs('window.mochiEnergyCheck.startHeat(null, 10000).then(function(r){ return { text: r.text, thr: r.thr, prevThr: r.prev ? r.prev.thr : null }; })');
+    ok('D7 连跑第二轮＝报告出「与上次对比」（跨轮的绝对变化终于看得见，这才是「一直比上次慢」那一族的读数）',
+      !!(h8 && /与上次对比（[^）]*）：单核吞吐 [\d.]+ → [\d.]+ 万次\/秒（[+-][\d.]+%）/.test(h8.text) && typeof h8.prevThr === 'number' && h8.prevThr > 0),
+      { 行: h8 && (h8.text.match(/· 与上次对比[^\n]*/) || [''])[0] });
+    await collectErrs();
+  } catch (e) { fail++; console.error('❌ 场景⑲ heat6 执行失败: ' + e.message); }
+
+  ok('Z 零 JS 异常（十九场景全程）', jsErrors.length === 0);
   if (jsErrors.length) console.log('   异常抽样: ' + jsErrors.slice(0, 3).join(' | '));
 } catch (e) {
   fail++; ctxOk = false; console.error('❌ B 组执行失败: ' + e.message);
