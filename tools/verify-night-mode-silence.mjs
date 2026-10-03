@@ -58,6 +58,7 @@ function extractFn(src, sig) {
   }
   throw new Error(sig + ' 花括号不配平');
 }
+function sameLine(src, a, b) { let n = 0; src.split('\n').forEach((l) => { if (l.includes(a) && l.includes(b)) n++; }); return n; }
 function tryExtract(src, sig) { try { return extractFn(src, sig); } catch (e) { return null; } }
 
 // ================= S 组：源码锚 =================
@@ -79,9 +80,9 @@ note('S9', count(srcGift, 'if (window.nightModeActive && window.nightModeActive(
 note('S10', count(srcFeed, 'if (window.nightModeActive && window.nightModeActive()) return;') >= 1, '朋友圈自动动态夜间闸缺失');
 note('S11', has(srcBg, 'if (!force && window.nightModeActive && window.nightModeActive()) return 0;'), '跨桌面回放夜间暂停缺失');
 note('S12a', has(srcPeriod, "'经期预警', nightAllow: true"), '经期提醒放行标记缺失（拦掉＝提醒永久丢）');
-note('S12b', has(srcMusic, '{ silent: true, nightAllow: true }'), '音乐互动台词放行标记缺失（用户听歌当刻操作）');
-note('S12c', has(srcChat, "{ special: 'poke', nightAllow: true }"), '红包领取/退回回执放行标记缺失（账目先行不可无痕）');
-note('S12d', has(srcDecision, 'dedupExempt: true, nightAllow: true'), '帮我决定结果放行标记缺失（用户当刻操作）');
+note('S12b', sameLine(srcMusic, 'silent: true', 'nightAllow: true'), '音乐互动台词放行标记缺失（用户听歌当刻操作）#1341 起两枚标记之间可能夹 rateAllow，故按「同一行成对」判');
+note('S12c', sameLine(srcChat, "special: 'poke'", 'nightAllow: true') >= 3, '红包领取/退回回执放行标记缺失（账目先行不可无痕；成对的行数应 ≥3）');
+note('S12d', sameLine(srcDecision, 'dedupExempt: true', 'nightAllow: true') >= 1, '帮我决定结果放行标记缺失（用户当刻操作）');
 note('S12e', has(srcChat, 'nightAllow: opts.nightAllow'), 'chatAddSystem 未透传 nightAllow（调用方的豁免标记被白名单吞掉）');
 note('S13', has(srcChat, 'function trySystemAutoSend() {\n// #1015 夜间静默：TA 自动红包夜间不生成'), 'TA 自动红包源头闸缺失（总闸拦消息＝扣了钱没红包）');
 note('S13b', has(srcChat, 'function trySystemAskMochi() {\n// #1015 夜间静默：TA 主动申请心意币夜间不生成'), 'TA 主动申请心意币源头闸缺失');
@@ -99,7 +100,9 @@ const gateSrc = tryExtract(srcChat, 'function nightBlocksIn(initiative, nightAll
 // 沙箱不补齐符号就会 ReferenceError。这里按「限流关闭」态补桩（本脚本测的是夜间闸），
 // 限流本体的行为断言在 verify-1180-ta-rate-limit.mjs。
 const rlSrc = [tryExtract(srcChat, 'function rateLimitFull() {'),
-  tryExtract(srcChat, 'function rateBlocksIn(side, special, nightAllow) {'),
+  (tryExtract(srcChat, 'function rateBlocksIn(side, special, nightAllow) {') || tryExtract(srcChat, 'function rateBlocksIn(rec) {')), // #1341：签名改吃整份记录，两态都要能提取（旧侧才有读数）
+  (tryExtract(srcChat, 'function rlExempt(p) {') || ''), (tryExtract(srcChat, 'function rlReserveAvailable() {') || ''),
+  'let rlUserSpokeAt = 0, rlReserveFor = 0; const RL_REPLY_GRACE_MS = 60000;', // #1341 模块变量在沙箱里补桩（本脚本测的是夜间闸）
   tryExtract(srcChat, 'function cfg() {'), tryExtract(srcChat, 'function cfgn(c, k, d) {')].map((s) => s || '').join('\n');
 const addInSrc = tryExtract(srcChat, 'function addIn(text, opts)');
 if (gateSrc && addInSrc) {

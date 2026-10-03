@@ -166,6 +166,7 @@ try {
         url:'https://cdn.test/kc.mp3', source:'url', cover:'', duration:180, playlistId:'default', addedAt:Date.now() }];
       window.storeFor('default').set('music-library', JSON.stringify(arr));
       window.xyStore('xy-home-v2').set('bg-keepalive', '1');
+      window.xyStore('xy-home-v2').set('__ka-noduck', '0'); // #1489：本尺量的是「媒体元素那条通道」（保活音频＋媒体条的音量闸/共存），新通道的同义断言在 verify-1489-ka-audio-channel.mjs
       return 'OK';
     } catch(e){ return 'ERR:'+e.message; }
   })()`);

@@ -35,7 +35,12 @@ const bmSrc = readSrc('build.mjs');
 const maSrc = readSrc('src/js/mobile-adapt.js');
 const tbSrc = readSrc('src/js/tabs.js');
 console.log('S 层（源码作用域）');
-chk('S1 提示条插入页面内（不是弹窗）', pcSrc.includes('page.insertBefore(buildBar(cfg), page.firstChild);'));
+// #1421 换锚：旧针钉死 `page.insertBefore(buildBar(cfg), page.firstChild)`＝把条子写死在页首。
+// 那条写法在「页自己不滚、滚动权在内层窗口」的页里＝条子常驻成第二层头部，实测把回复设置页的
+// 列表窗口从 419px 挤到 298px、顶部 342px（360×640 的 54%）划不动。挂载点因此改成现算两路。
+// 语义没变的那一半照旧钉：条子必须插在页面容器内，绝不是全局弹层。
+chk('S1 提示条插入页面内（不是弹窗）', pcSrc.includes('mountBar(page, buildBar(cfg));') && !/document\.body\.appendChild\(bar\b/.test(pcSrc));
+chk('S1b #1421 挂载点按「这一页自己滚不滚」分两路（缺＝内层窗口那族页又被挤窄一屏）', /function mountBar\s*\(\s*page\s*,\s*bar\s*\)/.test(pcSrc) && /page\.scrollHeight\s*-\s*page\.clientHeight\s*>\s*0/.test(pcSrc));
 chk('S2 每页一次标记键', pcSrc.includes("const MARK = G + '__coach-seen';"));
 chk('S3 功能大全目录表只读查询暴露（文案单一事实源）', hubSrc.includes('window.mochiHubItemsFor = function (sels) {'));
 chk('S4 标记键进 contacts.js 免迁白名单', ctSrc.includes("'__coach-seen',"));

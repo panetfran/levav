@@ -83,8 +83,8 @@ function check(desc, ok, detail) {
   const perSrc2 = readFileSync(join(root, 'src', 'js', 'period.js'), 'utf8');
   const p2Src = readFileSync(join(root, 'src', 'js', 'p2-features.js'), 'utf8');
   // #559：经期发送点标签改语境三元（经期中=经期关心/经前预警日·推迟=经期预警），锚点随实现更新
-  check('A12 发送点带语境标签（经期关心/经期预警三元 ×1）、喝水提醒 ×2、吃饭提醒 ×2、摸鱼抓包 ×1',
-    (perSrc2.match(/tag: kind === 'in' \? '经期关心' : '经期预警'/g) || []).length === 1 &&
+  check('A12 发送点带语境标签（#1474 后=症状/经期/预警三词三元 ×1）、喝水提醒 ×2、吃饭提醒 ×2、摸鱼抓包 ×1',
+    (perSrc2.match(/tag: kind === 'sym' \? '症状关心' : \(kind === 'in' \? '经期关心' : '经期预警'\)/g) || []).length === 1 &&
     (p2Src.match(/tag: '喝水提醒'/g) || []).length === 2 &&
     (p2Src.match(/tag: '吃饭提醒'/g) || []).length === 2 &&
     (p2Src.match(/tag: '摸鱼抓包'/g) || []).length === 1);
@@ -180,6 +180,11 @@ async function evalJs(expr) {
 
 await cdpConnect();
 await cdp('Page.enable');
+// #1407⑦ 之后必须把「驯化随机」提到文档起始：本探针原来是在导航后 500ms 才把 Math.random 钉成
+//   恒不触发，而本批新加的「IDB 回填落地后重读＋补跑」跑得更早（restore-done +200ms），
+//   于是启动期那一发用真随机抢掉了当天名额 → 后面每次触发都数到 0（假红）。
+//   addScriptToEvaluateOnNewDocument 在任何脚本之前落地，启动期所有触发点都被钉住（同 _dbg-scroll 先例）。
+await cdp('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__origRandom=Math.random;Math.random=function(){return 0.999;};' });
 await cdp('Runtime.enable');
 await cdp('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 
@@ -219,7 +224,7 @@ async function armAndCount() {
         window.__careWrapped=true;
         var orig=window.chatAddIn;
         window.chatAddIn=function(t,o){
-          if(set[t]){window.__careCount=(window.__careCount||0)+1;window.__lastCareLine=t;window.__lastTag=(o&&o.tag)||'';}
+          if(set[t]||(o&&o.tag)==='症状关心'){window.__careCount=(window.__careCount||0)+1;window.__lastCareLine=t;window.__lastTag=(o&&o.tag)||'';} // #1474 重基线：场景带 3 天内症状时优先发「症状关心」（语料不在经期池），按 tag 认账
           return orig.apply(this,arguments);
         };
       }
@@ -260,7 +265,7 @@ await navigate();
   const persist = await evalJs("(function(){var raw=localStorage.getItem(window.activePrefix()+':chat-msgs')||'';return raw.indexOf('经期关心')>=0?'persisted':'not-found';})()");
   check('B1c 标签随消息持久化（chat-msgs 快照含「经期关心」，重进聊天仍在）', persist === 'persisted', persist);
   const fired = await evalJs("(function(){var n=JSON.parse(localStorage.getItem('xy-home-v2:period-notify')||'{}');var k=Object.keys(n.fired||{});return JSON.stringify({keys:k});})()");
-  check('B2 同日冷却键已持久化（today_care_inPeriod）', /_care_inPeriod/.test(fired || ''), fired);
+  check('B2 同日冷却键已持久化（#1407⑧ 起两侧共用 today_said_inPeriod）', /_said_inPeriod/.test(fired || ''), fired);
   const r2 = JSON.parse(await armAndCount() || '{}');
   check('B3 同一天重复调用不再追加（本次增量=0、累计仍=1）', r2.count === 0 && r2.total === 1, r2);
 }
@@ -421,6 +426,67 @@ await navigate();
   check('C10 全部分类 tab 存在且在屏内（功能触发 tab 按用户词汇命名连排，含此间/漂流瓶/音乐，共13个）',
     tabs.n === want.length && (tabs.labels || []).join(',') === want.join(','),
     { n: tabs.n, labels: tabs.labels });
+}
+
+// ===== E 组（2026-09-29 作者复报「关心根本没发到聊天里，只显示在经期页里」）=====
+// 「发到聊天」有两道闸，而拦人的那一道不住在本模块里：经期页的「梦角关心」开关（careEnabled）×
+// 字卡库「其他互动功能字卡」族的 dcf-care（总开关 ×「TA的关心（经期）」概率，合成一个数）。
+// 后者能在本模块外把整条乘成 0%，而页内开关照旧显示「已开启」、语料照旧列着＝一条都不发也没人
+// 说一声（静默失败）。本批只补「当场说清楚」，不改任何发送判据。
+{
+  await navigate();
+  await seedRecords(2);
+  await evalJs("(function(){ try { window.activeStore().set('dcf-care','0'); } catch(e){} var a=document.querySelector('.app[data-app=\"period\"]'); if(a) a.click(); var b=document.getElementById('period-notify-btn'); if(b) b.click(); return 1; })()");
+  await sleep(900);
+  const tip0 = String(await evalJs("(function(){ var p=document.getElementById('period-notify-pop'); var t=p?p.querySelector('.dp-tip'):null; return t? t.textContent : 'NO-TIP'; })()") || '');
+  check('E1 概率被字卡库乘成 0% → 经期页「提醒设置」底部当场写明发不出去＋打开方式（红侧＝整场静默）',
+    tip0.indexOf('字卡库') >= 0 && tip0.indexOf('0%') >= 0, tip0.slice(0, 96));
+  const sent0 = JSON.parse(await armAndCount() || '{}');
+  check('E2 同一状态下确实一条都不发（发送判据本批一字未动，两侧皆绿＝这是既有行为）', sent0.count === 0, sent0);
+
+  await evalJs("(function(){ try { window.activeStore().remove('dcf-care'); } catch(e){} Math.random=function(){return 0.999;}; var p=document.getElementById('period-notify-pop'); if(p) p.remove(); var a=document.querySelector('.app[data-app=\"period\"]'); if(a) a.click(); var b=document.getElementById('period-notify-btn'); if(b) b.click(); return 1; })()");
+  await sleep(900);
+  const tip1 = String(await evalJs("(function(){ var p=document.getElementById('period-notify-pop'); var t=p?p.querySelector('.dp-tip'):null; return t? t.textContent : 'NO-TIP'; })()") || '');
+  check('E3 概率回到大于 0% → 这句自己撤掉（不是常驻恐吓文案）', tip1.indexOf('字卡库') < 0, tip1.slice(0, 72));
+  const sent1 = JSON.parse(await armAndCount() || '{}');
+  check('E4 概率放开后照发一条（本批没把链路改坏；#1474 起场景带症状时发的是症状关心，计数按 tag 认账）', sent1.count === 1, sent1);
+
+  // 本来就是经期页这个开关关的 → 不该再指去字卡库（指错地方＝第二种谎）
+  await evalJs("(function(){ try { window.activeStore().set('dcf-care','0'); } catch(e){} Math.random=function(){return 0.999;}; var st=window.xyStore('xy-home-v2'); var n={}; try{ n=JSON.parse(st.get('period-notify')||'{}'); }catch(e2){} n.careEnabled=false; st.set('period-notify',JSON.stringify(n)); var p=document.getElementById('period-notify-pop'); if(p) p.remove(); var a=document.querySelector('.app[data-app=\"period\"]'); if(a) a.click(); var b=document.getElementById('period-notify-btn'); if(b) b.click(); return 1; })()");
+  await sleep(900);
+  const tip2 = String(await evalJs("(function(){ var p=document.getElementById('period-notify-pop'); var t=p?p.querySelector('.dp-tip'):null; return t? t.textContent : 'NO-TIP'; })()") || '');
+  check('E5 「梦角关心」是这里自己关的 → 不去指字卡库（只在被外面拦住时才指路）', tip2.indexOf('字卡库') < 0, tip2.slice(0, 72));
+
+  // 页内那份语料列表：同一条历史上能存两遍，用户看到的就是「重复很多条」
+  const firstLines = await evalJs("(function(){ var l=window.DEFAULT_CARD_DATA.period[0][1]; return JSON.stringify([l[0], l[0], l[1], l[2]]); })()");
+  await evalJs(`(function(){ window.xyStore('xy-home-v2').set('period-care-lines', ${JSON.stringify(firstLines)}); return 1; })()`);
+  await evalJs("(function(){ var m=document.getElementById('period-care-pop'); if(m) m.remove(); var p=document.getElementById('period-notify-pop'); var b=p&&p.querySelector('.dp-care-mgr'); if(b) b.click(); return 1; })()");
+  await sleep(800);
+  const rows = JSON.parse(await evalJs("(function(){ var p=document.getElementById('period-care-pop'); if(!p) return '{}'; return JSON.stringify({ n: p.querySelectorAll('.care-row').length, off: p.querySelectorAll('.care-txt').length, empty: !!p.querySelector('.period-empty') }); })()") || '{}');
+  check('E6 同一句关心语在页内只列一遍（种 4 条含 1 条重复 → 应见 3 行；红侧＝4 行＝用户所见「重复很多条」）',
+    rows.n === 3 && rows.off === 3, Object.assign({ stored: await evalJs("(function(){ var v=window.xyStore('xy-home-v2').get('period-care-lines'); return (typeof v) + ':' + String(v).slice(0,60); })()") }, rows));
+  const afterAdd = await evalJs("(function(){ var p=document.getElementById('period-care-pop'); if(!p) return 'no-pop'; var i=p.querySelector('input.dp-care-input'); if(i) i.value='zz 自测新增的一条关心语'; var a=p.querySelector('.dp-add-btn'); if(a) a.click(); return JSON.stringify({ n: p.querySelectorAll('.care-row').length, stored: JSON.parse(window.xyStore('xy-home-v2').get('period-care-lines')||'[]').length }); })()");
+  const aa = JSON.parse(afterAdd || '{}');
+  check('E7 去重不打断新增：加一条后列表 4 行、写回的清单也是 4 条（没有把重复又写回去）',
+    aa.n === 4 && aa.stored === 4, afterAdd);
+  await evalJs("(function(){ window.xyStore('xy-home-v2').remove('period-care-lines'); var p=document.getElementById('period-care-pop'); if(p) p.remove(); return 1; })()");
+
+  // F 组：作者明确不要新限制——频率与概率口径必须逐字未动
+  const careSrc = readFileSync(join(root, 'src', 'js', 'period.js'), 'utf8');
+  check('F1 fired 记账键仍带语境（本批没把「每语境每天一条」折成「每天一条」）',
+    careSrc.indexOf("today + '_said_' + ctx") >= 0, careSrc.indexOf("today + '_said_' + ctx") >= 0 ? '在位' : '被改窄');
+  check('F1b #1407⑧：通知侧走的是同一枚键（两边各记各的＝同一天两句同义话，正是本批收掉的）',
+    careSrc.indexOf("function said(c) { return !!notifyCfg.fired[today + '_said_' + c]; }") >= 0 && careSrc.indexOf("markSaid('inPeriod')") >= 0, '');
+  check('F2 经期天数深浅的概率基数（90/70/55）与当日基数 75 一字未动',
+    careSrc.indexOf('baseProb = 90') >= 0 && careSrc.indexOf('baseProb = 70') >= 0 && careSrc.indexOf('baseProb = 55') >= 0 && careSrc.indexOf('var baseProb = 75') >= 0, '');
+  check('F3 深夜静默（23:00–06:00 不发也不占名额）那道闸未被本批碰过',
+    careSrc.indexOf("if (_h >= 23 || _h < 6) return;") >= 0, '');
+  const libSrc = readFileSync(join(root, 'src', 'js', 'default-cards.js'), 'utf8');
+  const tplSrc = readFileSync(join(root, 'src', 'template.html'), 'utf8');
+  check('F4 字卡库说明里那句说反了的指路（「两者都关才真的完全关」）已改，且写明是「与」的关系',
+    libSrc.indexOf('两者都关才真的完全关') < 0 && libSrc.indexOf('任一成立就一条都不发') >= 0, '');
+  check('F5 使用说明那条镜像同步补上「两道闸是与的关系、被拦时页内会当场写出」',
+    tplSrc.indexOf('任一边关掉就一条都不发') >= 0, '');
 }
 
 const pass = results.filter(r => r.ok).length;

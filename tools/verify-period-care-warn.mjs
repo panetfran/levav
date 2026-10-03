@@ -12,6 +12,9 @@
 //   ≥3 且 CV<0.2 = rule「预测可信」，其余 = free「预测仅参考」。rule：经前按全部预警日、
 //   推迟 ≥5 天轻度措辞、≥10 天升关注档（就医建议）；free：经前只在最接近的一次预警日发
 //   「仅供参考」版、不说「推迟」，晚 ≥10 天才以「距上次经期 N 天」间隔口吻轻提。
+// ⚠️ #1407① 之后「推迟 N 天」的起算挪后一天（预测日当天不再算推迟 1 天），本文件 B2/B3/B5 的种子各 +1 天以保持
+//    「推迟 13/6/7 天」这些场景名与语境阈值不变；A5/A7 两处静态锚已按现状重锚（A5 那条自 #1405 加
+//    nightAllow 起就是哑锚，本次顺手修）。
 // B 段 vm 桩加载真实源码（default-cards-data.js + period.js），种子 period-records 控制
 //   周期相位与规律档（4 连 28 天记录=rule；单记录=free），Math.random=0 全确定性。
 // ⚠️ 本文件曾被并行会话「编辑器旧缓冲回写」覆盖回草稿版（2026-09-16，已重写恢复）；
@@ -40,9 +43,9 @@ if (!RED) {
   check('A2 预警语抽取器按 ctx×tier 选组（adv 规律/不规律、delay 轻/关注/不规律）', periodSrc.includes('function pickWarnLine(ctx, tier)') && periodSrc.includes("name = '经前预警·不规律'; fb = PERIOD_PREWARN_FREE_FALLBACK;") && periodSrc.includes("ctx === 'delayDeep'") && periodSrc.includes("ctx === 'delayIrregular'"));
   check('A3 checkCare 语境 kind 分流（in/adv/delay/delayIrr）', periodSrc.includes("ctx = 'inPeriod'; kind = 'in';") && periodSrc.includes("ctx = 'adv' + d; kind = 'adv';") && periodSrc.includes("ctx = delayDays >= 10 ? 'delayDeep' : 'delay'; kind = 'delay';") && periodSrc.includes("ctx = 'delayIrregular'; kind = 'delayIrr';"));
   check('A4 预警语 {d} 替换为具体天数（adv/delay/间隔三种取数）', periodSrc.includes('String(line).replace(/\\{d\\}/g, String(diffDays(today, st.nextStart)));') && periodSrc.includes('String(line).replace(/\\{d\\}/g, String(delayDays));') && periodSrc.includes('String(line).replace(/\\{d\\}/g, String(st.dayOfCycle || 0));'));
-  check('A5 标签按语境区分（经期关心/经期预警）', periodSrc.includes("{ tag: kind === 'in' ? '经期关心' : '经期预警' }"));
+  check('A5 标签按语境区分（经期关心/经期预警）', periodSrc.includes("kind === 'sym' ? '症状关心' : (kind === 'in' ? '经期关心' : '经期预警')")); // #1407 顺手重锚：#1405 给这行加了 nightAllow，旧锚自那批起就一直是哑的（HEAD 上实测 A5 已红）
   check('A6 分级判据 predictTier（有效周期 ≥3 且 CV<0.2=rule，否则 free）', periodSrc.includes("if (s.n >= 3 && s.cv < 0.2) return 'rule';") && periodSrc.includes("return 'free';"));
-  check('A7 free 档经前只在最接近的预警日提一次', periodSrc.includes('advs.length ? d === Math.min.apply(null, advs) : false'));
+  check('A7 free 档经前只在最接近的预警日提一次', periodSrc.includes("return tier === 'free' ? d === advs[0] : true;") && periodSrc.includes('if (advHit(d, tier, false))')); // #1407 重锚：命中判定收成 advHit 一把尺（通知与聊天同调用），旧的两处手抄没了
   check('A8 数据源：经期关心保持第 0 组 + 五个预警/推迟分组齐备', dataSrc.indexOf('["经期关心"') >= 0 && dataSrc.indexOf('["经期关心"') < dataSrc.indexOf('["温柔前缀"') && dataSrc.includes('["经前预警", [') && dataSrc.includes('["经前预警·不规律", [') && dataSrc.includes('["经期推迟", [') && dataSrc.includes('["经期推迟·关注", [') && dataSrc.includes('["经期推迟·不规律", ['));
   check('A9 规律档推迟强调「一向很准」+ 关注档带就医建议 + 不规律档不说「推迟」', dataSrc.includes('你一向很准的') && dataSrc.includes('陪你去看看医生吧') && dataSrc.includes('距上次经期已经 {d} 天了'));
   check('A10 字卡库「TA的关心」说明更新（分级判据 CV + 分组名）', dcSrc.includes('CV<0.2') && dcSrc.includes('「经期推迟·不规律」') && dcSrc.includes('「经期预警」'));
@@ -111,6 +114,10 @@ function makeEnv(records, opts) {
   const sandbox = {
     setTimeout: function () { return 0; },
     clearTimeout: function () {},
+    // #1407 起 period.js 模块级真有 setInterval 了（「提醒时间」那把到点检查的钟），桩里不给这两个
+    // 符号，vm 里跑到那一行就 setInterval is not defined → B 段整族假红（16 异常）。
+    setInterval: function () { return 0; },
+    clearInterval: function () {},
     console: { info: function () {}, warn: function () {}, error: function () {}, log: function () {} }
   };
   sandbox.window = sandbox;
@@ -162,10 +169,10 @@ run('B1 规律档·经前预警日（距预测 3 天）→ 确定口吻预警', 
   expectOne(scenario(ruleRecs(25)), '经期预警', '3 天', PREWARN, '3');
 });
 run('B2 规律档·推迟 13 天 → 升「关注」档（就医建议口吻）', () => {
-  expectOne(scenario(ruleRecs(40)), '经期预警', '13 天', DELAY_DEEP, '13');
+  expectOne(scenario(ruleRecs(41)), '经期预警', '13 天', DELAY_DEEP, '13');
 });
 run('B3 规律档·推迟 6 天 → 轻度措辞（「一向很准」，不提医生）', () => {
-  const calls = scenario(ruleRecs(33));
+  const calls = scenario(ruleRecs(34));
   check('    应发且仅发 1 条', calls.length === 1);
   if (calls.length !== 1) throw new Error('实发 ' + calls.length + ': ' + JSON.stringify(calls));
   check('    标签=经期预警', calls[0].tag === '经期预警', true);

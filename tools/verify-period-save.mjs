@@ -195,6 +195,42 @@ try { notify = JSON.parse(notifyRaw || '{}'); } catch (e) {}
 check('D1 提醒小时存 22（原 bug 读 undefined 重置 9）', notify && notify.hour === 22, notifyRaw);
 check('D2 无 JS 异常', s && (!s.errs || !s.errs.length), JSON.stringify(s && s.errs));
 
+// ---- D3/D4（#1407②）：小时这一格现在真管事了，回填就不许把 0 显示成 9 ----
+// 存 `notifyCfg.hour || 9` 时，设成 0 的人重开弹层看到的是 9（0 与 9 经钳位后行为一样、屏上说的
+// 不一样＝又一处静默改写用户设定）。这两条在修复前：D3 绿、D4 红（实读 9）。
+await evalJs(`(function(){
+  var nb = document.getElementById('period-notify-btn'); if (!nb) return 'no-btn';
+  nb.click(); return 'ok';
+})()`);
+await sleep(500);
+s = await evalJs(`(function(){
+  var pop = document.getElementById('period-notify-pop'); if (!pop) return 'no-pop';
+  var hBox = pop.querySelector('.ce-box.dp-hour') || pop.querySelector('input.dp-hour');
+  if (!hBox) return 'no-hour';
+  if (hBox.tagName === 'INPUT') hBox.value = '0'; else hBox.textContent = '0';
+  hBox.dispatchEvent(new Event('input', { bubbles: true }));
+  pop.querySelector('.dp-save').click();
+  return { closed: !document.getElementById('period-notify-pop'), errs: window.__errs };
+})()`);
+await sleep(400);
+const notifyRaw0 = await lsGet('xy-home-v2:period-notify');
+let notify0 = null;
+try { notify0 = JSON.parse(notifyRaw0 || '{}'); } catch (e) {}
+check('D3 提醒小时设 0 → 存的就是 0（不被当成没填）', notify0 && notify0.hour === 0, notifyRaw0);
+await evalJs(`(function(){
+  var nb = document.getElementById('period-notify-btn'); if (!nb) return 'no-btn';
+  nb.click(); return 'ok';
+})()`);
+await sleep(500);
+const shown = await evalJs(`(function(){
+  var pop = document.getElementById('period-notify-pop'); if (!pop) return 'no-pop';
+  var hBox = pop.querySelector('.ce-box.dp-hour') || pop.querySelector('input.dp-hour');
+  if (!hBox) return 'no-hour';
+  return (hBox.tagName === 'INPUT' ? hBox.value : hBox.textContent);
+})()`);
+check('D4 重开弹层回填显示 0（旧版显示 9＝屏上与库里两说）', String(shown).trim() === '0', JSON.stringify(shown));
+await evalJs(`(function(){ var pop = document.getElementById('period-notify-pop'); if (pop) pop.remove(); document.body.classList.remove('scroll-lock'); return true; })()`);
+
 await evalJs(`(function(){
   var nb = document.getElementById('period-notify-btn'); if (!nb) return 'no-btn';
   nb.click(); return 'ok';

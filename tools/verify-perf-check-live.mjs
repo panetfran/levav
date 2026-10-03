@@ -77,9 +77,9 @@ async function cdpConnect() {
   }
   throw new Error('无法连接无头浏览器');
 }
-function cdp(method, params = {}) {
+function cdp(method, params = {}, sessionId) {
   const id = ++msgId;
-  return new Promise((res) => { pend.set(id, res); ws.send(JSON.stringify({ id, method, params })); });
+  return new Promise((res) => { pend.set(id, res); ws.send(JSON.stringify({ id, method, params, sessionId })); });
 }
 async function evalJs(expr) {
   try {
@@ -88,7 +88,7 @@ async function evalJs(expr) {
     return r && r.result ? r.result.value : null;
   } catch (e) { return 'ERR:' + e.message; }
 }
-const READ_REP = `JSON.stringify((function(){var r=window.__perfRep||{};return{frames:r.frames,janky:r.janky,severe:r.severe,worst:r.worst,hid:r.hid,fz:r.fz,fzWorst:r.fzWorst,jankMs:r.jankMs,bgMs:r.bgMs,effMs:r.effMs,ms:r.ms,period:r.period,fps:r.fps,verdict:r.verdict,jankPct:r.jankPct,topPage:r.topPage,topCnt:r.topCnt,pages:r.pages,pageFrames:r.pageFrames,scene:r.scene,lt:r.lt?{ok:r.lt.ok,n:r.lt.n,worst:r.lt.worst,bgN:r.lt.bgN,agg:r.lt.agg||null,top:r.lt.top}:null,prev:r.prev||null,text:r.text||''};})())`;
+const READ_REP = `JSON.stringify((function(){var r=window.__perfRep||{};return{frames:r.frames,janky:r.janky,severe:r.severe,worst:r.worst,hid:r.hid,fz:r.fz,fzWorst:r.fzWorst,jankMs:r.jankMs,bgMs:r.bgMs,effMs:r.effMs,ms:r.ms,spanMs:r.spanMs,stopped:r.stopped,period:r.period,fps:r.fps,verdict:r.verdict,jankPct:r.jankPct,topPage:r.topPage,topCnt:r.topCnt,pages:r.pages,pageFrames:r.pageFrames,scene:r.scene,lt:r.lt?{ok:r.lt.ok,n:r.lt.n,worst:r.lt.worst,bgN:r.lt.bgN,agg:r.lt.agg||null,top:r.lt.top}:null,prev:r.prev||null,text:r.text||''};})())`;
 async function waitRep(maxMs) {
   for (let i = 0; i < Math.ceil(maxMs / 300); i++) { await sleep(300); if (await evalJs('!!window.__perfRep') === true) return true; }
   return false;
@@ -234,7 +234,9 @@ await waitRep(8000);
 const repC = JSON.parse(await evalJs(READ_REP));
 const oldFps = Math.round(repC.frames * 1000 / repC.ms * 10) / 10;
 ok(repC.bgMs >= 2200 && repC.bgMs <= 2800, 'C4a #934 后台时长实测入账（bgMs=' + repC.bgMs + ' 期望≈2500）');
-ok(Math.abs(repC.effMs - (repC.ms - repC.bgMs)) <= 2, 'C4b #934 前台有效时长＝窗口－后台（effMs=' + repC.effMs + ' ms=' + repC.ms + ' bgMs=' + repC.bgMs + '）');
+ok(Math.abs(repC.effMs - (repC.spanMs - repC.bgMs)) <= 5 && repC.spanMs >= repC.ms,
+  'C4b #934/#1412⑧ 前台有效时长＝「实测窗口－实测后台」（effMs=' + repC.effMs + ' spanMs=' + repC.spanMs + ' ms=' + repC.ms + ' bgMs=' + repC.bgMs + '）——旧式拿名义档位当被减数，提前结束与隐藏拖长两种情形下都会算歪',
+  'eff=' + repC.effMs + ' span-bg=' + (repC.spanMs - repC.bgMs));
 ok(repC.effMs > 0 && Math.abs(repC.fps - repC.frames * 1000 / repC.effMs) < 1.5, 'C4c #934 fps 按前台时长算（fps=' + repC.fps + '；整窗口径会是 ' + oldFps + '）');
 const mC = repC.text.match(/约 ([\d.]+)% 时间在后台\/锁屏/);
 ok(!!mC && repC.text.includes('已剔除、不影响判定'), 'C5a #934 后台占比过半按实测时长点名（旧码拿冻结段数与帧数比＝恒不触发）', repC.text);
@@ -323,6 +325,86 @@ ok(repE2.text.includes('长任务 7→' + repE2.lt.n + ' 次'), 'E2g 长任务 P
 ok(repE2.text.includes('上次为 30 秒档，时长不同仅供粗略对照'), 'E2h 时长档不同 → 附「仅供粗略对照」备注');
 const last2 = await readLast();
 ok(!!last2 && typeof last2.janky === 'number' && typeof last2.fps === 'number' && typeof last2.ltN === 'number', 'E2i 本轮跑完 LAST_KEY 已是新格式全字段摘要（连续对比可用）', JSON.stringify(last2));
+
+
+// ===== 窗口 F（#1412）：卡屏自检长窗口的两条命——切后台到点照样结算 ＋ 提前结束有出口 =====
+// 复现尺子＝真造隐藏态（另开一张标签页抢前台），不靠改 document.hidden 的属性骗自己。
+const modalState = () => evalJs(`(function(){
+  var m = document.getElementById('modal-mask'), t = document.getElementById('modal-title'),
+      okB = document.getElementById('modal-ok');
+  return { vis: !!(m && !m.hidden), title: t ? t.textContent : '', ok: okB ? okB.textContent : '' };
+})()`);
+const clickId = (id) => evalJs(`(function(){ var b = document.getElementById('${id}'); if (!b) return false; b.click(); return true; })()`);
+let hideTarget = null;
+async function hidePage() {
+  const t = await cdp('Target.createTarget', { url: 'about:blank' });
+  if (!t || !t.targetId) return false;
+  hideTarget = t.targetId;
+  const ses = await cdp('Target.attachToTarget', { targetId: hideTarget, flatten: true });
+  const sid = ses && ses.sessionId;
+  if (!sid) return false;
+  await cdp('Page.enable', {}, sid);
+  await cdp('Page.bringToFront', {}, sid);
+  await sleep(300);
+  return true;
+}
+async function showPage() {
+  if (hideTarget) { try { await cdp('Target.closeTarget', { targetId: hideTarget }); } catch (e) {} hideTarget = null; }
+  try { await cdp('Page.bringToFront'); } catch (e) {}
+  await sleep(400);
+}
+
+await evalJs(`(function(){ window.__perfRep=null; window.__tHide=0; window.mochiPerfCheck.start(6000).then(function(r){ window.__perfRep=r; }); return true; })()`);
+await sleep(800);
+await hidePage();
+await evalJs('window.__tHide = Date.now(); true');
+const hidState = await evalJs('document.hidden');
+ok(hidState === true, 'F0pre 夹具自证：切走后 document.hidden 当场读回 true（这格不成立则下面几条按环境不满足处理，不许算通过）', String(hidState));
+// 隐藏期轮询 70 秒：Chromium 对隐藏页的定时器节流到分钟级（5 分钟后整页冻结），所以「兜底 timer
+//   在不回前台的情况下多久落账」本身就是环境量——量得到就报数，量不到如实 SKIP，不判红
+//   （同站内「无头拿不到的形态报 SKIP／exit 2，别判红」的规矩）。
+let settledWhileHidden = null;
+for (let i = 0; i < 35; i++) {
+  await sleep(2000);
+  if (await evalJs('!!window.__perfRep') === true) { settledWhileHidden = Date.now() - (await evalJs('window.__tHide')); break; }
+  if (await evalJs('document.hidden') !== true) break; // 被别的东西抢回前台，本轮作废
+}
+if (settledWhileHidden !== null) {
+  ok(true, 'F1 #1412⑧ 隐藏期兜底 timer 落账，实测不回的此刻已结算（' + settledWhileHidden + 'ms 后）＝不再需要用户回来才出报告');
+} else {
+  console.log('  - F1 SKIP：本机隐藏页定时器被内核节流到分钟级，70 秒内未落账＝无头拿不到这一形态，不判红');
+}
+await showPage();
+await sleep(1200);
+const f1 = JSON.parse(await evalJs('JSON.stringify((function(){var r=window.__perfRep;return{running:window.mochiPerfCheck.running(),got:!!r,spanMs:r?r.spanMs:null,bgMs:r?r.bgMs:null,effMs:r?r.effMs:null,ms:r?r.ms:null,text:r?r.text:""};})())'));
+ok(f1.got === true && f1.running === false, 'F1b #1412⑧ 回到前台后 1 秒内一定结算（旧写法：窗口挂在 rAF 上，用户不回来就永远不出报告）', JSON.stringify({ got: f1.got, running: f1.running }));
+ok(f1.spanMs > 0 && Math.abs(f1.effMs - (f1.spanMs - f1.bgMs)) <= 5,
+  'F2 #1412⑧ 前台有效时长按「实测窗口－实测后台」算（spanMs 入账；旧账面拿名义档位当分母，隐藏期拖长后 bgMs 9664 甚至大于所选 ms 8000＝无从对账）',
+  'span=' + f1.spanMs + ' bg=' + f1.bgMs + ' eff=' + f1.effMs + ' 所选=' + f1.ms);
+ok(f1.spanMs >= f1.ms, 'F2b 实测窗口不短于所选档位（隐藏期拖长的部分照样进账面，不再拿名义值冒充）', 'span=' + f1.spanMs + ' ms=' + f1.ms);
+ok(/结论不可用/.test(f1.text), 'F3 整段被挂起的窗口如实判「结论不可用」，不拿剔完后台的空壳下结论', (f1.text || '').split('\n').find((l) => l.indexOf('结论不可用') >= 0) || (f1.text || '').split('\n')[0]);
+await clickId('modal-cancel');
+await sleep(300);
+
+await evalJs(`(function(){ window.__perfRep=null; window.mochiPerfCheck.start(120000).then(function(r){ window.__perfRep=r; }); return true; })()`);
+await sleep(2000);
+const keysF = await evalJs("Object.keys(window.mochiPerfCheck).sort().join('/')");
+ok(/stop/.test(keysF), 'F4 #1412⑨ 导出面有 stop（旧面实测＝LAST_KEY/running/start，2 分钟与 5 分钟档一开只能干等，而电量自测、发烫自测都有出口）', keysF);
+const runOnF = await evalJs("window.mochiPerfCheck.running()");
+await clickId('row-perf-check');
+await sleep(300);
+const mRun = await modalState();
+ok(runOnF === true && mRun.vis && mRun.title === '卡顿自检进行中' && mRun.ok === '结束并出报告',
+  'F5 #1412⑨ 测试中再点那一行＝给「结束并出报告」弹窗（旧写法静默 return＝屏上什么也不发生，用户只能猜它还在不在跑）', mRun.title + '|' + mRun.ok);
+await clickId('modal-ok');
+await sleep(600);
+const f6 = JSON.parse(await evalJs('JSON.stringify((function(){var r=window.__perfRep||{};return{stopped:r.stopped,spanMs:r.spanMs,ms:r.ms,text:r.text||"",running:window.mochiPerfCheck.running()};})())'));
+ok(f6.stopped === 1 && f6.spanMs > 0 && f6.spanMs < 60000 && /提前结束/.test(f6.text),
+  'F6 #1412⑧⑨ 点「结束并出报告」＝当场结算并在报告里写明提前结束（120 秒档只跑 2 秒也得出数字）', 'span=' + f6.spanMs + ' stopped=' + f6.stopped);
+ok(!/采样 120 秒/.test(f6.text), 'F7 #1412⑧ 报告不许再按名义档位报采样秒数（回流＝提前结束仍写「采样 120 秒」的假账面）',
+  (f6.text || '').split('\n').find((l) => l.indexOf('采样') === 0) || '');
+await clickId('modal-cancel');
+await sleep(300);
 
 console.log(fail ? ('FAIL ' + pass + '/' + (pass + fail)) : ('ALL PASS ' + pass + '/' + (pass + fail)));
 chrome.kill();
