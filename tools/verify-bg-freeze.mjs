@@ -39,7 +39,14 @@ const t = (name, ok, detail) => { results.push({ name, ok }); console.log((ok ? 
 
 // ---------- 静态接线（先跑：产品码缺件就没必要起浏览器） ----------
 const bk = read('src/js/bg-keep.js'), cj = read('src/js/chat.js'), mp = read('src/js/music-player.js'), dv = read('src/js/device.js');
-t('T5 让位判据带实效核验', /m\.el\.paused === true/.test(bk) && /if \(!window\.__musicPlaying\) return false;/.test(bk), '');
+// #1374 重锚（同一把尺、两种坏法照旧都红）：T5 旧写法把「if (!window.__musicPlaying) return false;」
+//   那一行（意图标志抢在元素真值之前的短路）当「实效核验」的证据，而 #1374c 判它正是漏掉的那半个
+//   方向（元素在出声／标志还是 false ⇒ 判成「没在播」⇒ 保活音与音乐两路同响）。尺子改问：
+//   ① 元素真值的两个方向都在（=== true 与 === false 各一条）；② 标志只作退路（return !!window.__musicPlaying）；
+//   ③ 那条短路不再出现在 musicNowPlaying 体内。#780 要拦的两种坏法（标志假死不自检／拿不到元素时不let位）照旧都红。
+const mnp = (bk.match(/function musicNowPlaying\(\)\s*\{[\s\S]*?\n  \}/) || [''])[0];
+t('T5 让位判据带实效核验（#1374c：双向，元素真值优先·标志只作退路）', /m\.el\.paused === true/.test(bk) && /m\.el\.paused === false/.test(bk) && /return !!window\.__musicPlaying;/.test(mnp) && !/if \(!window\.__musicPlaying\) return false;/.test(mnp), '');
+t('T5b #1374d 假死自愈真起播（旧写法 unpause 不得回流）', /const pr = m\.el\.play\(\);/.test(bk) && !/\.unpause\(\)/.test(bk), '');
 t('T6 WebRTC 等 ICE 采集完成再 flush', /iceGatheringState === 'complete'/.test(bk) && /Promise\.all\(\[gathered\(p1\), gathered\(p2\)\]\)/.test(bk), '');
 t('T7a __kaProbe 交出在场信号与 ICE 读数', /music: music,/.test(bk) && /pcGathering:/.test(bk) && /pcCand:/.test(bk), '');
 t('T7b 诊断行会报「在场信号矛盾」', dv.indexOf('在场信号矛盾') >= 0, '');

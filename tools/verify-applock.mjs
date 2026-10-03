@@ -124,15 +124,27 @@ async function lockState() {
     var m=document.getElementById('applock-mask');
     if(!m)return JSON.stringify({has:false,shown:false,sess:sessionStorage.getItem('mochi-applock-ok')||'',lsEn:localStorage.getItem('${P}applock-en')||'',lsPin:!!localStorage.getItem('${P}applock-pin')});
     var b=m.querySelector('.applock-box');
+    var qa=m.querySelector('#qa-page-ok');
+    var tEl=b?b.querySelector('.applock-title'):(qa?m.querySelector('.splash-mandatory-title'):null);
     return JSON.stringify({
       has:true,shown:m.hidden!==true,
-      title:b?b.querySelector('.applock-title').textContent:'',
-      err:b&&b.querySelector('#applock-err')?b.querySelector('#applock-err').textContent:'',
+      qaPage:!!qa,
+      qaInputs:m.querySelectorAll('[id^="qa-ans-"]').length,
+      title:tEl?tEl.textContent:'',
+      err:(b&&b.querySelector('#applock-err')?b.querySelector('#applock-err'):m.querySelector('#applock-err'))?((b&&b.querySelector('#applock-err')?b.querySelector('#applock-err'):m.querySelector('#applock-err')).textContent):'',
       sess:sessionStorage.getItem('mochi-applock-ok')||'',
       lsEn:localStorage.getItem('${P}applock-en')||'',
       lsPin:!!localStorage.getItem('${P}applock-pin')
     });
   })()`);
+}
+async function qaFill(idx, v) {
+  await evalJs(`(function(){var el=document.getElementById('qa-ans-'+${idx});if(el)el.value=${JSON.stringify(String(v))};return 1;})()`);
+  await sleep(100);
+}
+async function qaPageSubmit() {
+  await evalJs(`(function(){var el=document.getElementById('qa-page-ok');if(el)el.click();return 1;})()`);
+  await sleep(250);
 }
 async function clickKeys(str) {
   await evalJs(`(function(){var s=${JSON.stringify(String(str))};for(var i=0;i<s.length;i++){var el=document.querySelector('.applock-key[data-k="'+s[i]+'"]');if(el)el.click();}return 1;})()`);
@@ -309,75 +321,68 @@ check('H5 产物含 FLOAT 注册 #applock-mask', artifact.indexOf('#applock-mask
 check('H6 产物含密码摘要函数 cyrb53(不存明文)', /function h53\(str\)/.test(artifact) || artifact.indexOf('2654435761') >= 0);
 check('H7 产物含自愈加固 selfHealChecked（IDB 有密码先回填不放关锁，防「刷新后锁被关」回流）', artifact.indexOf('gSet(K_PIN, v); evalLock()') >= 0);
 
-// ---- I. 开屏问答门：开启后冷启动先问答，答对放行 ----
+// ---- I. 开屏问答门：开启后冷启动先问答，答对放行（#1503 起为单页问答页，两题同页一次提交）----
 // 只开问答门（无数字密码），题目用默认两道：mj→梦角 / 知晓→是
 await seedAndReload({ 'applock-qa-en': '1' });
 st = JSON.parse(await lockState() || '{}');
-check('I1 问答门开启：冷启动出现问答屏', st.has && st.shown === true && st.title.indexOf('开屏问答') === 0, JSON.stringify(st));
+check('I1 问答门开启：冷启动出现公告式问答页', st.has && st.shown === true && st.qaPage === true && st.qaInputs === 2 && st.title.indexOf('开屏问答') === 0, JSON.stringify(st));
 
-// 答错第一题 → 报错
-await typeText('梦角x');
-await clickSubmit();
+// 答错第一题 → 报错点名哪题
+await qaFill(0, '梦角x');
+await qaFill(1, '是');
+await qaPageSubmit();
 st = JSON.parse(await lockState() || '{}');
 check('I2 答错提示且仍锁屏', st.shown === true && st.err.indexOf('不对') >= 0, st.err);
 
-// 答对第一题 → 进第二题
-await typeText('梦角');
-await clickSubmit();
-st = JSON.parse(await lockState() || '{}');
-check('I3 第一题通过进入第二题', st.shown === true && st.title.indexOf('开屏问答 2/2') === 0, st.title);
-
-// 答对第二题 → 放行（无密码锁）
-await typeText('是');
-await clickSubmit();
+// 两题都对 → 放行（无密码锁）；#1511 答对一次＝本机永久放行（qaskip 落库，与输暗号等效）
+await qaFill(0, '梦角');
+await qaFill(1, '是');
+await qaPageSubmit();
 // #299：问答通过且本机未设密码锁时弹一次性「小提醒：应用锁」info pad——点【知道了】才算放行
 await sleep(300);
 await evalJs("(function(){var b=document.querySelector('#applock-mask .al-primary[data-ok=\"1\"]');if(b)b.click();return 1;})()");
 await sleep(200);
 st = JSON.parse(await lockState() || '{}');
-check('I4 全部答对解锁进入（含 #299 一次性小提醒放行）', st.shown === false, JSON.stringify(st));
+check('I3 全部答对解锁进入（含 #299 一次性小提醒放行）', st.shown === false, JSON.stringify(st));
+check('I3b 答对即本机永久放行（#1511：qaskip 已落库）', (await evalJs("localStorage.getItem('" + P + "applock-qaskip')")) === '1');
 
-// v3.32.x 需求：问答门不吃本会话豁免 —— 同标签刷新必须重新答两道题
-// （对比 D1：数字密码锁仍是「同标签刷新不重锁」）
+// #1511：答对后同标签刷新不再问答（对比 v3.32.x 旧口径「每次加载都问」，已按作者口径翻转）
 await cdp('Page.reload');
 await sleep(1200);
 st = JSON.parse(await lockState() || '{}');
-check('I5 同标签刷新仍问答（问答门每次加载都问）', st.shown === true && st.title.indexOf('开屏问答 1/2') === 0, JSON.stringify(st));
-check('I5b 会话标记不影响问答门（sess=1 仍问）', st.sess === '1', st.sess);
+check('I4 答对后刷新不再问答（本机永久放行）', st.shown === false, JSON.stringify(st));
 
-// 新会话（等效新开标签）→ 再问；输入暗号 990815 永久跳过
-await clearSessAndReload();
+// 测暗号通路：恢复本机问答 → 再问；输暗号 990815 永久跳过
+await seedAndReload({ 'applock-qa-en': '1', 'applock-qaskip': '0' });
 st = JSON.parse(await lockState() || '{}');
-check('I6 新会话再次问答', st.shown === true && st.title.indexOf('开屏问答') === 0, st.title);
+check('I5 恢复本机问答后再问', st.shown === true && st.qaPage === true, st.title);
 await clickLink('skipqa');
 st = JSON.parse(await lockState() || '{}');
-check('I7 出现暗号输入屏', st.shown === true && st.title.indexOf('跳过') >= 0, st.title);
+check('I6 出现暗号输入屏', st.shown === true && st.title.indexOf('跳过') >= 0, st.title);
 await typeText('990815');
 await clickSubmit();
 st = JSON.parse(await lockState() || '{}');
-check('I8 输对暗号放行', st.shown === false, JSON.stringify(st));
+check('I7 输对暗号放行', st.shown === false, JSON.stringify(st));
 
 // 之后新会话也不再问（本机已跳过）
 await clearSessAndReload();
 st = JSON.parse(await lockState() || '{}');
-check('I9 暗号后本机永久不再问答', st.shown === false, JSON.stringify(st));
-check('I10 qaskip 标记已落库', (await evalJs("localStorage.getItem('" + P + "applock-qaskip')")) === '1');
+check('I8 暗号后本机永久不再问答', st.shown === false, JSON.stringify(st));
+check('I9 qaskip 标记已落库', (await evalJs("localStorage.getItem('" + P + "applock-qaskip')")) === '1');
 
 // 恢复本机问答 → 重新要问答
 await seedAndReload({ 'applock-qa-en': '1', 'applock-qaskip': '0' });
 st = JSON.parse(await lockState() || '{}');
-check('I11 恢复后重新问答', st.shown === true && st.title.indexOf('开屏问答') === 0, st.title);
-await typeText('梦角'); await clickSubmit();
-await typeText('是'); await clickSubmit();
+check('I10 恢复后重新问答', st.shown === true && st.qaPage === true, st.title);
+await qaFill(0, '梦角'); await qaFill(1, '是'); await qaPageSubmit();
 st = JSON.parse(await lockState() || '{}');
-check('I12 恢复后答对放行', st.shown === false, JSON.stringify(st));
+check('I11 恢复后答对放行', st.shown === false, JSON.stringify(st));
 
 // ---- J. 双重验证：问答门 + 数字密码锁都开 → 先问答后密码 ----
 await seedAndReload({ 'applock-qa-en': '1', 'applock-en': '1', 'applock-pin': h53('1234') });
 st = JSON.parse(await lockState() || '{}');
-check('J1 双重开启：先出问答屏', st.shown === true && st.title.indexOf('开屏问答') === 0, st.title);
-await typeText('梦角'); await clickSubmit();
-await typeText('是'); await clickSubmit();
+check('J1 双重开启：先出问答页', st.shown === true && st.qaPage === true, st.title);
+await qaFill(0, '梦角'); await qaFill(1, '是'); await qaPageSubmit();
 st = JSON.parse(await lockState() || '{}');
 check('J2 问答通过进入密码屏', st.shown === true && st.title.indexOf('应用锁已开启') === 0, st.title);
 await clickKeys('4321'); await clickOk();
@@ -413,8 +418,7 @@ await seedAndReload({});
 await sleep(1000);
 st = JSON.parse(await lockState() || '{}');
 check('N1 键未设+真机语义：默认出现问答屏', st.has && st.shown === true && st.title.indexOf('开屏问答') === 0, st.title);
-await typeText('梦角'); await clickSubmit();
-await typeText('是'); await clickSubmit();
+await qaFill(0, '梦角'); await qaFill(1, '是'); await qaPageSubmit();
 st = JSON.parse(await lockState() || '{}');
 check('N2 默认开启下答对两题放行', st.shown === false, JSON.stringify(st));
 try { if (injR && injR.identifier) await cdp('Page.removeScriptToEvaluateOnNewDocument', { identifier: injR.identifier }); } catch (e) {}

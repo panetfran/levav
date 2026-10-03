@@ -117,7 +117,7 @@ check('A6 IDB 写标记已落库', typeof idbMark === 'number' && idbMark > 0, J
 await page.reload({ waitUntil: 'load', timeout: 25000 }).catch(() => {});
 await waitDataReady();
 
-check('B1 刷新后 cardLockOpen()=true（不回锁）', (await page.evaluate('window.cardLockOpen()')) === true);
+check('B1 #1511 持久化还原：刷新后不回锁（解锁态跨刷新保留）', (await page.evaluate('window.cardLockOpen()')) === true);
 const lockUi1 = await page.evaluate("(function(){ const a=document.getElementById('splash-cardlock-actions'); if(!a) return '(no card)'; const btn=a.querySelector('.cardlock-btn'); return btn ? btn.textContent : '(no btn)'; })()");
 check('B2 开屏锁卡显示已解锁（重新上锁按钮）', lockUi1 === '重新上锁', JSON.stringify(lockUi1));
 

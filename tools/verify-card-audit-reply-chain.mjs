@@ -47,8 +47,9 @@ T('S4 「调整」直达 回复设置→聊天 tab 的跳转分支在位',
   auditSrc.indexOf("if (key.indexOf('@reply:') === 0) return openReplyPage(key.slice(7));") >= 0);
 T('S5 默认聊天字卡漏斗已补「聊天场景」与「总档」两道真实闸门',
   auditSrc.indexOf("{ t: '聊天场景', ok: dcUseChat }, { t: '总档', ok: all > 0 },") >= 0);
-T('S6 附加件全 0 有「全部恢复默认」且逐键回默认',
-  auditSrc.indexOf('ATTACH.forEach(function (a) { if (storeSet(a[0], a[2])) okAny = true; });') >= 0);
+T('S6 附加件全 0 有「全部恢复默认」且逐键回默认（#1451 重锚：改写为 fixOne——先记撤销、再 replySet 写 reply- 前缀键）',
+  auditSrc.indexOf("function fixOne(a) { recordUndo('own', 'reply-' + a[0]); if (replySet(a[0], a[2])) okAny = true; }") >= 0 &&
+  auditSrc.indexOf('ATTACH.forEach(fixOne);') >= 0);
 if (fail) { console.log('静态断言已有失败，跳过无头部分'); process.exit(1); }
 
 const candidates = [
@@ -128,7 +129,18 @@ const unlocked = await evalJs("(function(){try{return !!window.cardLockOpen();}c
 T('B1 测试前置：二级锁已置为解锁态', unlocked === true, 'cardLockOpen=' + unlocked);
 
 // 种入一组确定的键，让下方期望值可精确断言（不依赖各键出厂默认）
-const seed = async (obj) => evalJs("(function(o){try{var s=window.activeStore();Object.keys(o).forEach(function(k){s.set(k,String(o[k]));});}catch(e){}return true;})(" + JSON.stringify(obj) + ")");
+// #1451：回复设置侧的键真实存名一律带 reply- 前缀（设置页 saveReplyCfg 写、体检页 replyRaw 读的同一份）。
+//   夹具此前按裸键写、按裸键读——模拟的不是任何真实用户动作；体检页改读真源后裸键种子不再被读到（实测 8 条红）。
+//   裸键（dc-* / dict-* / rc-enabled / rcard-prob）保持原样：它们本来就是各模块 window.activeStore() 直读的。
+//   （reply-dcp-all 在调用处本来就写了前缀，不在映射表内。）
+const REPLY_SEED = ['csp-cust', 'qs-en', 'qs-prob', 'mjf-en', 'mjf-prob', 'py-en', 'py-prob', 'rn-prob',
+  'sticker-prob', 'image-prob', 'touch-prob', 'emoji-prob', 'voice-prob', 'kaomoji-prob', 'quote-prob'];
+const rk = (k) => (REPLY_SEED.indexOf(k) >= 0 ? 'reply-' + k : k);
+const seed = async (obj) => {
+  const mapped = {};
+  Object.keys(obj).forEach((k) => { mapped[rk(k)] = obj[k]; });
+  return evalJs("(function(o){try{var s=window.activeStore();Object.keys(o).forEach(function(k){s.set(k,String(o[k]));});}catch(e){}return true;})(" + JSON.stringify(mapped) + ")");
+};
 const refresh = async () => { await evalJs("(function(){var r=document.getElementById('card-audit-refresh');if(r)r.click();return true;})()"); await sleep(1000); };
 const openAudit = async () => {
   await evalJs("(function(){document.querySelectorAll('.page').forEach(function(p){p.hidden=true;});var s=document.getElementById('page-setting');if(s)s.hidden=false;return true;})()");
@@ -187,7 +199,7 @@ T('B9 「词典拼字」总开关关闭进问题清单', body.indexOf('词典拼
 // B10 「一键恢复字卡链路」真的把回复设置侧写回默认
 await evalJs("(function(){var b=document.querySelector('#card-audit-body [data-fix=\"__allfix-reply\"]');if(b)b.click();return true;})()");
 await sleep(1100);
-const restored = await evalJs("(function(){try{var s=window.activeStore();return JSON.stringify({qs:s.get('qs-en'),csp:s.get('csp-cust')});}catch(e){return '{}';}})()");
+const restored = await evalJs("(function(){try{var s=window.activeStore();return JSON.stringify({qs:s.get('reply-qs-en'),csp:s.get('reply-csp-cust')});}catch(e){return '{}';}})()");
 const R = (() => { try { return JSON.parse(restored || '{}'); } catch (e) { return {}; } })();
 T('B10 一键恢复字卡链路：qs-en→1 且 csp-cust→50（两键同一批修好）',
   String(R.qs) === '1' && String(R.csp) === '50', restored);
@@ -223,13 +235,13 @@ T('B14a 仅表情包/图片为 0 时进问题清单（全 7 项为 0 之外的�
 const attFix = await evalJs(`(function(){
   var b=document.querySelector('#card-audit-body [data-fix="inl-rs-attach"]');
   var diag={lk:(function(){try{return window.cardLockOpen();}catch(e){return 'err';}})(),
-            st:(function(){try{return window.activeStore().get('sticker-prob');}catch(e){return 'err';}})()};
+            st:(function(){try{return window.activeStore().get('reply-sticker-prob');}catch(e){return 'err';}})()};
   if(!b) return JSON.stringify({no:true, diag:diag});
   var t=b.textContent; b.click();
   return JSON.stringify({no:false,txt:t, diag:diag});
 })()`);
 await sleep(1000);
-const attAfter = await evalJs("(function(){try{var s=window.activeStore();return JSON.stringify({st:s.get('sticker-prob'),im:s.get('image-prob'),tc:s.get('touch-prob'),qt:s.get('quote-prob')});}catch(e){return '{}';}})()");
+const attAfter = await evalJs("(function(){try{var s=window.activeStore();return JSON.stringify({st:s.get('reply-sticker-prob'),im:s.get('reply-image-prob'),tc:s.get('reply-touch-prob'),qt:s.get('reply-quote-prob')});}catch(e){return '{}';}})()");
 const A = (() => { try { return JSON.parse(attAfter || '{}'); } catch (e) { return {}; } })();
 T('B14b 该修复只补表情包/图片两键，不动其它附加件（touch/quote 保持用户值）',
   A.st === '10' && A.im === '5' && A.tc === '7' && A.qt === '31', attAfter + ' btn=' + attFix);
@@ -239,7 +251,7 @@ await seed({ 'py-en': 1, 'py-prob': 0 });
 await refresh();
 const pyFix = await evalJs("(function(){var b=document.querySelector('#card-audit-body [data-fix=\"inl-rs-py\"]');if(!b)return false;b.click();return true;})()");
 await sleep(1000);
-const pyAfter = await evalJs("(function(){try{var s=window.activeStore();return JSON.stringify({en:s.get('py-en'),pr:s.get('py-prob')});}catch(e){return '{}';}})()");
+const pyAfter = await evalJs("(function(){try{var s=window.activeStore();return JSON.stringify({en:s.get('reply-py-en'),pr:s.get('reply-py-prob')});}catch(e){return '{}';}})()");
 const P = (() => { try { return JSON.parse(pyAfter || '{}'); } catch (e) { return {}; } })();
 T('B15 py-prob=0 时「恢复概率」把概率写回 50、开关不被误改',
   pyFix === true && P.pr === '50' && P.en === '1', pyAfter);

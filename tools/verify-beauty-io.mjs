@@ -210,12 +210,21 @@ const f2 = await evalJs(`(function(){
 check('F2 粘贴导入已应用（theme-mode=dark）+ 自动备份原美化', /"theme":"dark"/.test(String(f2)) && /"backup":true/.test(String(f2)), f2);
 await evalJs("(function(){document.getElementById('row-beauty-import').click(); return true;})()");
 await sleep(300);
+// #1488 尺子重基线：F3 腿同 H 腿——#755 后真链是 window.mochiFilePick（txtImportAuto 选完即应用）。
 await evalJs(`(function(){
-  var dt=new DataTransfer();
-  dt.items.add(new File([JSON.stringify({'__theme__':'light'})],'beauty.json',{type:'application/json'}));
-  var inp=document.getElementById('modal-file-input');
-  inp.files=dt.files;
-  inp.dispatchEvent(new Event('change',{bubbles:true}));
+  window.__origPick2=window.mochiFilePick;
+  window.__pickOpts2=null;
+  window.mochiFilePick=function(o){ window.__pickOpts2=o; return 'surf'; };
+  var b=document.getElementById('modal-file');
+  if(b)b.click();
+  return !!b;
+})()`);
+await sleep(200);
+await evalJs(`(function(){
+  var o=window.__pickOpts2;
+  if(!o||!o.onFiles) return 'no-opts';
+  o.onFiles([new File([JSON.stringify({'__theme__':'light'})],'beauty.json',{type:'application/json'})]);
+  window.mochiFilePick=window.__origPick2;
   return true;
 })()`);
 await sleep(400);
@@ -264,12 +273,23 @@ const h1 = await evalJs(`(function(){
   return true;
 })()`);
 await sleep(300);
+// #1488 尺子重基线：#755 起「从文件导入」走 window.mochiFilePick 统一真可点层，
+// 旧 #modal-file-input 已不在激活链上（戳它恒空＝H1/H2 假红）。截 mochiFilePick 拿真
+// opts、用真 onFiles 喂 File——测的就是产品现在的接线。
 await evalJs(`(function(){
-  var dt=new DataTransfer();
-  dt.items.add(new File([JSON.stringify({'cs-out-bg':'#112233'})],'chat.json',{type:'application/json'}));
-  var inp=document.getElementById('modal-file-input');
-  inp.files=dt.files;
-  inp.dispatchEvent(new Event('change',{bubbles:true}));
+  window.__origPick=window.mochiFilePick;
+  window.__pickOpts=null;
+  window.mochiFilePick=function(o){ window.__pickOpts=o; return 'surf'; };
+  var b=document.getElementById('modal-file');
+  if(b)b.click();
+  return !!b;
+})()`);
+await sleep(200);
+await evalJs(`(function(){
+  var o=window.__pickOpts;
+  if(!o||!o.onFiles) return 'no-opts';
+  o.onFiles([new File([JSON.stringify({'cs-out-bg':'#112233'})],'chat.json',{type:'application/json'})]);
+  window.mochiFilePick=window.__origPick;
   return true;
 })()`);
 await sleep(300);

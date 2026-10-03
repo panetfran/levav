@@ -169,12 +169,21 @@ async function importJson(obj) {
   await evalJs("document.getElementById('row-beauty-import').click()");
   await sleep(300);
   const payload = JSON.stringify(obj);
+  // #1488 尺子重基线：同 verify-beauty-io——#755 后真链是 window.mochiFilePick，截 opts 喂 onFiles。
   await evalJs(`(function(){
-    var dt=new DataTransfer();
-    dt.items.add(new File([${JSON.stringify(payload)}],'beauty.json',{type:'application/json'}));
-    var inp=document.getElementById('modal-file-input');
-    inp.files=dt.files;
-    inp.dispatchEvent(new Event('change',{bubbles:true}));
+    window.__origPick=window.mochiFilePick;
+    window.__pickOpts=null;
+    window.mochiFilePick=function(o){ window.__pickOpts=o; return 'surf'; };
+    var b=document.getElementById('modal-file');
+    if(b)b.click();
+    return !!b;
+  })()`);
+  await sleep(200);
+  await evalJs(`(function(){
+    var o=window.__pickOpts;
+    if(!o||!o.onFiles) return 'no-opts';
+    o.onFiles([new File([${JSON.stringify(payload)}],'beauty.json',{type:'application/json'})]);
+    window.mochiFilePick=window.__origPick;
     return true;
   })()`);
   // 判定本次是「重载路径」还是「提前返回路径（用途不符/零命中，不重载）」
