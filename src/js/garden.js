@@ -931,9 +931,14 @@ function partnerAct(silent, used) {
     // v3.13.x：悄悄话走系统预设字卡池（字卡库「花园」tab 同源，dc-off-garden:* 过滤）
     var wmPool = (window.getLibPool ? window.getLibPool("garden", "梦角悄悄话", WM) : WM).slice();
     if (window.isDefaultCardOff) wmPool = wmPool.filter(function (c) { return !window.isDefaultCardOff("garden", c); });
-    if (!wmPool.length) wmPool = WM.slice();
-    var msg = wmPool[Math.floor(Math.random() * wmPool.length)];
-    addLog(pName, "\uD83D\uDC95 " + msg);
+    // FIX 2026-09-30 #1498：兜底也必须过闸。WM 内置兜底 7 条与数据组「梦角悄悄话」前 7 条
+    //   **逐字重合**，原写法「过闸后为空 ⇒ 回落 WM」于是把用户刚关掉的同一批句子又捡回来，
+    //   逐张关光/整组停用等于没关（实测全关后 7/7 仍被使用）。全关＝真停用：不出声。
+    if (!wmPool.length) wmPool = (window.gateCardFallback ? window.gateCardFallback("garden", WM) : []);
+    if (wmPool.length) {
+      var msg = wmPool[Math.floor(Math.random() * wmPool.length)];
+      addLog(pName, "\uD83D\uDC95 " + msg);
+    }
     }
   }
   if (acted) {
@@ -1421,21 +1426,14 @@ function renderReport() {
       "\uD83C\uDF38 \u613F\u6211\u4EEC\u7684\u82B1\u56ED\u4E00\u76F4\u7E41\u76DB"
     ];
     var text = lines.join("\n");
+    // FIX 2026-09-30 #1522：分享改走 feed.js 的 window.feedAddPost 正路（period.js 月报同款）。
+    // 原实现裸读 feed-posts 根键再整包写回：大键架构下同步 xyStore.get 只拿得到 LS 有损小快照
+    // 或空（内存副本被 #975 释放后必然读空），unshift 一条后整包写回＝把 IDB 权威整本顶掉，
+    // 朋友圈历史一发抹掉（#1349 同型盲写，台账挂账残余就此退役）；兆级 JSON.parse/stringify
+    // ＋同步 setItem 还都是白吃的主线程长任务。feedAddPost 内部走 load/feedGuardWrite/feedMem
+    // 全套闸（冷读期增量留 feedPending 不毁权威），失败返回 null＝照旧弹「发布失败」。
     var ok = false;
-    try {
-      var st = window.xyStore ? window.xyStore("xy-home-v2") : null;
-      if (st) {
-        var FK = "feed-posts";
-        var arr = []; try { arr = JSON.parse(st.get(FK) || "[]"); } catch (e2) {}
-        var owner = "default"; try { if (window.__activeCid) owner = window.__activeCid; } catch (e2) {}
-        var an = "\u6211"; try { var as = window.activeStore ? window.activeStore() : null; if (as) { var nn = as.get("feed-user-name") || as.get("lbl-user"); if (nn) an = nn; } } catch (e2) {}
-        arr.unshift({ id: "f_" + Date.now(), role: "me", owner: owner, authorName: an, authorAv: "", taName: "", taAv: "", content: text, imgs: [], ts: Date.now(), likes: [], comments: [] });
-        var raw = JSON.stringify(arr);
-        st.set(FK, raw);
-        if (window.idbSet) window.idbSet("xy-home-v2:" + FK, raw);
-        ok = true;
-      }
-    } catch (e3) {}
+    try { ok = typeof window.feedAddPost === "function" ? !!window.feedAddPost(text) : false; } catch (e3) {}
     try { document.dispatchEvent(new CustomEvent("garden-share-report", { detail: { ok: ok } })); } catch (e4) {}
     if (window.openModal) window.openModal(ok ? "\u2705 \u5DF2\u53D1\u5E03\u5230\u670B\u53CB\u5708" : "\u53D1\u5E03\u5931\u8D25", "", function () {}, { pills: [{ label: "\u597D\u7684", value: "ok" }], noInput: true, staticText: ok ? "\u82B1\u56ED\u5E74\u62A5\u5DF2\u53D1\u5230\u670B\u53CB\u5708\uFF0C\u53BB\u670B\u53CB\u5708\u770B\u770B\u5427~" : "\u8BF7\u7A0D\u540E\u518D\u8BD5" });
   });

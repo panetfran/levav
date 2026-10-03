@@ -48,6 +48,46 @@
       } catch (e) {}
     };
   } catch (e) {}
+  // ===== #1541a：全站自绘弹层占用探测（存储修复引导/备份提醒开弹前判定）=====
+  // #modal-mask(z90) 之外还有一批自绘 fixed 弹层——联系人管理面板 #contact-manager(z89)、
+  // 朋友圈/经期等全屏面板(z80~99)——不占 modal-mask，只查 mask 会漏判占用：引导/备份提醒
+  // 把用户正在操作的面板连同其上层 openModal 输入框整个顶掉（探针实测：添加联系人点确定
+  // 后 80ms 输入弹窗正常关闭、300ms 内「更新完成·存储修复引导」自动顶上＝用户口径
+  // 「添加联系人桌面无反应」主因）。判据只取代码事实：body / .phone 直子中 position:fixed、
+  // 可见、z-index ≥ 80 且拦截点击（非 pointer-events:none）的层在开＝占用。纯装饰层
+  // （桌面挂件 9998/9999 均带 pointer-events:none）与常驻低层（状态栏/标签栏 z≤78）天然
+  // 排除；开屏 #splash(999) 开着同样算占用＝顺带修掉「引导在开屏底下已弹已写标记、用户
+  // 进入后永远看不到」的存量盲弹。
+  try {
+    window.mochiOverlayBusy = function () {
+      try {
+        const roots = [];
+        if (document.body) roots.push(document.body);
+        const ph = document.querySelector('.phone');
+        if (ph && ph !== document.body) roots.push(ph);
+        const vw = window.innerWidth || 1, vh = window.innerHeight || 1;
+        for (let r = 0; r < roots.length; r++) {
+          const kids = roots[r].children;
+          for (let i = 0; i < kids.length; i++) {
+            const el = kids[i];
+            if (el.hidden || el.id === 'modal-mask') continue;
+            const cs = getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+            if (cs.position !== 'fixed') continue;
+            if (cs.pointerEvents === 'none') continue;
+            // 面积过半才算弹层——排除桌面顶部问候/消息小卡（#daily-greet/#desk-msg 同为 z89
+            // 的产品功能浮层，常驻/自动收，不是用户正在操作的弹窗；把它们算占用的实际后果
+            // ＝引导/备份提醒被常驻层永久卡死不弹）
+            const rc = el.getBoundingClientRect();
+            if (rc.width * rc.height < vw * vh * 0.5) continue;
+            const z = parseInt(cs.zIndex, 10);
+            if (!isNaN(z) && z >= 80) return true;
+          }
+        }
+      } catch (e) {}
+      return false;
+    };
+  } catch (e) {}
   // 只在真实手机窄屏启用（桌面模拟器外壳不受影响）
   // v3.5.137：900px——Moto G100 等 2400px 物理屏 / DPR 2.75-3 的 CSS 视口约 800-873px，
   // 原 768px 上限会误判为桌面（显示 390px 小手机框 + 两侧灰底）
@@ -355,6 +395,152 @@
       };
     }
   } catch (e) {}
+
+  // ===== #1305 localStorage 写入拒绝现场账 =====
+  // 背景：iPhone 15 Pro Max / Safari 实报「系统一直说储存空间不足」，可同一台机器导出的诊断单
+  // 却写着「localStorage 状态：正常（可写可读回）」——因为那一拒发生在**当时**：某个调用方整包
+  // 直写几 MB 被内核拒掉，它自己 catch 住并降级到 IDB/内存，LS 随后就能写了。旧诊断只在导出
+  // 当场探一次写（＝必然正常），谁写的、写了多大、当时整域占了多少、在不在后台，一条都没留下
+  // ＝每次报障只能挨个猜。而全库 128 个 localStorage.setItem 直写点散在几十个文件（含并行批次
+  // 正在改的 music-player.js / idb.js），逐点插桩既撞车也漏。
+  // 本账本只在**入口那一层包一次**：全库零 `Storage.prototype.setItem`／`.setItem.call()` 用法
+  // （grep 实证）＝包实例属性即覆盖全部 128 个点；异常照原样抛出＝调用方的 catch／降级语义
+  // 一字不变；成功路径零额外开销（不读值、不算长度、不建对象）。
+  // 两条硬约束：① 用 defineProperty 装成**不可枚举**——三处 `Object.keys(localStorage)`（idb.js
+  //   #139 大键清扫、data-backup.js、personalize.js）会把可枚举的自身属性当成一条真键数进去；
+  //   装不上就干脆不装（宁可没现场，也不给 LS 键清单掺假键）。② 记账只在真抛时进。
+  // 零机型／零 UA 分支：判据只有「内核有没有抛」这一个事实。
+  (function () {
+    if (window.__mochiStorRej) return;
+    var rej = [];
+    window.__mochiStorRej = rej;
+    window.__mochiStorRejN = 0;
+    // 出错那一帧（跳过本包装自己的帧）＝下一批要改哪个文件的哪一行，从这里直接拿。
+    // 各家 stack 形态不同：V8 首行是「错误名: 消息」（不是帧）、WebKit/Safari 首行就是帧
+    // ＝只认真正带位置的行（含 @ 或 at …(…)），别把错误消息当成帧报出去。
+    var frameOf = function (err) {
+      try {
+        var ls = String((err && err.stack) || '').split('\n');
+        for (var i = 0; i < ls.length; i++) {
+          var f = (ls[i] || '').trim();
+          if (!f || f.indexOf('__mochiLsSetItemWitness') >= 0) continue;
+          if (f.indexOf('@') < 0 && !/\bat\s+\S/.test(f)) continue;
+          return f.slice(0, 120);
+        }
+      } catch (e) {}
+      return '';
+    };
+    // 失败当场才量一次 LS（错误路径，一次遍历换一条能定责的现场；成功路径不进来）
+    // 但 LS 被填满时调用方会连着重试（xyStore 标脏、写日志、快照…每发都抛）＝每发都整库扫一遍
+    // 反而把要取证的那一段弄得更卡（#1300 同一课）。2 秒内的连续拒绝复用上一轮的整域读数，
+    // 键名／体积／那一帧照旧逐条如实记（那些本来就是单条数据，不需要扫库）。
+    var lastSnap = { t: 0 };
+    var snapshot = function () {
+      if (Date.now() - lastSnap.t < 2000) return lastSnap;
+      var o = { keys: 0, bytes: 0, maxK: '', maxB: 0, trunc: 0 };
+      try {
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          if (!k) continue;
+          var v = '';
+          try { v = localStorage.getItem(k) || ''; } catch (e) { o.trunc = 1; }
+          var b = (k.length + v.length) * 2; // UTF-16 估算，与【数据】段同一把尺
+          o.keys++; o.bytes += b;
+          if (b > o.maxB) { o.maxB = b; o.maxK = String(k).slice(0, 30); }
+        }
+      } catch (e2) { o.trunc = 1; }
+      o.t = Date.now();
+      lastSnap = o;
+      return o;
+    };
+    var record = function (storeName, key, val, err) {
+      try {
+        window.__mochiStorRejN++;
+        var s = snapshot();
+        var bytes = 0;
+        try { bytes = (val == null ? 0 : String(val).length) * 2; } catch (e0) {}
+        var bg = 0;
+        try { bg = document.hidden ? 1 : 0; } catch (e1) {}
+        var item = {
+          t: Date.now(), store: storeName, k: String(key).slice(0, 40), bytes: bytes,
+          err: (err && err.name) || '异常', at: frameOf(err),
+          keys: s.keys, lsBytes: s.bytes, maxK: s.maxK, maxB: s.maxB, trunc: s.trunc, bg: bg
+        };
+        rej.push(item);
+        if (rej.length > 12) rej.shift();
+        // 同一条塞进 #907 相位账本：卡顿自检点名「冻结前最后在做什么」时顺带看得见这一刀
+        if (window.__mochiPhase) window.__mochiPhase('ls-rej:' + item.k.slice(0, 18));
+        return item;
+      } catch (e2) { return null; }
+    };
+    // 供 verify 与后续批次读最近一次现场（返回副本引用即可，不暴露写入口）
+    window.__mochiStorRejLast = function () { return rej.length ? rej[rej.length - 1] : null; };
+    var wrap = function (host, name) {
+      try {
+        if (!host || typeof host.setItem !== 'function') return;
+        var orig = host.setItem;
+        if (orig.__mochiLsWitness) return;
+        var wrapped = function __mochiLsSetItemWitness(k, v) {
+          try {
+            return orig.call(this, k, v);
+          } catch (e) {
+            record(name, k, v, e);
+            throw e; // 照原样抛：调用方的 catch／降级逻辑一字不变
+          }
+        };
+        try { wrapped.__mochiLsWitness = 1; } catch (e0) {}
+        // 不可枚举＋装不上就放弃（见上：可枚举会给 Object.keys(localStorage) 掺假键）
+        Object.defineProperty(host, 'setItem', {
+          value: wrapped, writable: true, configurable: true, enumerable: false
+        });
+      } catch (e2) {}
+    };
+    try { if (window.localStorage) wrap(window.localStorage, 'local'); } catch (e3) {}
+    try { if (window.sessionStorage) wrap(window.sessionStorage, 'session'); } catch (e4) {}
+  })();
+
+  // ===== #1295 桌面图层现场读数 =====
+  // 背景：iPhone 11 / iOS 18.7.5 实报「桌面翻页 平均114ms／p90 832ms／最慢1665ms、切回桌面
+  // p90 1640ms」，#690/#884 两把帧耗时尺子只能证「慢」、#907 相位账本只能说「冻结前最后一条
+  // 标记是什么」——而桌面卡顿嫌疑人族（壁纸大纹理、CSS 模糊兜底未烘成 #1161、#1285 缩放外扩
+  // 盒、#754 未提升的整页背景、标签栏毛玻璃每帧重采样）各自的判据全在本机 DOM/样式里，
+  // 旧诊断一条都不报，每次报障只能挨个猜。本读数＝纯类名＋内联样式＋计算样式读取，
+  // 零机型／零 UA 分支；被三处共用：诊断【性能】「桌面图层现场」行、#690/#884 采样收尾随附
+  // 快照、卡顿自检建议段（perf-check.js）。返回对象供程序判定，txt 供人读。
+  window.__mochiDeskScene = function () {
+    var out = { txt: '', blurCss: false, blurPx: 0, texKB: 0, zoom: 1, pageBg: false, tabBlur: false, mode: '无' };
+    try {
+      var ph = document.querySelector('.phone');
+      var bl = document.getElementById('phone-bg-layer');
+      if (ph && bl) {
+        var bi = bl.style.backgroundImage || '';
+        var dpos = bi.indexOf('data:');
+        if (dpos >= 0) { out.mode = '图'; out.texKB = Math.round((bi.length - dpos) / 1024); }
+        else if (bi && bi !== 'none') out.mode = '渐变';
+        else out.mode = bl.style.opacity === '1' ? '底色' : '无';
+        var bs = getComputedStyle(bl);
+        // 模糊态：.desk-blur-on 在＝CSS filter 兜底路径在跑（img 未烘成或渐变壁纸，见 #1161
+        // deskBlurRender 的挂类语义）；不在而 --desk-bg-blur>0 且形态=图＝小纹理已烘好（便宜）。
+        out.blurCss = ph.classList.contains('desk-blur-on');
+        var bv = parseInt(bs.getPropertyValue('--desk-bg-blur'), 10);
+        out.blurPx = isNaN(bv) ? 0 : bv;
+        var rp = ph.getBoundingClientRect();
+        if (rp.width > 0) {
+          var rb = bl.getBoundingClientRect();
+          out.zoom = Math.round(rb.width / rp.width * 100) / 100;
+        }
+      }
+      var dp = document.querySelector('.desktop-pages');
+      out.pageBg = !!(dp && dp.classList.contains('has-page-bg'));
+      out.tabBlur = !!document.querySelector('.tabbar-blur-on');
+      out.txt = '壁纸=' + out.mode + (out.texKB ? (out.texKB >= 1024 ? '≈' + (out.texKB / 1024).toFixed(1) + 'MB' : '≈' + out.texKB + 'KB') : '')
+        + (out.zoom > 1.02 ? '·外扩盒×' + out.zoom : '')
+        + ' 模糊=' + (out.blurCss ? 'CSS滤镜' + out.blurPx + 'px(兜底)' : (out.blurPx > 0 ? '已烘' : '关'))
+        + ' 整页背景=' + (out.pageBg ? '有' : '无') + ' 标签栏毛玻璃=' + (out.tabBlur ? '开' : '关')
+        + ' DPR=' + (window.devicePixelRatio || 1);
+    } catch (e) { out.txt = '读数失败'; }
+    return out;
+  };
 
   window.mochiDevice = {
     isMobile: !!isMobile,
@@ -1221,6 +1407,22 @@
           + '  逃生探针=' + (function () { try { var p = window.__mochiStuckProbe && window.__mochiStuckProbe(); return p ? ('streak=' + p.streak + ' kb=' + (p.kb ? 1 : 0)) : 'n/a'; } catch (e) { return 'n/a'; } })());
       }
     } catch (e) {}
+    // #1466：聊天渲染窗口取证（#1357 契约）＋桌面翻页现场＋IDB 读异常拦截——
+    // 「聊天记录乱跳／桌面弹回首页」两族报障从此有当场读数可判，不再靠猜。
+    try {
+      const wr = (typeof window.__chatWinRing === 'function') ? window.__chatWinRing() : null;
+      if (wr) {
+        const traj = (wr.ring || []).map(function (e) { return e.k + '@' + e.lo + '~' + e.hi; }).join(' → ');
+        L.push('聊天窗口取证：共=' + wr.cur.n + '条 此刻画 ' + wr.cur.lo + '–' + wr.cur.hi
+          + ' 窗口倒退=' + wr.backs + ' 程序写入的位移=' + wr.progPx + 'px'
+          + (traj ? '（' + traj + '）' : '（无轨迹）')
+          + ' IDB读异常拦截=' + (window.__xyIdbBrokeN || 0));
+      }
+    } catch (eW1) {}
+    try {
+      const dp = (typeof window.__deskSlideDiag === 'function') ? window.__deskSlideDiag() : null;
+      if (dp) L.push('桌面翻页现场：页=' + (dp.idx + 1) + '/' + dp.n + ' scrollLeft=' + Math.round(dp.sl) + ' 提层=' + (dp.warm ? '开' : '关'));
+    } catch (eW2) {}
     // v3.26.x：聊天输入栏现场（红米 K60 至尊版 + Edge「打字不显示、空白」）——
     // 「框里看着空白」有三种完全不同的成因，肉眼一模一样，只有这份实测能分案：
     //   A 字没进 DOM：textLen=0（输入法/内核丢提交，或守卫提前清）
@@ -1293,6 +1495,35 @@
         L.push('文件选择取证（旧→新）：(无——本页还没点过「选择文件」类入口)');
       }
     } catch (e) {}
+    // #1323：选图门自学台账出账——上一环只有 6 格且活在内存里，回收一次就清零（#1272 同一课）。
+    // 这一行读的是落盘台账：在册＝这台设备历史上走过合成腿的门有几扇，当前有层＝其中此刻真铺着真
+    // file input 的有几扇（整块重画会把层带走，靠下一次点按补装）。两个数拉开＝自愈在干活。
+    try {
+      if (window.mochiPickDoorCensus) {
+        var _dc = window.mochiPickDoorCensus();
+        L.push('选图门台账：在册 ' + _dc.total + ' 扇 · 此刻真铺着层 ' + _dc.armed + ' 扇'
+          + (_dc.bad ? ' · 口径不一致已剔除 ' + _dc.bad + ' 扇' : '')
+          + (_dc.dead ? ' · 其中命不中的死层 ' + _dc.dead + ' 扇（0×0＝这一发仍走合成腿）' : '')
+          + (_dc.nofit ? ' · 复核不过撤层 ' + _dc.nofit + ' 次' : '')
+          + (_dc.total > _dc.armed ? '（差值＝这一页刚被重画过，下一次点按当场补装）' : ''));
+      }
+    } catch (e) {}
+    // #1272：数据导入回执出账——上一环活在内存里、随页面回收清零（这批设备一次诊断实测回收 25 次，
+    // 四份报告的取证行全是空）；导入链路的关键动作已持久在 mochiImportLog，这里随报告带出（旧→新）。
+    try {
+      var _il = window.__mochiImportLog || [];
+      if (_il.length) {
+        var _is = [];
+        for (var _ii = 0; _ii < _il.length; _ii++) {
+          var _id = new Date(_il[_ii].t || 0);
+          _is.push(('0' + _id.getHours()).slice(-2) + ':' + ('0' + _id.getMinutes()).slice(-2) + ':' + ('0' + _id.getSeconds()).slice(-2)
+            + ' ' + _il[_ii].w);
+        }
+        L.push('数据导入回执（旧→新）：' + _is.join(' | '));
+      } else {
+        L.push('数据导入回执（旧→新）：(无——本机还没记录过数据导入动作)');
+      }
+    } catch (e) {}
     // #260：保活现场——「后台保活失败/收不到通知」类报障直接出证据，不再靠口述猜。
     // 心跳 = bg-keep.js 在页面隐藏期每 30s 写 IDB 的计数/时间戳轨迹：相邻拍间隔
     // >90s = 心跳断流 = 页面被冻结的实锤（保活豁免失效）；30s 连续节奏 = 后台未被冻结。
@@ -1303,6 +1534,11 @@
           '通知=' + (kp.notify ? '开' : '关') + '/' + kp.perm];
         if (kp.audio) kpParts.push('音频=' + (kp.audio.paused ? '暂停' : '播放') + ' vol=' + kp.audio.volume);
         else kpParts.push('音频=无（保活未起）');
+        // #1489：把「这口气从哪个孔出」摊开——作者报「进 mochi 突然变响、退出来又变轻」这类音量泵动，
+        // 判的就是保活此刻占不占媒体音频通道：锚=媒体元素(占媒体通道)＝会压低别的 App；
+        // 锚=WebAudio(不占媒体通道)＝不抢。路=xxx 是 WebAudio 不可用时回落的原因（没有＝没回落）。
+        if (kp.anchor) kpParts.push('锚=' + kp.anchor);
+        if (kp.waErr) kpParts.push('路=' + kp.waErr);
         if (kp.ms) kpParts.push('媒体条=' + (kp.ms.metadata ? '有' : '无') + ' ' + kp.ms.state);
         kpParts.push('WebRTC=' + kp.pc);
         // FIX 2026-09-22 #1017：把「通知这一侧」的现场也摊开——开关/权限在开头那行早就有了，但
@@ -1313,6 +1549,8 @@
             ? '已接管（可发系统通知）' : '未接管（SW 尚未生效或刚被系统回收）';
           const lc = (typeof window.bgNotifyLastChannel === 'function') ? (window.bgNotifyLastChannel() || '本会话还没发过') : '未接入';
           kpParts.push('后台服务=' + ctrl + ' · 最近通知通道=' + lc + '（sw＝切后台也能弹 / page＝仅前台可见 / none＝没发出去）');
+          const nu = (typeof window.bgNotifyUnsettled === 'function') ? (window.bgNotifyUnsettled() || 0) : 0; // #1241：回执未落地计数——下次真机报告直接点名这类内核
+          if (nu > 0) kpParts.push('通知回执未落地=' + nu + '次（该内核把通知挂出去之后 Promise 永不 settle；本站已按「已挂出」收手、不再重发＝一条消息只弹一次）');
         } catch (e) {}
         // #780：WebRTC 停在 new 时把采集状态一起打出——本次真机取证就是「WebRTC=new」
         // 却看不出卡在 SDP 还是 ICE（实为候选 flush 早于 gather 完成，第二豁免恒死）。
@@ -1379,6 +1617,11 @@
           + '平均 ' + dp.mean + 'ms / p90 ' + dp.p90 + 'ms / 最慢 ' + dp.worst + 'ms'
           // #707：采样已剔除切后台/锁屏冻结帧（否则一条 144s 的后台间隙会把均值拉成假「严重卡顿」）
           + (dp.hid ? '（已剔除后台帧 ' + dp.hid + '）' : '')
+          // #1467：截短标注——「翻页已停」后收笔的样本不许再冒充整段翻页的耗时
+          + (dp.cut ? '（截短：翻页已停，未采满 60 帧）' : '')
+          // #1295：采样收尾随附的桌面图层现场（desktop-slider.js 写入）——帧号证「慢」，现场证「为什么慢」
+          + (dp.sc ? '（当时现场：' + dp.sc + '）' : '')
+          + (dp.ph ? '（采样前近操作：' + dp.ph + '）' : '')
           + (dp.mean > 100 ? '（严重卡顿）' : dp.mean > 33 ? '（掉帧）' : '（流畅）'));
       } else {
         L.push('桌面翻页帧耗时：尚无记录（去桌面左右滑一次再回来即可采到）');
@@ -1394,9 +1637,28 @@
         L.push('切回桌面帧耗时（' + sp.n + ' 帧现场采样 · ' + when + '）：'
           + '平均 ' + sp.mean + 'ms / p90 ' + sp.p90 + 'ms / 最慢 ' + sp.worst + 'ms'
           + (sp.hid ? '（已剔除后台帧 ' + sp.hid + '）' : '')
+          + (sp.cut ? '（截短：切页窗口已过，未采满 30 帧）' : '') // #1467：同翻页尺口径
+          + (sp.sc ? '（当时现场：' + sp.sc + '）' : '')
+          + (sp.ph ? '（采样前近操作：' + sp.ph + '）' : '')
           + (sp.mean > 100 ? '（严重卡顿）' : sp.mean > 33 ? '（掉帧）' : '（流畅）'));
       } else {
         L.push('切回桌面帧耗时：尚无记录（从聊天页点返回到桌面一次即可采到）');
+      }
+    } catch (e) {}
+    // #1295：桌面图层现场——上面两行帧耗时只证「桌面慢」，这行报「这台桌面此刻是什么配置」：
+    // 壁纸纹理大小／#1285 缩放外扩盒倍率／模糊走烘焙还是 CSS 滤镜兜底（#1161）／整页背景（#754）／
+    // 标签栏毛玻璃（tabbar.css）。桌面卡顿家族（#690/#754/#884/#976/#1161/#1201）报障必带此行。
+    try { L.push('桌面图层现场：' + (window.__mochiDeskScene ? window.__mochiDeskScene().txt : '未接入')); } catch (e) {}
+    // #1295：近操作账本——__mochiPhase 环形日志尾部 8 条＋相邻间隔（Δ≈上一条操作的耗时上界）。
+    // iOS WebKit 没有 longtask 观测通道（#1226①），这是唯一能逐操作计时的取证；与卡顿自检
+    // 「冻结前序操作」对读：账本里 Δ 异常大的那条，就是下一次冻结点名前要防的那类活。
+    try {
+      const _pl = window.__mochiPhaseLog || [];
+      if (_pl.length) {
+        L.push('近操作账本（旧→新，Δ＝距上一条标记的间隔）：');
+        for (let _pi = Math.max(0, _pl.length - 8); _pi < _pl.length; _pi++) {
+          L.push('· ' + (_pi ? 'Δ+' + (_pl[_pi].t - _pl[_pi - 1].t) + 'ms ' : '') + _pl[_pi].tag + ' @' + new Date(_pl[_pi].t).toLocaleTimeString());
+        }
       }
     } catch (e) {}
     let memTxt = '不支持（仅 Chrome 系）';
@@ -1466,6 +1728,38 @@
       let chatN = 0;
       try { if (typeof window.getChatMsgs === 'function') chatN = (window.getChatMsgs() || []).length; } catch (e) {}
       L.push('【内存体检】DOM 节点=' + nodes + ' · img 元素=' + imgs + '（data: ' + dataImgs + ' / blob: ' + blobImgs + (brokenImgs ? ' / 坏图 ' + brokenImgs : '') + '）' + (chatN ? ' · 内存聊天条数=' + chatN : ''));
+      // #1323 节点分解：上面这个总数（真机实测两万台）到今天为止都只是**一个数**——谁也答不出「谁占的」，
+      // 所以 iOS 卡顿那几批（#1295/#1300/#1301/#1311）每轮都只能对着总数猜一处脚本削一刀。判据只取事实：
+      // 每个页面容器、每个「关掉也留在渲染树」的常驻浮层（#907 那一族），各自有多少节点、多少 data: 图。
+      // 只在用户主动点【诊断】时跑一次（与整段体检同窗），不参与任何渲染路径。
+      try {
+        const cens = [];
+        const measure = (el) => {
+          const kids = el.getElementsByTagName('*');
+          const im = el.getElementsByTagName('img');
+          let di = 0;
+          for (let i = 0; i < im.length; i++) { const s = im[i].currentSrc || im[i].src || ''; if (s.indexOf('data:') === 0) di++; }
+          return { n: kids.length, di: di };
+        };
+        const pageEls = [].slice.call(document.querySelectorAll('.page'));
+        pageEls.forEach((p) => { const m = measure(p); if (m.n > 150) cens.push({ k: (p.id || 'page') + (p.hidden ? '' : '*'), n: m.n, di: m.di }); });
+        const hosts = [document.body];
+        const ph = document.getElementById('phone') || document.querySelector('.phone');
+        if (ph) hosts.push(ph);
+        hosts.forEach((h) => {
+          [].slice.call(h.children).forEach((el) => {
+            if (pageEls.indexOf(el) >= 0) return;
+            if (el.querySelector && el.querySelector('.page')) return; // 装着页面的那层容器不单独计（会把页面算两遍）
+            const m = measure(el);
+            if (m.n > 150) cens.push({ k: (el.id || String(el.className || '').slice(0, 18) || el.tagName.toLowerCase()) + (el.hidden ? '' : '*'), n: m.n, di: m.di });
+          });
+        });
+        const top = cens.sort((a, b) => b.n - a.n).slice(0, 8);
+        if (top.length) {
+          const acc = top.reduce((s, c) => s + c.n, 0);
+          L.push('· 节点分解（*=这一份此刻在屏上可见；img 只数 data:）：' + top.map((c) => c.k + ' ' + c.n + (c.di ? '·图' + c.di : '')).join('、') + '；未计入=' + Math.max(0, nodes - acc));
+        }
+      } catch (e) {}
       const memo = (typeof window.idbMemoStats === 'function') ? window.idbMemoStats(6) : null;
       if (memo && memo.n) {
         L.push('· 内存驻留键 ' + memo.n + ' 个 ≈' + Math.round(memo.bytes / 1024) + 'KB（字符串按长度、数组按写入时估算；iOS 无堆读数，这是近似账）');
@@ -1523,6 +1817,44 @@
       } catch (e) {
         L.push('localStorage 状态：写入失败(' + ((e && e.name) || '异常') + ')——配额满或库已损坏，设置/桌面需靠 IndexedDB 校正');
       }
+      // v3.36.x #1305：写拒绝现场账——上面那行「状态」是**导出当场**探的一次写，正常与否都不
+      // 代表报障当时；本会话真被内核拒过的每一次写在这里如实回吐（键名／体积／错误名／出错那一帧
+      // 的文件:行／当时整域多少键多少体积／前后台）。下一次导出件就能直接定名，不必再来回猜。
+      try {
+        const rej = window.__mochiStorRej || [];
+        if (window.__mochiStorRejN) {
+          L.push('localStorage 写入拒绝 ' + window.__mochiStorRejN + ' 次（本会话，现场账留最近 ' + rej.length + ' 条）——这条与上面「状态：正常」不矛盾：被拒的调用方已自行降级，LS 随后又能写了');
+          rej.slice(-5).reverse().forEach(function (it, ix) {
+            let when = '?';
+            try { when = new Date(it.t).toLocaleTimeString(); } catch (e) {}
+            L.push('  ·[' + (rej.length - ix) + '] ' + when + ' ' + it.store + ' 写 ' + it.k +
+              '（' + usageStr(it.bytes) + '）被拒(' + it.err + ')' +
+              ' · 当时整域 ' + it.keys + ' 键≈' + usageStr(it.lsBytes) +
+              '，最大键 ' + (it.maxK || '?') + '=' + usageStr(it.maxB) +
+              ' · ' + (it.bg ? '后台' : '前台') + (it.trunc ? '（部分键读不到）' : ''));
+            if (it.at) L.push('      出自 ' + it.at);
+          });
+        }
+      } catch (e) {}
+      // FIX 2026-09-27 #1335h：上面那行报「写入拒绝 212 次」却看不出是哪本账在拒——实报那台机 212 次【全部】
+      //   出自小键写日志的整包落盘（诊断单现场账逐条同名）。日志落不回去＝它冻结在最后一次成功提交的形态，
+      //   下一场开站就把旧值当「最近一次写入」灌回、压住库里那条更新的大值（＝收藏被写坏的那条链）。
+      //   没有这一行，下一位只能从「212」猜成因；有了它，一眼看得见这一场到底让没让位。判据取内核回执，零机型分支。
+      try {
+        const wj = window.__wrjDiag && window.__wrjDiag();
+        if (wj) L.push('写日志：' + (wj.stranded
+          ? '⚠ 本会话有 ' + wj.rej + ' 次落不回去＝这本账已冻结，回放进来的 ' + wj.replayed + ' 条旧值不再充当权威，一律以 IndexedDB 为准'
+          : '正常落盘（未冻结＝回放照旧算最近一次写入）'));
+      } catch (e) {}
+      // FIX 2026-09-27 #1342g：上面那行只管「写不写得回去」，管不到「读回来的空是不是答案」。
+      //   大键（>200KB）从不落 localStorage，而 xyStore.get 是同步口、从不问库——启动回填挂起与切后台
+      //   释放（#1195e）都会让这一格读成空，报障件里只会留下「美化方案没了／卡片背景重开就空」。
+      //   有这一行才分得清「库里真没有」与「取回还在路上／问不出结果」，也才看得见这道闸拦过几次写回。
+      try {
+        const br = window.__xyBigReadDiag && window.__xyBigReadDiag();
+        if (br) L.push('大键读回：切后台放过 ' + (br.blind + br.asked) + ' 格（其中问过 ' + br.asked + '） · 启动挂起未读回 ' + br.deferred +
+          ' 格 · 此刻读不到值未确认 ' + br.unconfirmed + ' 格（这些账不许整本写回，等库里回执）');
+      } catch (e) {}
       items.sort(function (a, b) { return b.size - a.size; });
       L.push('数据总占用≈' + usageStr(total));
       const tops = items.slice(0, 8).map(function (it) { return it.k + '=' + usageStr(it.size); }).join('、');
@@ -1530,6 +1862,91 @@
     } catch (e) { L.push('localStorage 不可访问'); }
     // v3.26.x：跨域名（device.js=AI-B）——回复字卡池诊断，报障「联系人只发【收到～】」直接定位
     try { if (window.__replyPoolDiag) L.push('回复字卡池：' + window.__replyPoolDiag()); } catch (e2) {}
+    // FIX 2026-09-26 #1308：跨域名（device.js=AI-B）——语音载荷体检（chat.js 挂 __voiceDiag）。
+    // 「我方发的语音没有办法播放」报障时「最近错误」里只有几条截断的 data:audio，证不了是同一批空壳；
+    // 这一行直接给次数＋最近一条的容器/体积/内核码（拦下与放行都记，成功路径不记）。
+    try { if (window.__voiceDiag) L.push('语音载荷体检：' + window.__voiceDiag()); } catch (e3) {}
+    // FIX 2026-09-29 #1454（跨域名：读的是数据层与信箱主键，device.js=AI-B；信箱 mail.js 本轮被 #1416 占用，
+    //   故只从外部读、一行不动那个文件）：信箱「后台通知说有回信／来信，点进去却找不到」的定性取证。
+    //   报障单只留下「通知」与「信箱里没有」两端，中间那段——库里到底有没有那封回信、屏上那份是从哪读来的、
+    //   LS 那一格是不是写不进去的旧账——全都不留痕，于是只能猜（本批就是这么被作者追问回来的）。
+    //   这里只读四件事实、不做任何写入，判据零机型／零 UA 分支：
+    //   ①屏上那份＝业务同一个同步读口（xyStore.get：内存缓存 → localStorage），信箱 load() 走的就是它；
+    //   ②LS 原值＝直接 localStorage.getItem——与①不同才是关键：内存里有、LS 里没有 ⇒ 重开/被回收就没了；
+    //   ③库那份＝直读 IndexedDB 原值，并借 idbGet 的 ambiguous 标记把「这次读不出值（挂起）」与「库里没有」
+    //     分开（正是 #1358 那台机的形状：同步读交不出主键而库里 20 封完好）；
+    //   ④TA 回信计划余量与当日主动来信计数——回信落地不看每日上限（maybeIncomingLetterFor 才看），
+    //     这两项分开报，才能当场排除「是不是设了每天最多几封」。
+    try {
+      const mlIdx = L.length; L.push('信箱：读取中…');
+      jobs.push(new Promise(function (res) {
+        const fin = function (s) { L[mlIdx] = s; res(); };
+        try {
+          if (!window.activeStore || !window.idbGet || !window.activePrefix) { fin('信箱：接口不可用（activeStore/idbGet 缺席）'); return; }
+          const full = window.activePrefix() + ':mail-letters';
+          const parse = function (v) { try { const a = JSON.parse(v); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+          const stat = function (arr) {
+            const o = { n: 0, in: 0, out: 0, rp: 0, rpLast: 0, unread: 0 };
+            (arr || []).forEach(function (l) {
+              if (!l) return;
+              o.n++;
+              if (l.type === 'received') o.in++; else if (l.type === 'sent') o.out++;
+              if (l.partnerReply) { o.rp++; const t = Number(l.partnerReply.tm) || Number(l.tm) || 0; if (t > o.rpLast) o.rpLast = t; }
+              if (!l.read) o.unread++;
+            });
+            return o;
+          };
+          const when = function (t) { try { return t ? new Date(t).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—'; } catch (e) { return '?'; } };
+          const side = function (s) { return s.n + '封（收' + s.in + '·寄' + s.out + '）·带TA回信' + s.rp + '（最近 ' + when(s.rpLast) + '）·未读' + s.unread; };
+          let st = null;
+          try { st = window.activeStore(); } catch (e0) { st = null; }
+          const scrRaw = st ? st.get('mail-letters') : null;
+          let lsRaw = null;
+          try { lsRaw = localStorage.getItem(full); } catch (e1) {}
+          const scr = stat(parse(scrRaw));
+          const ls = (lsRaw === null) ? null : stat(parse(lsRaw));
+          let dirty = '未知';
+          try {
+            const d = JSON.parse(sessionStorage.getItem('xy-home-v2:__ls-dirty') || '[]');
+            dirty = (Array.isArray(d) && d.indexOf(full) >= 0) ? '是（这份 LS 是写失败留下的旧值）' : '否';
+          } catch (e2) {}
+          let dayN = 0, dayMax = 3, pendN = 0, pendDue = 0;
+          try {
+            const mx = Number(st.get('ml-write-daily-max'));
+            if (mx > 0) dayMax = mx;
+            const d = new Date();
+            const day = JSON.parse(st.get('mail-letter-day') || 'null');
+            if (day && day.d === (d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate())) dayN = Number(day.n) || 0;
+            const pend = parse(st.get('mail-reply-pending') || '[]');
+            pendN = pend.length;
+            pend.forEach(function (x) { const t = Number(x && (x.tm || x.due || x.t)); if (t && (!pendDue || t < pendDue)) pendDue = t; });
+          } catch (e3) {}
+          const info = {};
+          Promise.resolve(window.idbGet(full, info)).then(function (v) {
+            try {
+              const dbOk = (typeof v === 'string' && v.length > 2);
+              const db = dbOk ? stat(parse(v)) : null;
+              const out = ['信箱体检（#1454 取证，只读）：屏上' + side(scr) +
+                (scrRaw === null ? '（同步读口交回空）' : '') +
+                ' ｜ LS原值' + (ls ? side(ls) : '无此键') + ' ｜ LS标脏＝' + dirty];
+              if (!db) {
+                out.push('· 库(IDB)直读：' + (info.ambiguous ? '这次读不出值（事务挂起／超时，不等于库里没有）' : '库里没有这一键（或读回空值）') + '——重导一次诊断再看');
+              } else {
+                out.push('· 库(IDB)直读：' + side(db));
+                const sp = Math.max(scr.rp, ls ? ls.rp : 0);
+                if (db.rp > sp) out.push('· 判读：库里多 ' + (db.rp - sp) + ' 封带TA回信 ⇒ 回信【还在库里】，屏上/LS 那份是旧账（可救回）');
+                else if (db.rp === 0 && scr.rp === 0 && (!ls || ls.rp === 0)) out.push('· 判读：三处都没有 TA 回信 ⇒ 库里确实没有（从未落地，或被旧账整包写回覆盖）');
+                else if (db.n > scr.n) out.push('· 判读：库里比屏上多 ' + (db.n - scr.n) + ' 封 ⇒ 屏上是旧账（同步读口没交出新值）');
+                else out.push('· 判读：三处条数/回信数一致（本刻未复现）');
+                if (scr.rp > (ls ? ls.rp : 0)) out.push('· 屏上比 LS 多 ' + (scr.rp - (ls ? ls.rp : 0)) + ' 封带TA回信 ⇒ 新值只在内存，重开／被系统回收后就看不到（LS 写不进去）');
+              }
+              out.push('· TA回信计划 ' + pendN + ' 条' + (pendDue ? '（最近到期 ' + when(pendDue) + '）' : '') + ' · 本日TA主动来信 ' + dayN + '/' + dayMax + '（每日上限只管新来信，与回信无关）');
+              fin(out.join('\n'));
+            } catch (e4) { fin('信箱：统计失败'); }
+          }, function () { fin('信箱：库直读失败（存储繁忙，重导一次）'); });
+        } catch (e5) { fin('信箱：读取异常'); }
+      }));
+    } catch (e4) {}
     // v3.26.x：跨域名（device.js=AI-B）——字卡/回复/收藏 存储明细诊断（chatcard.js 挂 __ccStorageDiag）
     // 报障「该分类 583MB 是否正常」一眼定位大键/LS 残留双倍/旧各桌面 my-emoji-groups 遗留
     try {
@@ -1558,6 +1975,13 @@
             if (/:chat-msgs$/.test(k)) return true;
             if (/avatar-(lib|me-lib)$/.test(k)) return true;
             if (/:(phone-bg|wallpaper|chat-bg|page-bg|desk-bg|bg)$/.test(k)) return true;
+            // FIX 2026-09-25 #1258：候选清单原来漏掉聊天背景——上面那条要求冒号后整段是 `bg`，
+            // 而聊天背景的键名是 `<cid>:cs-bg`（旧顶层键 `xy-home-v2:cs-bg` 同形），永远匹配不上 ⇒
+            // 「背景图没了」的报障单里恰恰看不到最该看的那一行（本轮 OPPO A5 Pro + Edge 实测：明细
+            // 只列了 chat-msgs 与 phone-bg，判不出原图到底还在不在库里）。
+            // 只补 cs-bg 本体：图库镜像 cs-bg-item-* 是最多 12 张同尺寸大图，全列进候选会让诊断这
+            // 一次 idbGetMany 变成几十 MB 的整库读（报障单常年卡在「读取中…」）。
+            if (/:(cs-bg)$/.test(k)) return true;
             if (k.indexOf('__auto-backup-snapshot') >= 0) return true;
             return false;
           });
@@ -2024,6 +2448,7 @@
         else if ((m = /^功能入口缺失：(.+)/.exec(s))) issues.push('功能入口缺失 ' + m[1].replace(/（[^）]*）.*$/, '').trim());
         else if ((m = /^最近错误 (\d+) 条/.exec(s))) issues.push('最近错误 ' + m[1] + ' 条');
         else if (/^localStorage 状态：/.test(s) && !/正常/.test(s)) issues.push('localStorage 状态异常');
+        else if ((m = /^localStorage 写入拒绝 (\d+) 次/.exec(s))) issues.push('localStorage 本会话写入被拒 ' + m[1] + ' 次（【数据】段有现场账：哪条键、多大、出自哪个文件哪一行）');
       }
       conclScreenBad().forEach(function (n) { issues.push('屏幕适配 ' + n); });
       if (!issues.length) return '未发现明显异常；若仍有故障，请连同下方明细整段发送。';
@@ -2372,7 +2797,7 @@
   // v3.26.x：暴露给「查看存储」页——手动清理错误诊断记录后角标同步归零
   try { window.mochiRefreshDiagBadge = refreshBadge; } catch (e) {}
   const TIP_WAIT = '正在读取本机存储明细…（读全后会自动更新）';
-  const TIP_OK = '诊断信息已复制到剪贴板，直接粘贴发给开发者即可。\n（下方内容可再核对）';
+  const TIP_OK = '诊断信息已复制到剪贴板。\n（下方内容可再核对）';
   const DIAG_TITLE = '复制诊断信息';
   // 全站弹窗共用同一批 DOM（#modal-mask / #modal-textarea），诊断的回填最晚到 30s，
   // 期间用户可能已关窗去开别的弹窗——判活不过关就绝不写，防止把诊断文本灌进别人框里。
@@ -2908,7 +3333,7 @@ window.mochiViewportForm = function (sig) {
     // #210：保留/覆盖两形态 JS 信号相同（env≈diff>0）程序不可分——歧义形态时
     // 报告必须主动引导用户用【顶部避让修正】开关自服（否则全 ✓ 假象掩盖真症状：
     // iPhone 17 Pro 实测顶栏与灵动岛融合点不动/输入栏悬空，报告却全 ✓）
-    if (Fm.resStand && !Fm.forceCover) add(true, '歧义形态提示：若顶部 Mochi 行与灵动岛/时间重叠或点不动 → 开启上方【顶部避让修正】开关（自动刷新即修）；若底部白带则保持关闭');
+    if (Fm.resStand && !Fm.forceCover) add(true, '歧义形态提示：若顶部 Mochi 行与灵动岛/时间重叠或点不动 → 到 设置→工具 开启【顶部避让修正】开关（自动刷新即修）；若底部白带则保持关闭'); // #1408：该开关自「信息诊断」段搬回「工具」段（作者点名放错位置），本句原写「上方」＝报告在诊断段时把人指去同一屏的上一行，搬走后这句会指空
     // ③ 顶部双重叠加：statusbar 实测顶位显著超过「安全区顶部+余量」
     if (inp.sbTop == null) add(true, '状态栏隐藏（聊天等全屏页），跳过顶位判定');
     if (inp.sbTop != null) {
@@ -3117,7 +3542,7 @@ window.mochiViewportForm = function (sig) {
       tablet: d.classList.contains('tablet'),
       isMobileDev: (function () { try { return !!(window.mochiDevice && window.mochiDevice.isMobile); } catch (e) { return false; } })(),
       andr: (function () { try { return !!(window.mochiDevice && window.mochiDevice.isAndroid); } catch (e) { return false; } })(),
-      kbAnd: (function () { try { var k2 = window.__mochiAndroidKb ? window.__mochiAndroidKb() : null; return k2 ? { kbActive: !!k2.kbActive, prov: !!k2.prov } : null; } catch (e) { return null; } })(),
+      kbAnd: (function () { try { var k2 = window.__mochiAndroidKb ? window.__mochiAndroidKb() : null; return k2 || null; } catch (e) { return null; } })(), // #1463：全字段透传——此前只留 kbActive/prov 两枚，报告「键盘残留」行在安卓恒 n/a
       // v3.26.x #208：全屏页（聊天/朋友圈等 .page.full）打开时 tabs.js 给 .tabbar
       // 挂 hidden（display:none）——矩形全 0，原样返回会判「底部导航栏悬空
       // 860px」：用户在聊天页期间每 5s 自动采集刷一条假错误进错误环（实测
@@ -3159,7 +3584,7 @@ window.mochiViewportForm = function (sig) {
     } catch (eC2) {}
     inp.iosMajor = (function () { try { var a = /OS (\d+)_/.exec(navigator.userAgent || ''); var b = /Version\/(\d+)\./.exec(navigator.userAgent || ''); return Math.max(a ? +a[1] : 0, b ? +b[1] : 0); } catch (e) { return 0; } })();
     inp.safMajor = (function () { try { var m = /Version\/(\d+)\./.exec(navigator.userAgent || ''); return m ? +m[1] : 0; } catch (e) { return 0; } })();
-    inp.osLine = (function () { try { var m1 = /iPhone OS (\d+_\d+(?:_\d+)?) like/.exec(navigator.userAgent || ''); var m2 = /Version\/(\d+\.\d+)/.exec(navigator.userAgent || ''); return 'iOS ' + (m1 ? m1[1].replace(/_/g, '.') : '?') + ' / Safari ' + (m2 ? m2[1] : '?'); } catch (e) { return '未知'; } })();
+    inp.osLine = (function () { try { var _ua = navigator.userAgent || ''; if (/android/i.test(_ua)) { var m3 = /Android (\d+(?:\.\d+)?)/.exec(_ua); return 'Android ' + (m3 ? m3[1] : '?') + '（#1463 起安卓如实报；本行原为 iOS 版式，安卓单子此前恒写 iOS ? / Safari ?）'; } var m1 = /iPhone OS (\d+_\d+(?:_\d+)?) like/.exec(_ua); var m2 = /Version\/(\d+\.\d+)/.exec(_ua); return 'iOS ' + (m1 ? m1[1].replace(/_/g, '.') : '?') + ' / Safari ' + (m2 ? m2[1] : '?'); } catch (e) { return '未知'; } })();
     // #209：用户「顶部避让修正」声明（#186：声明=覆盖形态）——此前漏传，判定器
     // force 分支在真实采集路径永不命中
     inp.force = (function () { try { return localStorage.getItem('xy-home-v2:__safe-top-force') === '1'; } catch (e) { return false; } })();
@@ -3209,9 +3634,28 @@ window.mochiViewportForm = function (sig) {
     // 报告必须自证「哪条判定为何跳过、跳过的量与手调值什么关系」，否则下一份报障又得反推
     //（本次 vivo 报障就是吃了这个亏：phone底=inner∓26 到底是手调还是真故障，无从判断）。
     L.push('本机手调（屏幕位置设置）：' + (sdAdjStr(inp.adj) || '无（七轴全 0，判定器全自动口径）'));
-    L.push('键盘残留=' + (inp.kb ? ('kbActive=' + !!inp.kb.kbActive + ' 锁=' + !!inp.kb.docLocked + ' 基线 inner/vv=' + inp.kb.fullInner + '/' + inp.kb.fullVv) : 'n/a')
-      + '  --mochi-safe-bottom=' + (function () { try { var _v = getComputedStyle(document.documentElement).getPropertyValue('--mochi-safe-bottom').trim(); return _v ? _v + 'px' : '(未设/回落 ' + inp.envBottom + 'px)'; } catch (e) { return '?'; } })());
+    // FIX 2026-09-29 #1393e：这一格落的是【自定义属性的计算值】——它自带单位（'0px'）或干脆是一条 calc
+    //   （'calc(34px + 8px)'），原来这里又给它接了一次单位，产出的值在产物里根本不存在（iPhone17 Pro 那份
+    //   报障就写着 calc(34px + 8px)＋一个多余后缀，读的人第一反应是「CSS 语法坏了」，而真病灶是同一格
+    //   两个写入方在交替落值）。自定义属性不是长度值，照原样报才是事实。
+    // #1463：安卓也要有键盘现场——此前这一行只认 iOS 探针字段（inp.kb），安卓数据明明
+    // 采到了（kbAnd）却被掐成 n/a；GT7/K80 两份报障单都因此拿不到键盘期几何。
+    const _kbTxt = inp.kb ? ('kbActive=' + !!inp.kb.kbActive + ' 锁=' + !!inp.kb.docLocked + ' 基线 inner/vv=' + inp.kb.fullInner + '/' + inp.kb.fullVv)
+      : (inp.kbAnd ? ('安卓探针: kbActive=' + !!inp.kbAnd.kbActive + ' 推定停靠=' + !!inp.kbAnd.prov + ' 收起中=' + !!inp.kbAnd.closing + ' 残留闩=' + !!inp.kbAnd.staleVv
+        + ' 基线 inner/vv=' + inp.kbAnd.fullInner + '/' + inp.kbAnd.fullVv + ' vv现在=' + inp.kbAnd.vvNow + ' 视口平移=' + inp.kbAnd.offsetTop
+        + ' 历史平移=' + inp.kbAnd.panSeen + ' 键盘实测尺=' + (inp.kbAnd.vkH != null && inp.kbAnd.vkH >= 0 ? inp.kbAnd.vkH + 'px' : 'n/a'))
+      : 'n/a');
+    L.push('键盘残留=' + _kbTxt
+      + '  --mochi-safe-bottom=' + (function () { try { var _v = getComputedStyle(document.documentElement).getPropertyValue('--mochi-safe-bottom').trim(); return _v || ('(未设/回落 ' + inp.envBottom + 'px)'); } catch (e) { return '?'; } })());
     L.push('');
+        // #1463：键盘停靠现场自动快照（mobile-adapt 安卓分支在会话期自动记，纯只读取证）——
+    // 「点输入栏弹键盘后输入栏与键盘间一片空白」这类现场，人手点诊断必先失焦收键盘＝永远
+    // 拍不到；复现完回来点一次诊断，键盘期的 inner/vv/平移/钉高/底边差就都在这一行里。
+    const _ks = (function () { try { return window.__mochiKbSnap || (window.__mochiKbSnaps && window.__mochiKbSnaps[0]) || null; } catch (eKSS) { return null; } })();
+    L.push('键盘期快照=' + (_ks ? JSON.stringify(_ks) : '无（先去聊天页点输入栏弹一次键盘再收起，回来重测一次就有了）'));
+    L.push('聚焦期采样环=' + (function () { try { var q = window.__mochiFocRing; return q && q.length ? JSON.stringify(q) : '空（聚焦输入框后等 2～3 秒再导出才会有）'; } catch (eFR2) { return 'n/a'; } })()); // #1532：不依赖程序自认会话，聚焦期每拍记真实几何
+    L.push('键盘期快照环=' + (function () { try { return JSON.stringify((window.__mochiKbSnaps || []).map(function (q) { return [q.ev, q.kb, q.vvH, q.ph, q.tsk != null ? q.tsk : -1]; })); } catch (eKR) { return '[]'; } })()); // #1481：双稳态内核（GT7 Edge）毛刺序列取证（#1506：末位 ts 距最后按键 ms）
+    L.push('键盘收口取证=' + (window.__mochiKbClose ? JSON.stringify(window.__mochiKbClose) : '无（本页还没收过键盘会话）')); // #1506：收口走哪条路（gate/watch/tap-out/blur）＋距最后按键多久
     L.push('== 顶部安全区 ==');
     L.push('env(safe-area-inset-top)=' + inp.envTop + 'px  --mochi-safe-top=' + inp.varTop + 'px  diff(screen−inner)=' + inp.diff + 'px');
     L.push('');
@@ -3262,7 +3706,7 @@ window.mochiViewportForm = function (sig) {
     const sig = { v: sdVerCache, form: sigForm, scale: inp.scale, env: inp.envTop, varTop: inp.varTop, diff: inp.diff, innerW: inp.innerW, innerH: inp.innerH, vvH: inp.vvH, screenH: inp.screenH, phoneW: inp.phoneW, phoneH: inp.phoneH, phoneBottom: inp.phoneBottom, sb: inp.sbTop, tab: inp.tabBottom, iosH: inp.iosH, dpr: inp.dpr, standalone: !!inp.standalone, fs: !!inp.fsActive, andr: !!inp.andr, tablet: !!inp.tablet, ori: inp.orientation, bad: F.filter(function (f) { return !f.ok; }).map(function (f) { return f.name; }) };
     L.push('SIG ' + JSON.stringify(sig));
     L.push('');
-    L.push('※ 发给开发者时请整段复制（含 ✗ 条目），可精准对号修复。');
+    L.push('※ 报告可整段复制（含 ✗ 条目）留档比对。');
     try {
       if (window.__mochiVvTimeline) {
         L.push('');
@@ -3332,7 +3776,7 @@ window.mochiViewportForm = function (sig) {
               }
             });
           }
-          sdCopy(r.text).then(function (ok) { sdToast(ok ? '报告已复制到剪贴板，可直接发给开发者' : '报告已弹出，请手动全选复制'); });
+          sdCopy(r.text).then(function (ok) { sdToast(ok ? '报告已复制到剪贴板' : '报告已弹出，请手动全选复制'); });
         }, Math.max(0, 60 - (Date.now() - t0)));
       });
     });
@@ -3631,17 +4075,39 @@ window.mochiViewportForm = function (sig) {
     { n: '收藏', app: 'note', page: 'page-fav', open: true },
     { n: '统计', app: 'stats', page: 'page-stats', open: true },
     { n: '提问记录', app: 'interact', page: 'page-interact', open: true },
-    { n: '寻踪打卡', app: 'checkin', page: 'page-ta-checkin', open: true, gated: '可能需先绑定 TA/授权定位，会先弹引导' },
+    { n: '寻踪打卡', app: 'checkin', page: 'page-checkin', open: true },   // #1279 图标开的是寻踪页 page-checkin（不是字卡库题库页）。#1403 起删掉 gated 那句：总开关不再拦这一页（关掉后页面照开、页顶写明「已禁用」），留着它＝真出故障时诊断会拿「总开关已关闭」当借口，正是 #1279 要治的那一型凭空原因
     { n: '占卜', app: 'divination', page: 'page-divine', open: true },
     { n: '花园', app: 'garden', page: 'page-garden', open: true },
     { n: '此间', app: 'cjian', page: 'page-cjian', open: true },
     { n: '房间', app: 'room', page: 'page-room', open: true },
-    { n: '经期记录', app: 'period', page: 'page-period', open: true },
+    { n: '经期记录', app: 'period', page: 'page-period', open: true, audit: function (pg) {
+      // #1266：阶段填色断言——暗色整段压平（特异度打架）时浅色读数正常、旧自检全绿，
+      // 用户实报「填色的图标无法显示」自检却查不出。判据只取计算样式两个结构事实：
+      // ①状态图标底色＝当前 phase 的品牌填色；②有填色的日历格不得与空白格同色。
+      const out = [];
+      try {
+        const ico = document.getElementById('period-status-ico');
+        if (ico) {
+          const m = /phase-(\w+)/.exec(ico.className || '');
+          const PHASE_BG = { period: 'rgb(232, 90, 143)', fertile: 'rgb(245, 166, 35)', safe: 'rgb(126, 198, 158)' };
+          const want = m && PHASE_BG[m[1]];
+          const got = getComputedStyle(ico).backgroundColor;
+          out.push(!want ? '状态图标✓(该阶段无填色要求)' : (got === want ? '状态图标填色✓' : '✗ 状态图标填色被压平(' + m[1] + ' 期应 ' + want + ' 实 ' + got + ')'));
+        }
+        const cell = pg.querySelector('#period-grid .pc-cell.ph-period, #period-grid .pc-cell.ph-fertile');
+        if (cell) {
+          const blank = pg.querySelector('#period-grid .pc-cell.ph-none');
+          const same = !!blank && getComputedStyle(cell).backgroundColor === getComputedStyle(blank).backgroundColor;
+          out.push(same ? '✗ 日历格填色与空白格同色(' + getComputedStyle(cell).backgroundColor + ')' : '日历填色✓');
+        } else out.push('日历填色-无样本(还没记过经期)');
+      } catch (eA0) { out.push('日历填色-读取异常(不计失败)'); }
+      return out;
+    } },
     { n: '记账', app: 'accounting', page: 'page-accounting', open: true },
     { n: '梦角档案', app: 'memo-arc', page: 'page-memo-arc', open: true },
     { n: '我的档案', app: 'my-arc', page: 'page-my-arc', open: true },
     { n: '音乐', app: 'music', page: 'page-music', open: true },
-    { n: '群聊', app: 'group-chat', page: 'page-group-chat', open: true, gated: '可能未开启群聊' },
+    { n: '群聊', app: 'group-chat', page: 'page-group-chat', open: true },   // #1280 「开启群聊」开关只把桌面图标收进组件库、不拦打开（group-chat.js enterGroupChat 无门控，无头实测默认未开启时图标照样开页）：打不开＝真故障照实报 ✗，本行不再给不存在的原因
     { n: '帮我决定', fn: 'openDecision' },
     { n: '多人决定', fn: 'openGroupDecision' },
     { n: 'TA 询问', fn: 'openAskReply' },
@@ -3692,6 +4158,30 @@ window.mochiViewportForm = function (sig) {
     } catch (e) {}
   }
   function pageVisible(id) { var p = document.getElementById(id); return !!(p && !p.hidden); }
+  // #1266 收口自检盲区：旧版打开测试用程序化 .click()——穿透一切全屏遮罩、不走命中
+  // 测试，页面又只查 pageVisible，于是「用户全屏浮层下按钮按不动」这类故障自检恒绿
+  // （iPhone 12 Pro Max 实报）。此后打开测试加两条纯结构判据：①开测时若有任何可见
+  // 全屏拦截浮层，点名并先行撤除再复测（它就是按不动的根因）；②返回按钮必须能被
+  // elementFromPoint 真命中。零机型／零 UA 分支。
+  function blockerOverlay() {
+    const sels = ['#modal-mask', '#qa-mask', '#splash', '.splash'];
+    for (let i = 0; i < sels.length; i++) {
+      try {
+        const el = document.querySelector(sels[i]);
+        if (el && !el.hidden && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0) return sels[i];
+      } catch (e) {}
+    }
+    return null;
+  }
+  function hittable(el) {
+    try {
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return 'invisible';
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (hit && (hit === el || el.contains(hit))) return true;
+      return hit ? (hit.tagName + '.' + String(hit.className || '').slice(0, 24)) : 'offscreen';
+    } catch (e) { return 'error'; }
+  }
   async function collectFuncDiag() {
     const L = [];
     const rows = [];
@@ -3725,13 +4215,27 @@ window.mochiViewportForm = function (sig) {
       if (it.open && it.page && document.getElementById(it.page)) {
         try {
           const icon = document.querySelector('.app[data-app="' + it.app + '"], [data-desk-widget="app-' + it.app + '"]');
+          const blk0 = blockerOverlay();
+          if (blk0) {
+            det.push('⚠ 开测时有全屏浮层在场(' + blk0 + ')＝该时刻用户点不动，已撤除后复测');
+            warn = true;
+            closeFloats();
+            try { ['#qa-mask', '#splash'].forEach(function (s) { const q = document.querySelector(s); if (q) q.hidden = true; }); } catch (eQ) {}
+          }
           const t0 = Date.now();
           if (icon) icon.click();
           await sleep(450);
           const opened = pageVisible(it.page);
           if (opened) {
-            const back = document.getElementById(it.page).querySelector('.ch-back');
-            if (back) back.click();
+            const pg = document.getElementById(it.page);
+            if (it.audit) { try { (it.audit(pg) || []).forEach(function (s) { det.push(s); if (String(s).indexOf('✗') === 0) ok = false; }); } catch (eA) {} }
+            const back = pg.querySelector('.ch-back');
+            if (back) {
+              const hit = hittable(back);
+              if (hit === true) det.push('可点✓');
+              else { ok = false; det.push('✗ 返回按钮不可命中(' + hit + ')＝用户点不动'); }
+              back.click();
+            }
             await sleep(230);
             const closedOk = !pageVisible(it.page);
             det.push('打开✓ ' + (Date.now() - t0) + 'ms，关闭' + (closedOk ? '✓' : '⚠'));
@@ -3768,7 +4272,7 @@ window.mochiViewportForm = function (sig) {
     L2.push('== 汇总 ==');
     L2.push('正常 ' + okN + ' / 需注意 ' + warnN + ' / 异常 ' + badN + ' / 打开跳过 ' + skipN);
     const bads = rows.filter(function (r) { return r.indexOf('✗') === 0; });
-    if (bads.length) { L2.push(''); L2.push('✗ 异常清单（发给开发者）：'); bads.forEach(function (r) { L2.push('  ' + r); }); }
+    if (bads.length) { L2.push(''); L2.push('✗ 异常清单：'); bads.forEach(function (r) { L2.push('  ' + r); }); }
     return { text: L2.join('\n'), rows: rows, okN: okN, badN: badN, warnN: warnN, skipN: skipN };
   }
   function bindFuncDiag() {
@@ -3925,6 +4429,43 @@ window.mochiPickLog = function (entry, step) {
     if (arr.length > 6) arr.splice(0, arr.length - 6);
   } catch (e) {}
 };
+// ===== FIX 2026-09-28 #1351b「选了文件之后那一步抛了」不再是查不到的病（判据零机型／零 UA） =====
+// 本族十一波修的都是「选择器弹不弹」，而选择器弹了、文件也回来了、交给入口管线之后那一句
+// `try { onFiles(files) } catch (e) {}` 把异常吞得干干净净＝用户看到「点了没反应、没有成功也没有
+// 失败、无变化」，报障里除了「无法添加」什么都给不出（本次 iPhone 15 那一族就是这个形状：字卡库
+// 开页的窗口期里 groups 还是 null，ccImportMedia 第一行就抛 TypeError，而【最近错误】段零条＝
+// 这一族的取证黑洞——异常被 catch 在离屏幕最近的地方，诊断看不见、用户看不见、下一位也看不见）。
+// 三条腿（真层 surface／统一入口 mochiFilePick／弹窗确定 mochiModalPickOk）的回调都过这里：
+// 记进取证环（cb:err＋原因，随诊断单出账）、记进 __jsErrors（【最近错误】段）、并如实 toast。
+// 只加反馈与取证，不改任何一条腿的行为、不重试、不吞也不弹第二层。
+window.mochiPickCbFail = function (entry, e, nFiles) {
+  var msg = '';
+  try { msg = String((e && e.message) || e || '').slice(0, 60); } catch (x) {}
+  try { if (window.mochiPickLog) window.mochiPickLog(entry || 'pick', 'cb:err'); } catch (x2) {}
+  try { if (window.__jsErrors) window.__jsErrors.push('[选图导入] ' + String(entry || '') + ' ×' + (nFiles || 0) + '：' + msg); } catch (x3) {}
+  try { if (window.toast) window.toast('选好 ' + (nFiles || 0) + ' 个文件，导入这一步没走完（' + (msg || '未知原因') + '），请再点一次'); } catch (x4) {}
+};
+// ===== #1272：数据导入回执环（localStorage 持久，扛页面回收）=====
+// #1014 取证环的困局在导入场景被放大：vivo X200s 实报一份诊断里页面被回收 25 次，内存日志
+// 随每次回收清零——用户四份诊断报告「文件选择取证」全是空，导入失败没留下任何证据。
+// 这里把导入链路的关键动作（读回执三态/拒绝分支/聊天文件指路/写库结算）写进 localStorage，
+// 最多 8 笔，随诊断报告出账（旧→新）。键名与 data-backup.js 的 IMPORT_LOG_KEY 同值，
+// 导出侧已跳过该键（取证不外传）。零机型分支、纯取证，不参与任何业务读取。
+window.mochiImportLogKey = function () { return 'xy-home-v2:__import-log'; };
+window.__mochiImportLog = (function () {
+  try {
+    var a = JSON.parse(localStorage.getItem(window.mochiImportLogKey()) || '[]');
+    return Array.isArray(a) ? a : [];
+  } catch (e) { return []; }
+})();
+window.mochiImportLog = function (what) {
+  try {
+    var arr = window.__mochiImportLog;
+    arr.push({ t: Date.now(), w: String(what || '').slice(0, 180) });
+    if (arr.length > 8) arr.splice(0, arr.length - 8);
+    localStorage.setItem(window.mochiImportLogKey(), JSON.stringify(arr));
+  } catch (e) {}
+};
 
 // ===== 第十波 #1014：弹窗「确定」＝真·可点 input 层 =====
 // 用户（iOS Safari 实报「导入不了字卡文件和数据」，明说其他设备型号也有、要求不要覆盖式修补）。
@@ -3944,6 +4485,30 @@ window.mochiPickLog = function (entry, step) {
 //   cfg.onFiles(files, mode)
 //   cfg.entry        取证用的入口名
 // 零机型分支：所有内核同一条原生路径，无 UA/机型判断。撤层＝弹窗关闭/换届时移除（绝不残留）。
+// ===== 数据文件（json 备份）的 accept 单一来源（FIX 2026-09-29 #1410）=====
+// 需求（作者直派「为什么有的手机浏览器，点击【导入数据】只弹出手机的相册，没有弹出手机的文件
+// 管理」，并明说「这个问题其他设备型号也有出现」「不要覆盖修改导致不同型号设备浏览器的 bug 反复
+// 出现」）。
+// 根因（零机型／零 UA 分支，判据只有一条我们自己量得出的事实＝递给选择器的类型线索是什么）：
+// 这些入口此前把 accept 刻意留空（v3.9.x／v3.23.x 为躲「部分安卓 ROM 按 .json 过滤把备份文件
+// 灰显掉」那一次回退）。而空 accept 在那批内核里读起来不是「什么文件都要」，是「不给任何类型
+// 线索」——手机浏览器与内嵌 WebView 收到无线索的上传请求时按自家默认走，这一族默认正是相册
+// （图片选择器），于是躺在「文件管理」里的那个 .json 备份连候选页都到不了＝作者所见「只弹相册、
+// 没有文件管理」。
+// 本批不再在两个极端之间来回甩（空＝弹相册 与 只写 .json＝灰显选不到，后者历史上已经回退过
+// 一次），改成一份「非图片、又宽到没有东西会被灰显」的并集，四条各挡一型：
+//   .json                     只认扩展名的壳（不少安卓文件管理器按扩展名过滤）；
+//   application/json          按 MIME 过滤的（MediaStore 给 .json 猜的就是这个），同时这一条把整
+//                             个请求从「图片类」里摘出去——相册那批 intent filter 不再命中这一发；
+//   text/plain                把 json 当纯文本存的那批壳，与 iOS 的 public.plain-text；
+//   application/octet-stream  转存／改名后丢掉类型的未知二进制，iOS 侧对应 public.data（所有
+//                             文件都 conforms 到它＝这条在场就不会有任何东西被灰显掉）。
+// 串里没有任何 image 或 video 类型，也不是空串与全通配，所以不会被判成「挑照片」；文件格式仍由
+// 读取后的内容校验兜底（选错文件照旧报「不是 mochi 导出的数据文件」）——accept 只负责把候选页
+// 送到对的那一页。
+// 单一来源：各数据导入入口一律读这一个值，不再逐入口手抄（本族 #677→#755→#920→#991→#1014 的
+// 教训＝手抄必漏，每漏一处就是下一张「换个型号又坏了」的报障）。
+window.mochiDataPickAccept = '.json,application/json,text/plain,application/octet-stream';
 window.mochiModalPickOk = function (cfg) {
   var o = cfg || {};
   var okBtn = o.okBtn;
@@ -3997,7 +4562,7 @@ window.mochiModalPickOk = function (cfg) {
     try { input.value = ''; } catch (e8) {} // 允许重选同一文件
     var mode = (typeof o.mode === 'function') ? o.mode() : null;
     if (window.mochiPickLog) window.mochiPickLog(o.entry || 'modal-ok', files.length ? ('files=' + files.length) : 'files=0');
-    if (files.length && typeof o.onFiles === 'function') { try { o.onFiles(files, mode); } catch (e9) {} }
+    if (files.length && typeof o.onFiles === 'function') { try { o.onFiles(files, mode); } catch (e9) { if (window.mochiPickCbFail) window.mochiPickCbFail(o.entry || 'modal-ok', e9, files.length); } }
     // 延后一拍撤层：撤层发生在 change 派发过程中会连带撤掉刚武装好的下一次选择
     var tok = input.__armTok = (input.__armTok || 0) + 1;
     setTimeout(function () { if (input.__armTok === tok) window.mochiModalPickOkClear(); }, 0);
@@ -4077,23 +4642,55 @@ window.mochiFilePickSurface = function (btn, opts) {
       }, true);
       input.__mochiSurface = { owner: null, onFiles: null };
     }
-    try { input.accept = o.accept || 'image/*'; } catch (e) {}
+    try { input.accept = typeof o.accept === 'string' ? o.accept : 'image/*'; } catch (e) {} // #1413：只有「没提 accept」才兜底成图片；提了空串＝这一格不限制类型，别再偷偷换成 image/*（同一型缺陷在 chatcard #1040d 那处只能靠事后补写绕开）
     input.multiple = !!o.multiple;
     var rec = input.__mochiSurface = input.__mochiSurface || { owner: null, onFiles: null };
-    if (o.owner) rec.owner = o.owner;
+    // FIX 2026-09-25 #1230：宿主按 id 登记时**必须当场解析成元素**。老写法直接把字符串存进 rec.owner，
+    // 于是「先铺层、统一入口那个 input 还没被创建」的入口（聊天壁纸面板/抽屉＝owner:'dev-cs-bg-pick'）
+    // 一旦在**同一次渲染里**被再铺一遍，宿主上登记的是当时的解析结果＝null ⇒ 选完文件两路皆空
+    // （onFiles 被 null 短路、转交也没有对象可转）＝原生层弹了选择器、选完图片照样没进管线。
+    var newOwner = o.owner;
+    if (typeof newOwner === 'string') { try { newOwner = document.getElementById(newOwner); } catch (eO) { newOwner = null; } }
+    if (newOwner) rec.owner = newOwner;
+    // 宿主原始 id 单独留一份：#1002 的「激活时补登记管线」靠它找到层（宿主可能是点按那一刻才建的）
+    if (typeof o.owner === 'string' && o.owner) rec.ownerId = o.owner;
+    // 换宿主（同一层的 id 被挂到另一个按钮上）时清掉旧宿主，避免两路同时命中
+    if (rec.host && rec.host !== btn) rec.owner = null;
+    rec.host = btn;
     if (typeof o.onFiles === 'function') rec.onFiles = o.onFiles;
+    // FIX 2026-09-25 #1230（第十一波）：宿主登记成 id 字符串、而那个统一入口 input **此刻还不存在**
+    // （它是第一次点按钮时才建的）⇒ 铺层这一拍就按同一口径把那个常驻 input 预建好（noClick：绝不
+    // 在这里激活选择器），并**回头补解析**成刚建出来的元素。顺序必须是这样：先登记 id → 预建 → 再解析；
+    // 反过来的话原生层选完文件会「无管线可交」＝图片被静默丢掉（聊天背景上传不了的形状之一）。
+    if (typeof o.owner === 'string' && o.owner && typeof rec.onFiles !== 'function' && window.mochiFilePickBindHost) {
+      try {
+        var preHost = window.mochiFilePickBindHost(o.owner, btn);
+        if (preHost && !rec.owner) rec.owner = preHost;
+      } catch (eB) {}
+    }
+    // 原生腿也要有回执：前十波只记程序化腿（leg:fire），「手指落在层上但内核没弹窗」这种形态
+    // 在诊断里完全隐身＝每轮都在猜。pointerdown 在真点按时必然先于选择器派发（合成 click 不会派发它），
+    // 与 files=N 配对就能分清「入口没被点到 / 层没弹 / 选完没回来」。
+    if (!input.__mochiNativeHooked) {
+      input.__mochiNativeHooked = 1;
+      input.addEventListener('pointerdown', function () {
+        if (window.mochiPickLog) window.mochiPickLog((btn && btn.id) || (input.id || 'surf'), 'surf:hit');
+      }, { capture: true, passive: true });
+    }
     input.onchange = function () {
       var files = Array.prototype.slice.call(input.files || []);
       try { input.value = ''; } catch (e) {} // 允许重选同一文件
+      if (window.mochiPickLog) window.mochiPickLog((btn && btn.id) || (input.id || 'surf'), files.length ? ('surf:files=' + files.length) : 'surf:files=0');
       if (!files.length) return;
       // ① 直接回调（入口自建管线的入口 / tap 时由 mochiFilePick 登记的最新回调）
-      if (typeof rec.onFiles === 'function') { try { rec.onFiles(files); } catch (e) {} return; }
+      if (typeof rec.onFiles === 'function') { try { rec.onFiles(files); } catch (eCb) { if (window.mochiPickCbFail) window.mochiPickCbFail((btn && btn.id) || input.id || 'surf', eCb, files.length); } return; }
       // ② 转交宿主 input：沿用入口原有 onchange 管线（零改动接入）。
       //    owner 允许写成 id 字符串 —— 统一入口（mochiFilePick）的 input 是点按时才建的，
-      //    接入侧在绑定/渲染时只能知道它的 id，故到这里再解析（选完文件时它必然已存在）。
+      //    宿主在登记那一刻可能还不存在，故这里再按 id 兜底解析一次（#1230）。
       var owner = rec.owner;
+      if (!owner && rec.ownerId) { try { owner = document.getElementById(rec.ownerId); } catch (e3) { owner = null; } }
       if (typeof owner === 'string') { try { owner = document.getElementById(owner); } catch (e2) { owner = null; } }
-      if (!owner) return;
+      if (!owner) { if (window.mochiPickLog) window.mochiPickLog((btn && btn.id) || (input.id || 'surf'), 'surf:nopipe'); return; }
       try {
         var dt = new DataTransfer();
         for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
@@ -4122,10 +4719,533 @@ window.mochiFilePickSurfaceAll = function (input) {
     var all = document.querySelectorAll('input[data-file-pick-surface]');
     for (var i = 0; i < all.length; i++) {
       var rec = all[i].__mochiSurface;
-      if (rec && (rec.owner === input || (typeof rec.owner === 'string' && rec.owner === input.id))) out.push(all[i]);
+      if (rec && (rec.owner === input || (typeof rec.owner === 'string' && rec.owner === input.id) || (rec.ownerId && rec.ownerId === input.id))) out.push(all[i]);
     }
   } catch (e) {}
   return out;
+};
+
+// ===== FIX 2026-09-27 #1323 「门＝层」：把铺层从「逐入口各自记得」换成共用模具 ＋ 现场自学台账 =====
+// 需求（iPhone17ProMax / iOS 26.6.1 桌面 PWA 实报「从苹果自带浏览器添加到桌面——大部分照片无法添加，
+// 包括朋友圈壁纸、通话壁纸；朋友圈壁纸也无法上传图片、更换图片」，并明说其他设备型号也有出现、要求
+// 不要覆盖式修补）：这一族十一波（#603→#717→#738→#755→#920→#991→#1002→#1230→#1311）修的一直是
+// 「同一个模具的下一个入口」。#755 自己的注释就写着「每修一处，下次用户就在另一处报同一个症状＝反复
+// 出现的结构性原因」，可铺层到今天仍是**每个入口各自**在绑定/渲染处再调一次 mochiFilePickSurface：
+// 统一入口 mochiFilePick 激活的仍是那个 sr-only clip 的常驻 input（＝合成腿）。于是「正确」依赖几十个
+// 入口各自不遗漏，漏一个＝那一格永久静默失败（iOS 26 对合成激活不弹也不抛异常＝JS 探不到），用户所见
+// 就是「大部分照片无法添加」。同一份诊断单里现成的同设备 A/B：00:03:25 avlib-upload 手指落在真层上＝
+// surf:hit＋surf:files=1（成功），00:03:15 与 00:03:35 mochi-call-bg-pick 两发只有 leg:fire＋fb:onscreen
+// （＝只剩合成腿，一条 files=N 都没回来）。⇒ 问题从来不是机型，是「这扇门有没有真层」被写成了可选项。
+// 本批换掉问题本身，判据只剩一条事实：**手指这一下落在的是不是一个真 file input**（零机型／零 UA 分支）。
+//   ① window.mochiFilePickDoor(el, opts)＝铺层的唯一模具：#1311 那三件事（幂等复核／画序＝挪成第一个
+//      子节点／可命中性）在这里做一遍，新入口只调一行，不必再手抄模具（手抄必漏＝本族十一波的公因式）。
+//   ② 自学台账（全局键落盘）＝防复发的正解：任何一格只要发生过一次「手指点它 → 走了合成腿」，就把它记
+//      下来，下一次由 pointerdown 复核补装成真层。记的是**从 `window.event.target` 爬出来的那一格**（见
+//      下面的 pickDoorClimb：只认 button/a 与叶子，容器与 SVG 一律不自动铺），且要求它落在本次 handler 的
+//      `currentTarget` 之内＝层铺上去之后点按仍旧冒泡回原逻辑，不吃入口自己的分支。落盘是因为 iOS 每隔
+//      几分钟回收一次页面（本机诊断实证「本页被系统回收过 148 次」），不落盘＝每次回收后每扇门都要重新
+//      丢一发点按。这条覆盖**今后任何新入口**：谁都不用记得改代码。
+//   ③ 闸（veto）＝自愈的安全前提：这一格被点到底是不是要选图，只有入口自己的逻辑知道（#1311 的「已有
+//      背景时点封面＝开『更换背景／恢复默认』面板」就是同款形态，恒铺层会把它吃掉）。file input 的原生
+//      默认动作在**事件冒泡结束之后**才执行 ⇒ 在 document 冒泡阶段只问一句「本次手势里有没有人真的请求
+//      过选择器、请求的是不是这一层绑的那个宿主」（mochiFilePick／Fire 进门按「手势序号＋宿主」盖的戳），
+//      没有＝preventDefault 取消原生弹层、把这一发原样交回入口逻辑。**只收自学装上的层**（带 veto 的）＝
+//      全站既有 20 扇人工铺好的门行为逐字不变。
+var PICK_DOOR_KEY = 'xy-home-v2:__pick-doors';
+var _pickDoorAutoSeq = 0; // A 档（当场换门）生成的层 id 计数
+var PICK_DOOR_MAX = 40; // 台账上限（每条约 60B＝共 2.4KB）；超出按最久没点过的门淘汰
+var _pickDoors = null;
+function pickDoorLoad() {
+  if (_pickDoors) return _pickDoors;
+  _pickDoors = {};
+  try {
+    var o = JSON.parse(localStorage.getItem(PICK_DOOR_KEY) || '{}');
+    if (o && typeof o === 'object' && !Array.isArray(o)) _pickDoors = o;
+  } catch (e) { _pickDoors = {}; }
+  return _pickDoors;
+}
+var _pickDoorSaveT = 0;
+var _pickDoorLsDead = 0; // 1＝LS 这一发落不下去，台账只活在内存里（每次页面回收清零）
+// FIX 2026-09-27 #1348b：#1323i 那条「不落盘＝每扇门每次回收重新交一发学费」此前只兑现了一半——
+// 落盘只有 localStorage 一份副本，而报障这台 iPhone 的诊断单写着「LS 写探针：写入失败
+// (QuotaExceededError)」（整域 6.1MB，连 1 字节探针都抛）。这台机器上每一次写都静默抛掉，
+// 台账于是仍旧只有内存那一份；iOS 又每隔几分钟回收一次页面（同一张单实测回收 50 次）＝
+// 「自学」在这些机器上永远从头再来。判据与 #1335 同一把尺子＝**这一发 setItem 抛没抛**，
+// 抛过的这一场不再把内存账本当作已经落盘，改由 IDB 那份兜住（零机型／零 UA 分支）。
+function pickDoorSave() {
+  var s = '';
+  try { s = JSON.stringify(_pickDoors || {}); } catch (e0) { return; }
+  try { localStorage.setItem(PICK_DOOR_KEY, s); _pickDoorLsDead = 0; } catch (e) { _pickDoorLsDead = 1; }
+  try { if (window.idbSet) window.idbSet(PICK_DOOR_KEY, s); } catch (e2) {}
+}
+function pickDoorDirty() {
+  try {
+    if (_pickDoorSaveT) return;
+    _pickDoorSaveT = setTimeout(function () {
+      _pickDoorSaveT = 0;
+      pickDoorSave();
+    }, 600);
+  } catch (e2) {}
+}
+// 起手把库里那份并回来：逐条按 t 取新，绝不让库里那份盖掉 LS 里更新的一条（#1335 同一口径）。
+function pickDoorMergeIdb() {
+  try {
+    if (!window.idbGet) return;
+    Promise.resolve(window.idbGet(PICK_DOOR_KEY)).then(function (raw) {
+      if (!raw) return;
+      var o = raw;
+      try { if (typeof raw === 'string') o = JSON.parse(raw); } catch (eP) { return; }
+      if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+      var d = pickDoorLoad(), ch = 0;
+      Object.keys(o).forEach(function (k) {
+        var n = o[k], cur = d[k];
+        if (!n || typeof n !== 'object') return;
+        if (!cur || (Number(n.t) || 0) > (Number(cur.t) || 0)) { d[k] = n; ch++; }
+      });
+      if (!ch && !_pickDoorLsDead) return;
+      pickDoorTrim(d);
+      if (_pickDoorLsDead) pickDoorDirty(); // LS 那份本来就是空的＝把库里读到的补回 LS 写得进的那台机器
+      if (window.mochiPickDoorSweep) window.mochiPickDoorSweep(true);
+    }).catch(function () {});
+  } catch (e) {}
+}
+try {
+  document.addEventListener('mochi-restore-done', function () { pickDoorMergeIdb(); });
+  setTimeout(pickDoorMergeIdb, 2500); // 回填事件没派发（首装／无 IDB）也要有一发，两路都只在 t 上取新
+} catch (eM) {}
+function pickDoorTrim(d) {
+  try {
+    var ks = Object.keys(d || {});
+    if (ks.length <= PICK_DOOR_MAX) return;
+    ks.sort(function (a, b) { return (Number(d[a] && d[a].t) || 0) - (Number(d[b] && d[b].t) || 0); });
+    for (var i = 0; i < ks.length - PICK_DOOR_MAX; i++) delete d[ks[i]];
+  } catch (e) {}
+}
+// 这扇门上此刻有没有那张层（只看直接子节点：层永远铺在门自己身上，门整块被重画＝这里判「没有」）。
+// 认「任意一张层」而不是认 id＝A 档那层的 id 是临时号，认 id 会让 B 档在同一格上再叠一层。
+function pickDoorHasLayer(el) {
+  try {
+    var kids = el.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      if (kids[i].getAttribute && kids[i].getAttribute('data-file-pick-surface') === '1') return true;
+    }
+  } catch (e) {}
+  return false;
+}
+// ① 模具：入口＝门，门上永远铺着一张真 file input（#991/#1002/#1311 三代的口径收在这一个函数里）
+//   opts.owner    宿主 input（或其 id）＝选完文件交回入口原有管线；opts.onFiles 直连回调（二选一必填，
+//                 两者都没有＝选完图没地方交＝宁可不动手，也不铺一张「弹了选择器、选完静默丢掉」的层）
+//   opts.veto     1＝本次手势若没被入口认领，取消原生默认动作（自学装上来的层一律带，人工铺的不带）
+window.mochiFilePickDoor = function (el, o) {
+  try {
+    o = o || {};
+    if (!pickDoorHostable(el) || !window.mochiFilePickSurface) return null; // #1343：替换元素装不出渲染得出来的子节点＝铺进去也是死层
+    var owner = o.owner;
+    var host = typeof owner === 'string' ? document.getElementById(owner) : owner;
+    // 宿主还没被建出来（统一入口那个 input 是第一次点按钮时才建的）＝按 #1230 同一口径预建（noClick，
+    // 绝不在这里激活选择器）。**不传 btn**：传了会给这扇门再插一张 label 覆盖层，而 label 是后插的、
+    // 画序压在本层的上面（#1002 那条「label 必须插在 surface 之前」只在先有层后有 label 时成立）＝
+    // 手指落在 label 上而不是真 input 上，本批要的那条原生路径就白铺了。
+    if (typeof owner === 'string' && !host && window.mochiFilePickBindHost) host = window.mochiFilePickBindHost(owner);
+    if (!host && typeof o.onFiles !== 'function') return null;
+    var lid = o.id || ('mochi-door-' + (el.id || ''));
+    var layer = window.mochiFilePickSurface(el, {
+      id: lid, accept: typeof o.accept === 'string' ? o.accept : ((host && host.accept) || 'image/*'), // #1413：门上同一把尺（宿主是空串＝不限制，不许一路兜回相册）
+      multiple: typeof o.multiple === 'boolean' ? o.multiple : !!(host && host.multiple),
+      owner: host || owner, onFiles: o.onFiles
+    });
+    if (!layer) return null;
+    // 画序（#1311 同一判据）：absolute＋z-index:0 已经高过静态流内的文字图标，但入口内**另有定位兄弟**
+    // （自带 position/z-index 的那些）会按 DOM 顺序压在层上面＝那几块点下去又走回合成腿。挪成第一个子
+    // 节点＝层永远在最下、原有可点元素永远在上，两件事都不偷。
+    try { if (layer.parentNode === el && el.firstChild !== layer) el.insertBefore(layer, el.firstChild); } catch (e0) {}
+    // #1343：宿主是容器时按 **face（手指真正落在的那一张）** 收盒子——只盖住用户点的这一格，同格里别的
+    // 子元素仍命中自己；收完当场用 elementFromPoint 复核这层确实接得住这一发，复核不过＝撤层返回 null。
+    // 没有 face 的（叶子格／人工门）沿用 100%×100%，但自学铺的那张要量一次盒子：0×0＝命不中＝不算铺上，
+    // 于是「诊断里真铺着层 M」不再把死层算成已修（本批第二条谎）。
+    if (o.face && o.face !== el && el.contains(o.face)) {
+      if (!pickDoorFitLayer(layer, el, o.face)) return null;
+    } else if (o.veto) {
+      // 只在「宿主自己已排版、而层却是 0×0」时判死层——宿主本身没盒子（还没切到的页／隐藏容器）时
+      // 这一层将来会随宿主一起有尺寸，此刻判死＝把 #1323 启动补装整条路掐掉（实测红过邻居 R3）。
+      var _hb = null, _lb = null;
+      try { _hb = el.getBoundingClientRect(); _lb = layer.getBoundingClientRect(); } catch (e1) {}
+      if (_hb && _lb && _hb.width && _hb.height && (!_lb.width || !_lb.height)) {
+        try { if (layer.parentNode) layer.parentNode.removeChild(layer); } catch (e2) {}
+        window.__mochiDoorNoFit = (window.__mochiDoorNoFit || 0) + 1;
+        return null;
+      }
+    }
+    var rec = layer.__mochiSurface;
+    if (rec) {
+      if (o.veto) rec.veto = 1;
+    }
+    return layer;
+  } catch (e) { return null; }
+};
+// ② 记门：只有「这一下真的走了合成腿」才记（手指落在已有层上的那一发原生已经在管事，不该再动）
+// FIX 2026-09-27 #1343（iPhone 15 / iOS 17.6.1 复报「朋友圈背景、表情包、大部分需要添加图片的功能都已
+// 卡死失效」，并明说其他设备型号也有出现、要求不要覆盖式修补）：#1323 的叶子判据把「这一格没有元素子
+// 节点」当成了「这一格装得下一个子节点」——这两件事在**替换元素**上不成立：<img>／<canvas>／<input>／
+// <video> 这些元素的子节点按规范不参与渲染，往 <img> 里 appendChild 一个 file input，节点确实在 DOM 里、
+// getBoundingClientRect 是 0×0、elementFromPoint 永远命不中它＝一张**死层**。而全站「格子＝一张图」的入口
+// （朋友圈封面/背景、好友头像、表情包、壁纸预览、商品图）恰好全是这个形状，无头复现：真鼠标落在 img 上
+// → 自学铺出的层 parent=IMG／w=0／h=0，第二发照旧走合成腿＝iOS 静默拒绝那一族症状原样留着，而【诊断】
+// 的「此刻真铺着层 M」把它算成已修＝谎报。本批改这一条判据本身（零机型／零 UA）：
+//   · 装不出子节点的叶子**不当门**，继续往上爬到装得出的宿主；
+//   · 爬到的是容器（有别的元素子节点）时，层只按**手指那一格的盒子**铺，不整格覆盖＝旁边别的子元素仍命中
+//     自己（#1323 ④ 那条「容器一律不铺」担心的正是整格覆盖吃掉兄弟，缩到落点这一格就没这个担心）；
+//   · 铺完当场用 elementFromPoint 复核「落点这一格确实命中新层」，被别的子元素挡着就先抬那一格，抬完仍
+//     不过＝**不铺**（退回 #1323 之前的合成腿）并计入 census，绝不留下第二类死层。
+var PICK_DOOR_NOCHILD = { IMG: 1, INPUT: 1, BR: 1, HR: 1, PICTURE: 1, SOURCE: 1, VIDEO: 1, AUDIO: 1, IFRAME: 1, EMBED: 1, OBJECT: 1, TRACK: 1, AREA: 1, CANVAS: 1, PROGRESS: 1, SELECT: 1, TEXTAREA: 1, META: 1, LINK: 1, SCRIPT: 1, STYLE: 1, BASE: 1, WBR: 1 };
+function pickDoorHostable(el) { return !!(el && el.appendChild && !PICK_DOOR_NOCHILD[el.tagName]); }
+// 结构锚：这一格没有 id 时（JS 现渲的图片格子基本都是）用「最近带 id 的祖先 ＋ 一路子序号」记住它，
+// 供起手/启动那两次扫按原样补回。#1323 的 B 档要求 tgt.id，于是无 id 的每一格每场都要重交一次学费；
+// iOS 每隔几分钟回收一次页面＝每次回收都重新交。解析不中＝跳过（绝不在猜错的那一格上铺层）。
+function pickDoorAnchor(el) {
+  try {
+    var seg = [], cur = el, i = 0;
+    for (; i < 8 && cur && cur.nodeType === 1; i++, cur = cur.parentElement) {
+      if (cur.id) {
+        seg.reverse();
+        return { root: String(cur.id).slice(0, 40), idx: seg, ok: 1 };
+      }
+      var p = cur.parentElement;
+      if (!p) break;
+      var kids = p.children || [], k = 0, n = 0;
+      for (; n < kids.length; n++) { if (kids[n] === cur) break; if (kids[n].tagName === cur.tagName) k++; }
+      seg.push(cur.tagName + '#' + k);
+    }
+  } catch (e) {}
+  return null;
+}
+function pickDoorResolve(a) {
+  try {
+    if (!a || !a.root || !Array.isArray(a.idx)) return null;
+    var cur = document.getElementById(a.root);
+    if (!cur) return null;
+    for (var i = 0; i < a.idx.length && cur; i++) {
+      var seg = String(a.idx[i]).split('#'), want = seg[0], k = Number(seg[1]) || 0;
+      var kids = cur.children || [], hit = null;
+      for (var n = 0; n < kids.length; n++) {
+        if (kids[n].tagName !== want) continue;
+        if (k-- === 0) { hit = kids[n]; break; }
+      }
+      cur = hit;
+    }
+    return cur && cur.nodeType === 1 ? cur : null;
+  } catch (e) { return null; }
+}
+// 从「手指真正落到的那一格」向上找到**铺层安全**的那一格（≤6 层）：
+//   · SVG／mathml 节点跳过——往 `<svg>` 里塞 `<input>` 不渲染，等于白铺还留个游离节点；
+//   · `<button>`／`<a>`／`<label>` 整格覆盖安全：规范就不允许它们内部再放可交互元素，
+//     铺满也不会盖掉谁的按钮；
+//   · 其余 HTML 元素只认**装得出子节点的叶子**：层的盒子＝这一格的盒子，兄弟一格都盖不到。
+//     非叶子的容器一律不整格自动铺——一张 100%×100% 的透明 input 浮在静态流内的孩子之上，
+//     会把这一格里本来要点别的孩子的动作整个接走（＝#1323 ④ 那条勿踩，本批原样保留）。
+//   · #1343 补的第三型：**装不出子节点的叶子**（<img>／<canvas>／<input>…替换元素按规范不渲染子节点）
+//     不当门——铺进去就是一张 0×0、elementFromPoint 命不到的死层。记下它那一格的盒子继续往上爬，
+//     爬到能装子节点的宿主时**只按这一格的盒子**铺（face），于是「格子＝一张图」那批入口既活得过来、
+//     又不会连带吃掉同格里的兄弟按钮。返回 {el 宿主, face 落点那一格}。
+function pickDoorClimb(node) {
+  try {
+    var face = null;
+    for (var cur = node, i = 0; i < 6 && cur && cur.nodeType === 1; i++, cur = cur.parentElement) {
+      if (cur.namespaceURI && cur.namespaceURI !== 'http://www.w3.org/1999/xhtml') continue;
+      var tag = cur.tagName;
+      if (tag === 'BUTTON' || tag === 'A') return { el: cur, face: null };   // label 不算：它自己就是转发层，再塞 input 进去＝两条转发路叠在一格
+      var leaf = !cur.children || cur.children.length === 0;
+      if (leaf && pickDoorHostable(cur)) return { el: cur, face: null };
+      if (leaf) { face = face || cur; continue; }
+      if (face && pickDoorHostable(cur)) return { el: cur, face: face };
+    }
+  } catch (e) {}
+  return null;
+}
+// 把层收到 face 那一格的盒子上，并当场复核「这一格确实命中新层」。复核不过＝撤层返回 false，
+// 由调用方按「没铺成」处理——本批宁可退回合成腿，也不留第二类看起来修好了的门。
+function pickDoorFitLayer(layer, host, face) {
+  try {
+    var fr = face.getBoundingClientRect(), hr = host.getBoundingClientRect();
+    if (!fr.width || !fr.height) return false;
+    layer.style.left = Math.round(fr.left - hr.left) + 'px';
+    layer.style.top = Math.round(fr.top - hr.top) + 'px';
+    layer.style.width = Math.round(fr.width) + 'px';
+    layer.style.height = Math.round(fr.height) + 'px';
+    var cx = fr.left + fr.width / 2, cy = fr.top + fr.height / 2;
+    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return true; // 不在视口内＝无从复核，按旧语义放行
+    var u = document.elementFromPoint(cx, cy);
+    if (u === layer) return true;
+    if (u === face) { // face 自己是定位元素、压在层上面：把层抬到它之上（盒子与它完全重合＝只盖它这一格）
+      try { layer.style.zIndex = '2'; } catch (e1) {}
+      u = document.elementFromPoint(cx, cy);
+      if (u === layer) return true;
+    }
+    // 只有「挡路那一格本来就在这扇门之内」才是本条判据要拦的事（同格里的徽标／角标按钮＝让路给它，
+    // 让不开就是它 owns 这一发＝撤层）。挡在外面的是临时的遮罩／开屏层／还没切到的页（#1323 R3 量到的
+    // 正是启动那一刻的 splash 盖住静态锚），那些散去之后这层就是真门＝当场判死会把补装整条路掐掉。
+    if (u && !host.contains(u)) return true;
+    if (u && !u.__mochiSurface) {
+      try {
+        var up = '';
+        try { up = getComputedStyle(u).position || ''; } catch (e2) {}
+        if (up === 'static' || up === '') u.style.position = 'relative';
+        if (!u.style.zIndex || u.style.zIndex === 'auto' || u.style.zIndex === '0') u.style.zIndex = '1';
+      } catch (e3) {}
+      u = document.elementFromPoint(cx, cy);
+      if (u === layer) return true;
+    }
+    try { if (layer.parentNode) layer.parentNode.removeChild(layer); } catch (e4) {}
+    window.__mochiDoorNoFit = (window.__mochiDoorNoFit || 0) + 1;
+    return false;
+  } catch (e) { return false; }
+}
+window.mochiFilePickLearnDoor = function (input) {
+  try {
+    var ev = window.event;
+    if (!ev || !ev.isTrusted || ev.type !== 'click') return; // 程序化／延时补腿不记（只认手指那一下）
+    if (ev.timeStamp && typeof performance !== 'undefined' && performance.now && performance.now() - ev.timeStamp > 400) return;
+    var surfAt = window.__mochiSurfaceTapAt || 0;
+    if (surfAt && Date.now() - surfAt < 400) return;         // 本次手势落在真层上＝别重复记
+    var raw = ev.target;
+    if (!raw || raw.nodeType !== 1 || raw.__mochiSurface) return;   // 落点本身就是某张层＝这一发已由原生腿负责，不再记
+    var climb = pickDoorClimb(raw);                                  // 往上找铺得安全的那一格（见上）
+    var tgt = climb && climb.el, face = climb && climb.face;         // #1343：face＝手指那一格（宿主是容器时按它收盒子）
+    if (!tgt) return;
+    if (!input || !input.id || !input.accept) return;        // 宿主没有 accept＝无法保证重建时口径一致（音频/文件门不自动学）
+    var cur = ev.currentTarget;
+    if (cur && cur !== document && typeof cur.contains === 'function' && !cur.contains(tgt)) return;
+    // A 档·当场换：把用户**这一下真正落到的那一格**换成真层（不认 id、不留盘——重画与页面回收都会
+    // 带走它，但同一张列表里的第二下立刻可用）。iOS 上「点了没反应」的用户第一反应就是再点一次
+    // （这份诊断单里 mochi-call-bg-pick 那两发相隔 20 秒＝同一形状），A 档让那第二下走原生腿。
+    // 铺的是 ev.target 本身＝必在 currentTarget 之内（上面已校验），点按照旧冒泡回原 handler；
+    // 入口这一发若并不想弹选择器，③ 那道闸会把原生默认动作取消掉＝不吃入口自己的分支。
+    // 每次请求都重新过一遍模具＝同一格若在不同状态下选不同类型的文件（image/→audio/），层跟着改口径，
+    // 不会留下「按下去弹出错类型」的旧层（mochiFilePickSurface 按 id 复用、accept/multiple/owner 每次重写）。
+    if (tgt.appendChild) {
+      try {
+        // 这格已经有层（起手扫装补的 B 档层、或人工铺好的门）＝沿用它的 id 复用，绝不再叠第二层，
+        // 也**不给它换 veto**（人工门的语义不因这一发被改走）；没有层才新建一张带闸的自学层。
+        var _had = null, _kids = tgt.children || [];
+        for (var _ki = 0; _ki < _kids.length; _ki++) {
+          if (_kids[_ki].getAttribute && _kids[_ki].getAttribute('data-file-pick-surface') === '1') { _had = _kids[_ki]; break; }
+        }
+        if (_had) tgt.__mochiDoorId = _had.id;
+        else if (!tgt.__mochiDoorId) tgt.__mochiDoorId = 'mochi-door-x-' + (++_pickDoorAutoSeq);
+        // 取证只留一笔：A 档「当场换」与 B 档「落账」是同一次动作的两半，各记一笔会把 #1014 那口
+        // 只有 6 格的环挤掉——实测挤掉过 verify-1230 的 B1d（leg:fire 被自己的新观测顶出环＝邻居假红）。
+        var _justArmed = !_had;
+        if (window.mochiFilePickDoor(tgt, { id: tgt.__mochiDoorId, owner: input, veto: _had ? undefined : 1, face: _had ? null : face }) && _justArmed && window.mochiPickLog) {
+          window.__mochiDoorPendingLog = 1; // 由下面的 B 档决定这一笔的名字：落得了盘就叫 door:learn
+        }
+      } catch (eA) {}
+    }
+    // B 档·落盘：有 id 直接按 id 记；**没有 id 的按结构锚记**（#1343——JS 现渲的图片格子基本都没有 id，
+    // 而 iOS 每隔几分钟回收一次页面＝每场都要重交一发学费，用户所见就是「每次进来都点不动」）。
+    // 留盘记录的是「这格（＋手指那一格）→ 哪个宿主、什么口径」，供起手/启动那两次扫装按原样补回。
+    var _bstat = '';
+    try {
+      var _anchor = tgt.id ? null : pickDoorAnchor(tgt);
+      if ((tgt.id || _anchor) && tgt.isConnected) {
+        var d = pickDoorLoad();
+        var k = String(tgt.id || ('fp:' + _anchor.root + '>' + (_anchor.idx || []).join('/'))).slice(0, 80);
+        var want = { owner: String(input.id).slice(0, 40), accept: String(input.accept).slice(0, 64), multiple: !!input.multiple, t: Date.now() }; // #1410：数据文件的 accept 并集 58 字符，按 40 截会把末条 MIME 截成半截（台账那份与宿主那份永不相等＝这一格被误判成「两种状态切」而永久剔门）
+        if (!tgt.id) { want.a = _anchor; if (face) want.f = pickDoorAnchor(face); }
+        var old = d[k];
+        if (old && old.bad) { /* 已被判过「口径不一致」＝永久裁决，不再自动铺 */ }
+        else if (old && (old.owner !== want.owner || old.accept !== want.accept || !!old.multiple !== want.multiple)) {
+          d[k] = { bad: 1, t: want.t }; // 同一格在不同状态下选的东西不一样＝自动铺层必然选错类型＝剔除
+          pickDoorDirty();
+          _bstat = 'variant';
+        } else if (old) { old.t = want.t; }
+        else { d[k] = want; pickDoorTrim(d); pickDoorDirty(); _bstat = 'learn'; }
+      }
+    } catch (eB) {}
+    // 取证收尾：这一次点按**最多留一笔**。#1014 那口环只有 6 格而且是全站共享的——A 档、B 档各记
+    // 一笔就会把邻居入口的 leg:fire 顶出环（实测顶掉过 verify-1230 的 B1d＝邻居假红）。
+    try {
+      if (window.__mochiDoorPendingLog || _bstat === 'variant') {
+        window.__mochiDoorPendingLog = 0;
+        if (window.mochiPickLog) {
+          window.mochiPickLog(_bstat === 'learn' || _bstat === 'variant' ? (tgt.id || 'door') : (input.id || 'pick'),
+            _bstat === 'variant' ? 'door:variant' : (_bstat === 'learn' ? 'door:learn' : 'door:now'));
+        }
+      }
+    } catch (eLg) {}
+  } catch (e) {}
+};
+// 补装：整块重画会把层带走（这是常态而不是异常——#1313/#1314 一族量的就是「这一格被交了几次图」），
+// 所以每次点按起手先按台账复核一遍。代价＝台账条数（≤40）各一次 getElementById ＋ 直接子节点比对，
+// 只在**真的缺**那一格才 appendChild（absolute 层不动静态布局），250ms 地板防快速滑动时重复扫。
+var _pickSweepAt = 0;
+window.mochiPickDoorSweep = function (force) {
+  try {
+    var now = Date.now();
+    if (!force && now - _pickSweepAt < 250) return 0;
+    _pickSweepAt = now;
+    var d = pickDoorLoad(), n = 0;
+    for (var k in d) {
+      if (!Object.prototype.hasOwnProperty.call(d, k)) continue;
+      var r = d[k];
+      if (!r || r.bad || !r.owner) continue;
+      var el = k.indexOf('fp:') === 0 ? pickDoorResolve(r.a) : document.getElementById(k); // #1343：无 id 的门按结构锚找回去
+      if (!el || !pickDoorHostable(el)) continue;
+      if (pickDoorHasLayer(el)) continue;
+      var _f = r.f ? pickDoorResolve(r.f) : null;
+      if (_f && !el.contains(_f)) _f = null;   // 锚解析到别处＝宁可不铺，绝不在猜错的格子上铺一张门
+      window.mochiFilePickDoor(el, { owner: r.owner, accept: r.accept, multiple: r.multiple, veto: 1, face: _f });
+      n++;
+    }
+    return n;
+  } catch (e) { return 0; }
+};
+// 拆掉一扇猜不出该选什么的门：同一格在不同状态下把请求发给**不同宿主**（选图片 vs 选音频 vs 另一条
+// 管线）＝自动铺层没有信息可以替用户决定，留着一层＝必然猜错。宁可退回本批之前的合成腿，也不弹错
+// 类型的选择器（错类型＝用户在相册里翻半天找不到那个文件，比「点了没反应」更难报障）。
+function pickDoorDisable(node) {
+  try {
+    var door = node && node.parentElement;
+    if (node && node.parentNode) node.parentNode.removeChild(node);
+    if (door && door.id) {
+      var d = pickDoorLoad();
+      d[String(door.id).slice(0, 40)] = { bad: 1, t: Date.now() };
+      pickDoorTrim(d);
+      pickDoorDirty();
+    }
+  } catch (e) {}
+}
+// ③ 闸：只收「自学装上的层」——既有 20 扇人工铺好的门行为逐字不变（它们不带 veto）
+try {
+  document.addEventListener('click', function (e) {
+    try {
+      var t = e && e.target;
+      var rec = t && t.__mochiSurface;
+      if (!rec || !rec.veto) return;
+      if (window.__mochiPickAskSeq === window.__mochiGestureSeq) {
+        // 放行还得对得上宿主：本次请求发给别的宿主＝这格在两种状态间切，交回入口自己的管线（上面
+        // 那条 disable），这里绝不能替它弹——两层都放行＝错类型的选择器盖在用户手指上。
+        var oh = (rec.owner && rec.owner.id) || rec.ownerId || '';
+        if (!oh || oh === window.__mochiPickAskHost) return;
+      }
+      e.preventDefault(); // 没人认领这一发＝它不该弹选择器，原样交回入口逻辑（开面板／开抽屉）
+      if (window.mochiPickLog) window.mochiPickLog(t.id || 'door', 'door:veto');
+    } catch (e2) {}
+  }, false);
+} catch (e3) {}
+// 启动补装一次：静态锚（template.html 里那些行）在 deferred 脚本跑完就已存在，不必等用户先丢一发
+// 点按当学费；JS 现渲的门此刻还不在，交给下一次点按起手的 sweep（同一把尺子，两条路都通）。
+try { setTimeout(function () { window.mochiPickDoorSweep(true); }, 0); } catch (e4) {}
+// 台账出账（诊断单用）：共几扇、当前真装着几扇、被剔掉几扇——证明这条自愈线在真机上到底咬合过没有
+// #1343：「真铺着层」不能再把**命不中的层**算成已修——铺进 <img> 里的那种 0×0 死层过去就计在 armed 里，
+// 于是诊断说「在册 12 · 有层 12」而用户那一下照样没反应。现在 armed 只数有盒子且命得中的，另计 dead。
+function pickDoorLayerOf(el) {
+  try {
+    var kids = el.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      if (kids[i].getAttribute && kids[i].getAttribute('data-file-pick-surface') === '1') return kids[i];
+    }
+  } catch (e) {}
+  return null;
+}
+window.mochiPickDoorCensus = function () {
+  var d = pickDoorLoad(), total = 0, armed = 0, bad = 0, dead = 0;
+  try {
+    for (var k in d) {
+      if (!Object.prototype.hasOwnProperty.call(d, k)) continue;
+      total++;
+      var r = d[k];
+      if (!r || r.bad) { bad++; continue; }
+      var el = k.indexOf('fp:') === 0 ? pickDoorResolve(r.a) : document.getElementById(k);
+      var lay = el && pickDoorLayerOf(el);
+      if (!lay) continue;
+      var b = null;
+      try { b = lay.getBoundingClientRect(); } catch (e1) {}
+      if (b && b.width && b.height) armed++; else dead++; // 0×0＝这张层根本命不到＝病还在
+    }
+  } catch (e) {}
+  return { total: total, armed: armed, bad: bad, dead: dead, nofit: window.__mochiDoorNoFit || 0 };
+};
+
+// ===== #1273 「轻点」共用绑定原语：touch 路 ＋ pointer 路 ＋ click 兜底，三路共用防重入 =====
+// 需求/根因（用户 2026-09-25 直派「开屏的二级密码【点击密码解锁】的功能，还是有手机型号点击不了，
+// 这个问题其他设备型号也有出现」；零机型／零 UA 分支＝判据只取事件形态，不认内核名字）：那颗按钮只绑
+// 一个 click 监听，而纯 click 在部分内核/内嵌浏览器上不可靠——长按候选判定吞 click、滚动回弹期按位漂移、
+// 点按期 DOM 重渲把目标拆走，合成 click 就永远到不了监听器（chat.js #511/#152 拍一族已实测多机型；本批
+// 无头真跑同一形态：捕获阶段吞掉 click 后真实触摸该按钮＝弹窗一次都不出＝用户所见「点了没反应」）。
+// 三路口径与 #511 一致：① touch 路——只派发 touch 事件的旧内核/壳唯一可靠入口；② pointer 路——现代内核
+// 轻点判定（位移 ≤12px 且 ≤450ms，滑动／长按不算点；鼠标不参与，click 路本就覆盖它）；③ click 路——
+// 鼠标与以上两路都失效时的兜底。任一路触发即置 800ms 闸，其余路当场让位（杜绝双开）；落在闸内的合成
+// click 顺手吞掉——否则「touchend 开弹窗」后补发的那一发会按新布局命中遮罩，把弹窗刚开即关（#522 同源）。
+// **绝不在 touch/pointer 上 preventDefault**（#991 勿踩：那会压掉兼容鼠标事件，各内核是否补发 click
+// 不一致＝把修复做成新的机型差异）。原语放 device.js：它是唯一内联的系统基座，外置包没加载成功时它也在。
+// 【#1460 第四腿：cancel 腿】内核接管这一次手势去滚动／起选字时，不补发 click、只丢一发 touchcancel／
+// pointercancel——#1273 的三路里 touchcancel／pointercancel 当时只清布点、click 又被内核吞，于是「手指
+// 真的点了、界面零反馈」在这一型内核上原样复发（无头真跑：位移 3px 后 touchCancel ⇒ 解锁弹窗 0 次）。
+// 现按同一轻点判据收口：布点后最大位移 ≤12px 且 ≤450ms（复用 tapIsTap）才认这发 cancel 是「点到了」；
+// 超过判据的真滑动／长按保持不触发、页面滚动照旧（判据只取事件形态，零机型／零 UA 分支）。
+window.mochiTapOn = function (el, fn) {
+  if (!el || typeof fn !== 'function') return false;
+  var tDown = null;   // touch 路布点
+  var pDown = null;   // pointer 路布点
+  var tapGuard = 0;   // 三路共用防重入闸
+  function tapIsTap(dx, dy, dt) { return dt <= 450 && dx * dx + dy * dy <= 144; }
+  function tapFire() {
+    var now = Date.now();
+    if (now < tapGuard) return;
+    tapGuard = now + 800;
+    fn();
+  }
+  // cancel 腿共用判据：布点后最大位移（mx＝最大位移的平方）与时长仍落在轻点范围内才认「点到了」，
+  // 真滑动／长按让位给滚动（复用同一把尺 tapIsTap，不另造阈值）。
+  function tapCancel(d) {
+    if (!d) return;
+    if (!tapIsTap(Math.sqrt(d.mx || 0), 0, Date.now() - d.t)) return;
+    tapFire();
+  }
+  try {
+    el.addEventListener('touchstart', function (e) {
+      var t = e.changedTouches && e.changedTouches[0];
+      if (!t) return;
+      tDown = { x: t.clientX, y: t.clientY, t: Date.now(), id: t.identifier, mx: 0 };
+    }, { passive: true });
+    el.addEventListener('touchend', function (e) {
+      var t = e.changedTouches && e.changedTouches[0];
+      if (!tDown || !t || t.identifier !== tDown.id) return;
+      var dx = t.clientX - tDown.x, dy = t.clientY - tDown.y, dt = Date.now() - tDown.t;
+      tDown = null;
+      if (!tapIsTap(dx, dy, dt)) return;
+      tapFire();
+    }, { passive: true });
+    el.addEventListener('touchmove', function (e) {
+      var t = e.changedTouches && e.changedTouches[0];
+      if (!tDown || !t || t.identifier !== tDown.id) return;
+      var dx = t.clientX - tDown.x, dy = t.clientY - tDown.y, m = dx * dx + dy * dy;
+      if (m > tDown.mx) tDown.mx = m;
+    }, { passive: true });
+    el.addEventListener('touchcancel', function () { var d = tDown; tDown = null; tapCancel(d); }, { passive: true });
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse') return;
+      pDown = { x: e.clientX, y: e.clientY, t: Date.now(), id: e.pointerId, mx: 0 };
+    });
+    el.addEventListener('pointerup', function (e) {
+      if (!pDown || e.pointerId !== pDown.id || e.pointerType === 'mouse') return;
+      var dx = e.clientX - pDown.x, dy = e.clientY - pDown.y, dt = Date.now() - pDown.t;
+      pDown = null;
+      if (!tapIsTap(dx, dy, dt)) return;
+      tapFire();
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!pDown || e.pointerId !== pDown.id || e.pointerType === 'mouse') return;
+      var dx = e.clientX - pDown.x, dy = e.clientY - pDown.y, m = dx * dx + dy * dy;
+      if (m > pDown.mx) pDown.mx = m;
+    });
+    el.addEventListener('pointercancel', function () { var d = pDown; pDown = null; tapCancel(d); });
+    el.addEventListener('click', function (e) {
+      if (Date.now() < tapGuard) { e.preventDefault(); e.stopPropagation(); return; }
+      tapFire();
+    });
+  } catch (e) { return false; }
+  return true;
 };
 
 // ===== 激活腿统一实现（FIX 2026-09-20 #920 第八波）——showPicker → click → 可反馈提示 =====
@@ -4142,13 +5262,179 @@ window.mochiFilePickSurfaceAll = function (input) {
 //   空操作＝不双开），也避开「showPicker 成功但内核不给可观测信号」形态把 click 短路掉；
 // ②只有两条腿都抛异常才触发 onFail（给三条腿全失效的内核一个可反馈现场，不再无声）。
 // 零机型分支：所有内核同一顺序尝试三条腿，判据全是可观测事实（无机型/UA 判断）。
+
+// ===== 第十一波 #1230：把「被激活的那个 input」搬到手指底下（单点，覆盖全站 40+ 入口）=====
+// 立项（用户 2026-09-25 iPhone 16 Pro / iOS 26.6.1 Safari·桌面图标 实报「字卡数据和聊天背景上传不了
+// 没反应」，附 2026-09-22 诊断 docx：文件选择取证 6 笔全是 `dev-cs-bg-pick/leg:fire`——即手指没落在
+// 任何「真·可点层」上、走的是程序化腿；同族 #603→#1197 十波的共同错误是**逐入口**铺层：漏一个入口、
+// 层被重渲染搬位、层的宿主 id 没解析，就在那个入口上原样复发）。
+// 本波不再碰任何入口，只改「激活」这一件事本身：前十波不论哪条腿，激活的对象始终是**同一个元素**，
+// 而那些元素在 iOS/壳内核眼里是「不在手指底下、且没被真正渲染」的（sr-only clip / 按钮子节点）＝
+// 静默拒绝（不抛异常＝JS 探测不到）。于是把它换成一个**有真实尺寸、正好躺在上一次手指落点上的真
+// file input**：showPicker 与 click 都作用在这层上，元素自己派发 change 后把文件转交原 input 并
+// 直接派发 change（不派发 click ⇒ 不会冒泡回入口按钮把自己再触发一遍＝不双开）。
+// 判据全是可观测事实（渲染状态 / 几何 / 同手势时间戳），零机型零 UA 分支；鼠标（桌面）不搬——
+// 桌面内核本来就没有这条拒绝，且搬运会吃掉用户的下一次点击。
+window.__mochiLastTap = { x: 0, y: 0, t: 0 };
+(function () {
+  var mark = function (ev) {
+    try {
+      // #1323：① 手势序号＝「本次手势」的身份（Fire 盖的请求戳与那道闸比对都按它，不拿时间窗猜），
+      // ②起手按台账补装缺的层（整块重画把层带走是常态），地板在 sweep 内部（250ms）。
+      window.__mochiGestureSeq = (window.__mochiGestureSeq || 0) + 1;
+      if (window.mochiPickDoorSweep) window.mochiPickDoorSweep();
+      var p = (ev.touches && ev.touches[0]) || (ev.changedTouches && ev.changedTouches[0]) || ev;
+      if (typeof p.clientX !== 'number') return;
+      // 点在自己这层上＝同一次点按的后续派发，不更新（避免自己把自己挪走）
+      // 落点在搬层那格上＝同一次点按的后续派发，不更新（否则自己把自己挪走）
+      if (p.target && p.target.id === 'mochi-file-pick-fallback') return;
+      window.__mochiLastTap = { x: p.clientX, y: p.clientY, t: Date.now() };
+    } catch (e) {}
+  };
+  // capture + passive：只记时间戳，绝不拦截、绝不 preventDefault（本文件里所有环都要能被判为「没动过」）
+  try {
+    document.addEventListener('pointerdown', mark, { capture: true, passive: true });
+    document.addEventListener('touchstart', mark, { capture: true, passive: true });
+    // 桌面鼠标没有 pointer 事件的老内核兜底（isTrusted 判据＝只认真实点按，合成的不算）
+    document.addEventListener('mousedown', function (e) { if (e && e.isTrusted) mark(e); }, { capture: true, passive: true });
+  } catch (e2) {}
+})();
+// 真·被渲染（有盒子、没被裁成 0）——这是「内核愿不愿意为它弹选择器」的共同前提；
+// clip:rect(0 0 0 0)/clip-path:inset(50%) 的 sr-only 一律判 false（有 rect 但没渲染内容）。
+window.mochiFileInputRendered = function (input) {
+  try {
+    if (!input || !input.isConnected) return false;
+    if (!input.getClientRects || input.getClientRects().length === 0) return false;
+    var cs = getComputedStyle(input);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    var r = input.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return false;
+    if ((cs.clipPath && cs.clipPath !== 'none') || (cs.clip && cs.clip.indexOf('0px 0px 0px 0px') >= 0)) return false;
+    return true;
+  } catch (e) { return false; }
+};
+// 这层「只在被搬过的那一下点按里」可命中：搬的时候开、命中后立刻关，任何一次新落点的点按也当场关
+// （见上面 mark）。它始终是真渲染的元素（内核只为真渲染的元素弹选择器），收的只是「能不能被点中」。
+window.mochiPickFallback = function (input, tap) {
+  var ov = document.getElementById('mochi-file-pick-fallback');
+  if (!ov) {
+    ov = document.createElement('input');
+    ov.type = 'file';
+    ov.id = 'mochi-file-pick-fallback';
+    // 与 #991 同口径：**不用** display:none / opacity:0 / 1px clip（那正是被内核拒绝激活的形态），
+    // 只把外观清空、指针默认不可命中；尺寸与位置由下面每次搬时写。
+    ov.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:24px;height:24px;margin:0;padding:0;border:0;outline:none;background:transparent;color:transparent;font-size:0;appearance:none;-webkit-appearance:none;z-index:2147483600;pointer-events:none;opacity:1;';
+    document.body.appendChild(ov);
+    // 同一条 CSS（与 surface 那两行同族）：藏掉原生「选择文件」按钮，只留可点区域
+    try {
+      var st = document.createElement('style');
+      st.textContent = 'input#mochi-file-pick-fallback::file-selector-button,input#mochi-file-pick-fallback::-webkit-file-upload-button{display:none;}';
+      document.head.appendChild(st);
+    } catch (e0) {}
+    ov.addEventListener('click', function () {
+      // 命中即收窗：这一格后续的点按交回页面（同一次点按里选择器已经由原生默认动作弹起来了）
+      ov.style.pointerEvents = 'none';
+    }, true);
+    // 收窗的时机＝**这一下手势结束**（不是等下一次点按）：搬层那格只在当前这次点按里该可命中，
+    // 手势一完就把命中能力交回页面。否则它会一直躺在旧落点上，把用户下一次点在同一坐标的
+    // 别的控件吃掉（点开选择器而不是那个控件）。监听器只挂一次、幂等，不随搬层次数累积。
+    var off = function () { try { ov.style.pointerEvents = 'none'; } catch (eO2) {} };
+    try {
+      document.addEventListener('pointerup', off, { capture: true, passive: true });
+      document.addEventListener('touchend', off, { capture: true, passive: true });
+      document.addEventListener('mouseup', off, { capture: true, passive: true });
+    } catch (eO3) {}
+    window.__mochiPickFbOff = off;
+    ov.addEventListener('change', function () {
+      var files = Array.prototype.slice.call(ov.files || []);
+      try { ov.value = ''; } catch (e1) {}
+      var orig = window.__mochiPickFbTarget;
+      if (!orig) return;
+      window.__mochiPickFbTarget = null;
+      if (window.mochiPickLog) window.mochiPickLog((orig.id || 'pick'), files.length ? ('fb:files=' + files.length) : 'fb:files=0');
+      if (!files.length) return;
+      try {
+        var dt = new DataTransfer();
+        for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
+        orig.files = dt.files;
+        // 只派发 change（不派发 click）：入口自己那条 onchange 管线一字不改地跑，
+        // 而按钮祖先不会被这一下再触发一遍 ⇒ 不会二次弹选择器。
+        orig.dispatchEvent(new Event('change'));
+      } catch (e2) {}
+    });
+  }
+  try {
+    var r = input && input.getBoundingClientRect ? input.getBoundingClientRect() : null;
+    var vw = window.innerWidth || 360, vh = window.innerHeight || 640;
+    // 宽：优先跟被激活的那个元素一样宽（点它的哪都算）；取不到就按手指落点居中开 120×44
+    var w = (r && r.width >= 24) ? Math.min(r.width, vw - 8) : 120;
+    var h = (r && r.height >= 24) ? Math.min(r.height, vh - 8) : 44;
+    var x = tap ? (tap.x - w / 2) : (r ? r.left : (vw - w) / 2);
+    var y = tap ? (tap.y - h / 2) : (r ? r.top : (vh - h) / 2);
+    x = Math.max(0, Math.min(x, vw - w));
+    y = Math.max(0, Math.min(y, vh - h));
+    // accept 必须先于任何激活落定（#753 判据）：iOS 按 accept 过滤，漏了＝相册/音频不在候选里
+    try { ov.accept = input && input.accept ? input.accept : ''; } catch (e3) {}
+    try { ov.multiple = !!(input && input.multiple); } catch (e4) {}
+    ov.style.left = Math.round(x) + 'px';
+    ov.style.top = Math.round(y) + 'px';
+    ov.style.width = Math.round(w) + 'px';
+    ov.style.height = Math.round(h) + 'px';
+    ov.style.pointerEvents = 'auto';
+    window.__mochiPickFbTarget = input;
+    // 硬窗兜底：手势以别的方式结束（内核没派发 up）也要在 1.2s 内收窗
+    try { setTimeout(window.__mochiPickFbOff, 1200); } catch (e6) {}
+  } catch (e5) { return null; }
+  return ov;
+};
 window.mochiFilePickFire = function (input, opts) {
   var o = opts || {};
   // #1014 取证：走到这里＝本次手势走的是程序化两腿（showPicker → click）
   if (window.mochiPickLog) window.mochiPickLog((input && input.id) || 'pick', 'leg:fire');
+  // FIX 2026-09-26 #1311 取证：光有 leg:fire 分不出「这个入口压根没铺真·可点层」和「层在、这一下没落在
+  // 层上」——前一种是合成腿被内核静默拒绝（不抛异常＝JS 探不到失败，用户所见「点了没反应」），后一种是
+  // 命中被别的元素接走／那层当下不可命中，两种的修法完全不同，而旧诊断单只能让人猜。手指真落在层上时
+  // 下一行的 surfaceTap 会直接 return，所以走到这里每一发都数一次层计数是零额外成本的：
+  // srf:0 ＝这个入口只剩合成腿（该铺层），srf:≥1 ＝层在但没被这一下命中（该查画序/开关/遮挡）。
+  if (window.mochiPickLog && input && window.mochiFilePickSurfaceAll) {
+    try { window.mochiPickLog((input && input.id) || 'pick', 'srf:' + window.mochiFilePickSurfaceAll(input).length); } catch (e) {}
+  }
+  // #1323：走到这里＝本次手势要弹选择器。给「本次手势」盖一个请求戳（闸据此放行原生默认动作），
+  // 并把这扇门记进自学台账——上面那条 srf:0 从此不再只是一句取证，它当场变成下一发的真层。
+  try { window.__mochiPickAskSeq = window.__mochiGestureSeq; window.__mochiPickAskHost = (input && input.id) || ''; } catch (eAsk) {}
+  try { if (window.mochiFilePickLearnDoor) window.mochiFilePickLearnDoor(input); } catch (eL) {}
   // FIX 2026-09-21 #991（第九波）：本次手势若是「手指物理点按入口上铺的真 input」（surface 层），
   // 那台选择器已由浏览器原生默认动作弹出——这里只登记、不再补腿（补＝另一个 input 再弹一次＝双开）。
   if (window.mochiFilePickSurfaceTap && window.mochiFilePickSurfaceTap()) return true;
+  // FIX 2026-09-25 #1230（第十一波）：走到这里＝手指没落在任何「真·可点层」上，而此刻要激活的那个
+  // input 多半是 sr-only clip / 塞在按钮里 / 还没挂进文档——iOS 26 与多家壳内核对这种元素
+  // **静默拒绝**弹选择器（不抛异常＝JS 探测不到失败，这正是「点了没反应」的形状）。
+  // 判据不是机型而是**这个元素到底有没有被渲染**（mochiFileInputRendered）＋手指落点是否在本次手势里
+  // （__mochiLastTap，1.2s 窗＝同一次点按）。两条都成立 ⇒ 把真 input 搬到手指底下再激活它；
+  // 桌面（鼠标）tap 恒为 null＝一律不搬，行为与改前逐字相同。
+  var tap = (window.__mochiLastTap && (Date.now() - window.__mochiLastTap.t) < 1200) ? window.__mochiLastTap : null;
+  // 「这层真的躺在这根手指底下吗」：渲染了、**而且手指落点命中它或它的祖先**才算数。
+  // 只量元素自己会被祖先链上的遮挡（overflow 裁切／被别的浮层盖住）骗过去——那些形态下内核收不到
+  // 这一下点按，也就不会弹选择器。落点取不到（纯键盘／程序化触发）时一律按「没命中」处理＝走搬层。
+  var touchable = false;
+  if (window.mochiFileInputRendered(input)) {
+    try {
+      if (!tap) touchable = true;
+      else {
+        var under = document.elementFromPoint(tap.x, tap.y);
+        touchable = !!(under && (under === input || input.contains(under) || (under.contains && under.contains(input))));
+      }
+    } catch (eT) { touchable = false; }
+  }
+  if (tap && !touchable && window.mochiPickFallback) {
+    var fb = window.mochiPickFallback(input, tap);
+    if (fb) {
+      if (window.mochiPickLog) window.mochiPickLog((input && input.id) || 'pick', 'fb:onscreen');
+      if (typeof fb.showPicker === 'function') { try { fb.showPicker(); } catch (eFb1) {} }
+      try { fb.click(); } catch (eFb2) {}
+      return true;
+    }
+  }
   var fired = false;
   if (input && typeof input.showPicker === 'function') {
     try { input.showPicker(); fired = true; } catch (e) {}
@@ -4191,14 +5477,21 @@ window.mochiFilePick = function (opts) {
     document.body.appendChild(input);
   }
   // ★ 属性顺序：accept/multiple 必须落在任何 click() 之前（#753 判据）
-  try { input.accept = o.accept || ''; } catch (e) {}
-  input.multiple = !!o.multiple;
+  // FIX 2026-09-25 #1230：两处都改成「本次没提就保留原值」——常驻 input 会被多个调用复用
+  // （铺层时预建宿主的调用不带这两个参数），过去那两行无条件赋值会把入口先设好的口径抹掉
+  // （聊天壁纸＝多选＋image/*：被抹成单选/全文件＝iOS 选择器里相册不在候选、多选失效）。
+  try { input.accept = ('accept' in o) ? String(o.accept == null ? '' : o.accept) : (input.accept || ''); } catch (e) {} // #1413：判据换成「调用方到底提没提这一项」——裸登记（bindHost 不带 accept）照旧保留宿主口径（#1230e 原意不变），而入口**有意**传的空串从此真能清掉上一个分类留下的值；旧写法表达不出「显式清空」，常驻 input 被多个分类共用时后一个档会继承前一个档的过滤器（字卡库语音档实测 chooser 上留着 image/*＝语音文件全灰显）
+  if (typeof o.multiple === 'boolean') input.multiple = o.multiple;
   // 读取回调每次重设（闭包随调用方变，常驻 input 不能留旧回调）
+  // FIX 2026-09-25 #1230：只有**本次真的给了回调**才覆盖——预建宿主（mochiFilePickBindHost＝带
+  // noClick、不带 onFiles 的登记调用）过去会把这条 onchange 写成本地 o.onFiles 的编译期引用＝null，
+  // 于是 surface 转交过来的 change 被整个吞掉（＝铺层入口第一次点按钮后又选完图依然没反应）。
+  if (typeof o.onFiles === 'function') input.__mochiOnFiles = o.onFiles;
   input.onchange = function () {
     var files = Array.prototype.slice.call(input.files || []);
     try { input.value = ''; } catch (e) {} // 允许重选同一文件
     if (window.mochiPickLog) window.mochiPickLog((input && input.id) || 'pick', files.length ? ('files=' + files.length) : 'files=0');
-    if (o.onFiles) { try { o.onFiles(files); } catch (e) {} }
+    if (input.__mochiOnFiles) { try { input.__mochiOnFiles(files); } catch (eCb2) { if (window.mochiPickCbFail) window.mochiPickCbFail((input && input.id) || 'pick', eCb2, files.length); } }
   };
   // 原生 label 激活层（部分分叉内核忽略 JS 合成 click；注意 #756 实测：label 在国产内核上
   // 也可能既不转发也不报错，故它只是「加速路径」，真正的兜底见下方 activate()）
@@ -4206,10 +5499,19 @@ window.mochiFilePick = function (opts) {
   // FIX 2026-09-21 #1002：若这个入口已经铺过 surface（真·可点 input 层），把**本次点击路径产出的
   // onFiles 回调登记到那层上**——surface 收到文件时直接调它，于是入口侧「点击时才算出来的管线」
   // （列表/索引/时长等闭包变量）与 surface 选中的文件严丝合缝，接入侧仍只需在绑定/渲染处铺一行。
-  if (o.btn && window.mochiFilePickSurfaceAll && typeof o.onFiles === 'function') {
+  // FIX 2026-09-25 #1230：这道登记**不再要求传了 btn**——聊天壁纸面板/抽屉正是「不传 btn、只在渲染时
+  // 按 id 登记宿主」的入口（owner:'dev-cs-bg-pick'），铺层那一刻统一入口那个 input 还不存在＝宿主解析
+  // 不出来，选完文件两路皆空＝原生腿弹了选择器、图片却没进管线（用户实报「聊天背景上传不了」的形状）。
+  // 现在改成「谁在激活就把管线补给所有指向它的层」，宿主按 id 匹配（见 mochiFilePickSurfaceAll）。
+  if (window.mochiFilePickSurfaceAll && typeof o.onFiles === 'function') {
     try {
       var surfs = window.mochiFilePickSurfaceAll(input);
-      for (var si = 0; si < surfs.length; si++) { surfs[si].__mochiSurface.onFiles = o.onFiles; }
+      for (var si = 0; si < surfs.length; si++) {
+        var srec = surfs[si].__mochiSurface;
+        if (!srec) continue;
+        srec.onFiles = o.onFiles;
+        if (!srec.owner) srec.owner = input;
+      }
     } catch (e) {}
   }
   // ★ 激活：不再「有 label 就跳过 JS click」（那是 #738~#755 整族复发的根源，见上方 #756 说明）。
@@ -4219,6 +5521,24 @@ window.mochiFilePick = function (opts) {
   var activate = function () {
     window.mochiFilePickFire(input, { onFail: function () { if (o.onError) { try { o.onError(); } catch (x) {} } } });
   };
+  // #1323：走到这里＝入口在**这一发手势里**要弹选择器（noClick 只是登记宿主，不算请求）。这一戳是
+  // 那道闸唯一的放行依据：自学铺上去的层默认会把用户的点按直接交给原生选择器，若入口自己这一发并不
+  // 想弹（同格在不同状态下开面板／开抽屉），就得被 preventDefault 取消掉。注意它必须落在下面那条
+  // surfaceTap 早退之前——已有层的入口正是在那里让路，Fire 根本不会被调到。
+  if (!o.noClick) { try { window.__mochiPickAskSeq = window.__mochiGestureSeq; window.__mochiPickAskHost = input.id || id; } catch (eA) {} }
+  // #1323：手指底下那张自学层绑的是**别的宿主**＝这一格在两种状态间切（选图片／选音频／走另一条管线），
+  // 铺层没有信息可以替用户决定选哪个＝当场拆层＋记 bad＋把这一发原样交回入口自己的管线（清掉「本次
+  // 手势落在层上」那枚戳，下面 #1002 那条早退自然不成立）。闸同一发也会 preventDefault＝双层保险，
+  // 绝不会把错类型的选择器盖在用户手指上。人工铺的门不带 veto＝不进这条。
+  try {
+    var _lt = window.event && window.event.target;
+    var _lrec = _lt && _lt.__mochiSurface;
+    if (_lrec && _lrec.veto && _lt !== input && _lrec.owner !== input && (_lrec.ownerId || '') !== id && typeof pickDoorDisable === 'function') {
+      window.__mochiSurfaceTapAt = 0;
+      pickDoorDisable(_lt);
+      if (window.mochiPickLog) window.mochiPickLog(id || 'pick', 'door:mix');
+    }
+  } catch (eM) {}
   // #1002：本次手势若正是点在这层 surface 上（入口已铺），远端已由浏览器原生弹出选择器——
   // 不再补腿，避免与 surface 各弹一次。判据同上（同一手势时间戳，一次性消费）。
   if (!o.noClick && window.mochiFilePickSurfaceTap && window.mochiFilePickSurfaceTap()) {
@@ -4230,6 +5550,14 @@ window.mochiFilePick = function (opts) {
     else activate();
   }
   return input;
+};
+// #1230：按 id 预建统一入口的常驻 input（绝不激活选择器），供「铺层时宿主还不存在」的入口当场接线。
+// 复用 mochiFilePick 的同一实现＝样式/accept/one-input-per-id 口径不会分叉（本族第十波已证：手抄必漏）。
+window.mochiFilePickBindHost = function (id, btn) {
+  try {
+    if (!id || document.getElementById(id)) return document.getElementById(id);
+    return window.mochiFilePick({ id: id, noClick: true, btn: btn || null });
+  } catch (e) { return null; }
 };
 
 // ===== 统一文件选择入口（FIX 2026-09-18 #755）——同族第五波根治 =====

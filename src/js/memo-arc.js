@@ -575,15 +575,20 @@
 
   // 理解变化（沿用旧数据 history）
   function changesHTML(arc) {
-    const hist = arc.history.slice().sort((a, b) => b.time - a.time);
-    if (!hist.length) {
+    // #1403：这条日志只增不减（addKnow／reviseKnow／retireKnow／toggleMoment 每动一次记一行），
+    // 旧写法整列平铺＝作者说的「无限变长」。现在交站内唯一那把尺子＝当天直显、更早按月折，
+    // 并给每行一枚「删除」——按钮走本文件自己的 data-op 派发链（与 delEntry 同一形态），
+    // 删的只是这一行变化记录，**理解本身（delKnow）一条不动**。
+    const idx = arc.history.map(function (ev, i) { return { ev: ev, i: i }; });
+    if (!idx.length) {
       return '<div class="narc-empty">还没有理解上的变化。<br>当有一天你发现自己——「原来TA不是我以为的那样」——它会出现在这里。</div>';
     }
-    let h = '';
-    hist.forEach(ev => {
-      h += '<div class="narc-hist"><span class="nh-dot"></span><div class="nh-wrap"><div class="nh-date">' + mdstr(ev.time) + '</div><div class="nh-text">' + String(ev.text || '').replace(/〈([^〈]*)〉/g, '<em>「$1」</em>') + '</div></div></div>';
+    return window.mochiHistFold(idx.map(function (o) {
+      return { ts: Number(o.ev.time) || 0, html: '<div class="narc-hist"><span class="nh-dot"></span><div class="nh-wrap"><div class="nh-date">' + mdstr(o.ev.time) + '</div><div class="nh-text">' + String(o.ev.text || '').replace(/〈([^〈]*)〉/g, '<em>「$1」</em>') + '</div>' + opBtn('del-hist', '删除', ' data-id="' + o.i + '"', 1) + '</div></div>' };
+    }), {
+      key: 'memo-hist',
+      todayEmpty: '<div class="dc-h-day-empty">今天没有新的理解变化</div>'
     });
-    return h;
   }
 
   // ---- 6. TA的位置感 ----
@@ -659,6 +664,7 @@
       h += sectHead('我们的时间线', '第一次、共同经历、特别的日子，都在这里连成一条线。', '<button class="narc-add" data-op="add-record">＋ 写一条相处</button>');
       const arr = timelineItems(arc);
       if (!arr.length) return h + '<div class="narc-empty">还没有共同记录。<br>第一次见面、第一次聊天、第一次被TA主动找……都值得记下来。</div>';
+      const items = [];
       arr.forEach(x => {
         let inner = '<div class="ni-top">';
         if (x.kind === 'record') {
@@ -672,9 +678,13 @@
         if (x.kind === 'bond' || x.kind === 'record' || x.kind === 'moment') {
           ops = '<span class="nk-ops">' + opBtn('edit-entry', '编辑', ' data-kind="' + x.kind + '" data-id="' + x.id + '"') + opBtn('del-entry', '删除', ' data-kind="' + x.kind + '" data-id="' + x.id + '"', 1) + '</span>';
         }
-        h += itemShell(inner, '<span class="ni-date">' + esc(x.date) + '</span>' + ops);
+        items.push({ ts: Number(x.t) || 0, html: itemShell(inner, '<span class="ni-date">' + esc(x.date) + '</span>' + ops) });
       });
-      return h;
+      // #1403：时间线＝7 类来源连成的一条只增不减的线（旧写法整列平铺＝作者说的「无限变长」）。
+      // 折叠交站内唯一那把尺子（当天直显＋更早按月折）；各来源自己的「编辑/删除」仍走本文件
+      // 既有 data-op 链（bond/record/moment 早有 del-entry），本批只补上原先没有删除位的
+      // 「理解变化」那一行（changesHTML 里的 del-hist）
+      return h + window.mochiHistFold(items, { key: 'memo-moment', todayEmpty: '<div class="dc-h-day-empty">今天还没有新的共同记录</div>' });
     }
     const catLabel = (tabsOf('shared', arc).find(t => t[0] === tab.shared) || [])[1] || BOND_CATS[tab.shared] || '';
     const isBuiltinCat = !!BOND_CATS[tab.shared];
@@ -748,6 +758,7 @@
       const tgt = imgTarget; imgTarget = null; inp.value = '';
       if (!f || !tgt || !tgt.id) { if (!f) toast('没有取到图片，请再选一次'); return; }
       compressImg(f, function (dataURL) {
+        if (!dataURL) return; // #1270：没导入成功（闸已给过提示）就别把空图写进手账
         const arc = ensureArc(cur);
         const it = imgListOf(tgt.kind, arc).find(x => x.id === tgt.id);
         if (!it) return;
@@ -758,21 +769,13 @@
     return inp;
   }
   function compressImg(file, cb) {
-    const fr = new FileReader();
-    fr.onload = function () {
-      const im = new Image();
-      im.onload = function () {
-        const M = 640; let w = im.width, ih = im.height;
-        if (w > M || ih > M) { const r = Math.min(M / w, M / ih); w = Math.round(w * r); ih = Math.round(ih * r); }
-        const cv = document.createElement('canvas');
-        cv.width = w; cv.height = ih;
-        cv.getContext('2d').drawImage(im, 0, 0, w, ih);
-        cb(cv.toDataURL('image/jpeg', 0.72));
-      };
-      im.onerror = function () { toast('这张图读不出来，换一张试试'); };
-      im.src = fr.result;
-    };
-    fr.readAsDataURL(file);
+    // FIX 2026-09-25 #1270：旧写法 readAsDataURL ＋ 整幅解码（48MP 照片＝192MB 位图）＝手账配图
+    // 一选就白屏大退；换统一解码闸（640px／JPEG 0.72 口径不变），cb 契约不变（null＝没导入成功）
+    if (!window.mochiImgCompressTo) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); cb(null); return; }
+    window.mochiImgCompressTo(file, { maxSide: 640, quality: 0.72, tag: 'memo-img' }).then((out) => {
+      if (!out) toast('这张图本机浏览器处理不了，换一张小图试试');
+      cb(out || null);
+    });
   }
 
   // ---- 搜索（v3.27.x）：跨分区全文过滤，点结果跳对应分区 ----
@@ -1267,6 +1270,24 @@
       saveArc(cur, arc); toast('已删除'); render();
     }, { noInput: true, pill: 'del', pills: [{ label: '取消', value: 'no' }, { label: '删除', value: 'del' }] });
   }
+  // #1403（作者「无限变长的记录还需要有单独的删除功能」）：删掉「理解变化」日志里的某一行。
+  // 刻意不拿数组下标当身份直接删——确认框停在屏上的那几秒里 addKnow／reviseKnow 可能又记了一行，
+  // 下标会错位＝删掉别人的那行。所以先按行内容（time＋text）在写回那一刻再认一次，认不到就
+  // 什么都不删并如实说一句（宁可删不掉，不可删错）。理解本身（delKnow）一条不动。
+  function delHist(i) {
+    if (!window.openModal) return;
+    const arc = ensureArc(cur);
+    const ev = arc.history[i];
+    if (!ev) return;
+    window.openModal('删除这条理解变化？', '', function (v) {
+      if (v !== 'del') return;
+      const a = ensureArc(cur);
+      const j = a.history.findIndex(function (x) { return x && x.time === ev.time && String(x.text || '') === String(ev.text || ''); });
+      if (j < 0) { toast('这条已经变了，没有删掉任何内容'); return; }
+      a.history.splice(j, 1);
+      saveArc(cur, a); toast('已删除'); render();
+    }, { noInput: true, staticText: String(ev.text || '').slice(0, 40), pill: 'del', pills: [{ label: '取消', value: 'no' }, { label: '删除', value: 'del' }] });
+  }
   function toggleMoment(recId) {
     const arc = ensureArc(cur); const rec = arc.records.find(x => x.id === recId); if (!rec) return;
     if (rec.momentId) {
@@ -1393,6 +1414,7 @@
       case 'add-record': addRecord(); break;
       case 'edit-entry': editEntry(kind, id); break;
       case 'del-entry': delEntry(kind, id); break;
+      case 'del-hist': delHist(Number(id)); break; // #1403：理解变化日志按条删
       case 'toggle-moment': if (kind === 'record') toggleMoment(id); break;
       case 'add-dream': addDream(); break;
       case 'edit-dream': editDream(id); break;

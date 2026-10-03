@@ -12,6 +12,12 @@
     // 旧值（用户反馈：玩 4 天桌面「已摸鱼」显示第 2 天）。fish-log-global-migrated 为
     // 合并幂等标记键，同为全局根键。二者都不随联系人隔离，绝不能迁移。
     'fish-log', 'fish-log-global-migrated',
+    // #1541：开屏/系统标记键出生即根域全局键，读取方都只认根键——此前漏排除，每次刷新
+    // 被 migrateLegacy 当旧顶层业务键迁进 default 并删根键：① age-confirmed（#1475 版本化
+    // 年龄确认）每次开屏都要重新勾；② storage-guide-shown（#1250 存储修复引导已送达标记，
+    // LS 快路径每启必 miss，全靠 markShown 写的 IDB 那份兜底才没反复重弹）；③ splash-seen:*
+    // （每日首开强读标记，见 isExcluded 前缀挡）天天失效。
+    'age-confirmed', 'storage-guide-shown',
     // v3.17.x：跨桌面「来消息」全局根键——incoming-requests（申请队列）、
     // desk-checkin-en（桌面查岗全局开关）与 desk-call-en（跨桌面来电全局开关）都存
     // 根命名空间、全桌面通，绝不随联系人隔离，防 migrateLegacy 每次刷新搬进 default
@@ -23,7 +29,7 @@
     // 同 bg-* 道理是全局根键，绝不随联系人隔离，防 migrateLegacy 搬进 default 并删根键
     // （挂起键丢了=用户回来接不到重响的来电）。
     'incoming-requests', 'desk-checkin-en', 'desk-call-en', 'desk-freq-mode', 'call-hold',
-    // v3.27.x：night-mode-en（夜间模式总开关）同为全局根键，全桌面通、不随联系人隔离。
+    // v3.27.x：night-mode-en（夜间免打扰模式总开关）同为全局根键，全桌面通、不随联系人隔离。
     // 漏排除会被 migrateLegacy 每次刷新搬进 default 并删根键 → 开关自己关掉、夜间静默失效。
     'night-mode-en',
     // v3.12.x：group-chat-msgs（群聊消息，v3.8 起全局存储于根命名空间）——同 bg-* 道理，
@@ -211,7 +217,13 @@
     // 全局根键（feature-hub.js 用 xyStore(G) 语义直写根命名空间，目录与跳转目标全桌面共用）。
     // fhub-freq 系补登：此前一直不在 EXCLUDE，每次刷新被 migrateLegacy 当旧顶层业务键迁进
     // default 并删根键 → 非 default 桌面「常用」行常空（原注释「全局键不区分联系人」与实现不符）。
-    'fhub-freq', 'fhub-seen'];
+    'fhub-freq', 'fhub-seen',
+    // #1475（2026-09-30）：免责声明同意记录（clock.js 开屏年龄闸门）——裸键 xy-home-v2:age-confirmed
+    // 走根命名空间（相对键名无冒号，吃不到「含冒号保守视为命名空间键」那条守卫），出生即不在
+    // EXCLUDE ⇒ migrateLegacy 每次数据就绪把它当旧顶层业务键迁进 default 并删根键＝#315c 的
+    // 「确认一次永久记住」自上线起就被每次启动吃掉（用户每次开屏都要重新勾选）。#1475 起该键
+    // 存「时间戳＋声明版本」JSON（改版自动重确认），是同意举证链的本体，必须留在根命名空间。
+    'age-confirmed'];
   function isExcluded(k) {
     const r = k.slice(G.length + 1);
     // #233：__ 前缀＝系统键（idb.js 根命名空间专用：__wr-journal 写日志＝LS 回滚自愈
@@ -220,6 +232,9 @@
     // 每刷新清空、大键/脏键索引反复丢失，LS 回滚家族（#82/#88/#226/#229）自愈被持续削弱。
     if (r.indexOf('__') === 0) return true;
     if (EXCLUDE.indexOf(r) >= 0) return true;
+    // #1541：每日首开已读标记 splash-seen:<日期>——键名带日期后缀，EXCLUDE 精确名单盖不住，
+    // 按前缀挡迁移（clock.js 每日写当日新键，昨天的自然过期，无需回收）。
+    if (r.indexOf('splash-seen:') === 0) return true;
     // v3.9.x：reply-gc-* 群聊全局设置键同样不能迁移（无冒号，原逻辑会误判为旧业务键）
     if (r.indexOf('reply-gc-') === 0) return true;
     if (r.indexOf('music-file:') === 0) return true;
@@ -232,6 +247,14 @@
     if (r.indexOf('narc-') === 0) return true;
     // 我的档案：myarc 根键（全局唯一 JSON，my-arc.js）同理不可迁移
     if (r.indexOf('myarc') === 0) return true;
+    // FIX 2026-09-25 #1293：屏幕适配微调七轴（mobile-adapt.js #707/#764/#794）出生即根命名空间
+    // ——屏幕是设备属性、跨桌面共用，读取方 loadAdj 只认 xy-home-v2:screen-adj-<axis>。此前整族
+    // 既不在 EXCLUDE 也没有前缀守卫 → migrateLegacy 每次启动把根键当旧顶层业务键迁进 default 桌面
+    // 并删根键：第一次刷新「刚调的值」照常生效（mobile-adapt 在迁移之前就读完落层），**下一次冷启
+    // 归零**（实测探针：T2 desk=12 / padding-top 12px → T3 desk=0 / 0px，default 副本无人读）。
+    // 用户所见＝「调了当时有效，回头又偏回去了」，且「屏幕适配诊断→一键修正」写进去的值同样蒸发。
+    // 后缀是轴名（top/bottom/h/desk/shift/text/side，将来还会加轴），按前缀挡，同 #642 口径。
+    if (r.indexOf('screen-adj-') === 0) return true;
     // v3.6.x：命名空间键（default:* / <cid>:*）不是"旧顶层键"，绝不能迁移——
     // 否则会把 xy-home-v2:default:avatar-user 再迁成 xy-home-v2:default:default:avatar-user
     // 并删除原键（刷新后头像/壁纸/聊天壁纸丢失 + default:default: 双重前缀垃圾键）。
@@ -281,6 +304,41 @@
         // 写入后彻底清掉旧顶层键（含内存缓存）——否则 get 回退路径会读到残留旧值
         try { window.xyStore(G).remove(k); } catch (e) {}
       },
+      // FIX 2026-09-28 #1358j：数据层那三句问话（#1342 的 awaitingBigKey／requestBigKey 与
+      //   #1358d 的 whenBigKeyBack）必须从这份门面也够得着。各页顶上的 store 都是 defaultStore()/
+      //   activeStore()，门面原样只转 get/set/remove ⇒ 「这一格现在读不到、而名册说库里本该有」
+      //   这把尺对走门面的消费方结构性失明——信箱就是这一型：尺子写得对，调用方拿到的是 undefined，
+      //   于是冷读那一发照旧把「没读到」画成「没有」。判据取「命名空间键与旧顶层键都空」这一个事实，
+      //   与上面 get 的回退链同口径，零机型／零 UA 分支。
+      awaitingBigKey(k) {
+        // FIX 2026-09-30 #1469：这句问话的语义＝「这一格（新命名空间键与旧顶层键两个候选）都读不出值，
+        //   而证据说库里本该有一份」。旧写法把两格的 awaitingBigKey 直接相或：在 LS 整域坏掉的机器上
+        //   （报障件：整域 192 键≈10.0MB、本项目只剩 1 键、写入被拒 3531 次），根键那一发的
+        //   localStorage.getItem 自己就抛，而数据层对「连读都读不出」刻意判成 unconfirmed（#1309 家族定的），
+        //   于是命名空间那一格明明读得好好的，门面照样回答「不许整包写回」——信箱的删除/清空在这一型
+        //   机器上被永久按住（新尺 C3 实测：八轮重试全是那句提示，库里一封没少也一封没删）。
+        //   现在先问「两个候选里有没有任何一个读得出值」：读得出＝这一格有答案，不再谈「没读到」。
+        //   零机型／零 UA 分支，判据仍是当场事实。
+        try { if (window.xyStore(ns).get(k) !== null) return false; } catch (e3) {}
+        try { if (window.xyStore(G).get(k) !== null) return false; } catch (e4) {}
+        // 两格候选都读不出值时，只认「命名空间那一格」的库里证据（信箱／字卡库这些账就住在那儿）。
+        //   旧顶层键那一格不参与举证：LS 整域坏掉的机器上它对任何键都自证「连读都读不出」（数据层对
+        //   #1309 那一族刻意定的判法），拿它当证据＝每一格都被说成「不许整包写回」，用户亲手清空被
+        //   永久挡死（违 #1309 C2「主动清空必须真落空」契约，新尺丁4/丁5 当场逮到）。
+        try { return window.xyStore(ns).awaitingBigKey(k); } catch (e) { return false; }
+      },
+      requestBigKey(k) {
+        try { window.xyStore(ns).requestBigKey(k); } catch (e) {}
+        try { window.xyStore(G).requestBigKey(k); } catch (e2) {}
+      },
+      whenBigKeyBack(k, cb) {
+        try {
+          const s = window.xyStore(ns);
+          if (s && s.whenBigKeyBack) { s.whenBigKeyBack(k, cb); return; }
+        } catch (e) {}
+        try { const r = window.xyStore(G); if (r && r.whenBigKeyBack) { r.whenBigKeyBack(k, cb); return; } } catch (e2) {}
+        try { if (cb) cb(); } catch (e3) {}
+      },
       remove(k) {
         window.xyStore(ns).remove(k);
         // 旧顶层键同样彻底清（memoryCache + LS + IDB 三处）——
@@ -305,12 +363,28 @@
     return {
       get: (k) => dyn().get(k),
       set: (k, v) => dyn().set(k, v),
-      remove: (k) => dyn().remove(k)
+      remove: (k) => dyn().remove(k),
+      // FIX 2026-09-28 #1358j：那三句问话一并从门面转出（dyn() 动态绑定当前桌面，与 get/set 同规格）——
+      //   缺了它们，各页顶上的 store 就够不到数据层那把「这一格读空而库里本该有」的尺。
+      //   够不到的那一页不许被当成「库里没有」：回调照叫一次，让调用方按自己那条链正常画。
+      awaitingBigKey: (k) => { const d = dyn(); return !!(d.awaitingBigKey && d.awaitingBigKey(k)); },
+      requestBigKey: (k) => { const d = dyn(); try { if (d.requestBigKey) d.requestBigKey(k); } catch (e) {} },
+      whenBigKeyBack: (k, cb) => {
+        const d = dyn();
+        if (d.whenBigKeyBack) { d.whenBigKeyBack(k, cb); return; }
+        try { if (cb) cb(); } catch (e2) {}
+      }
     };
   };
 
   // 任意联系人的存储（供朋友圈后台遍历各联系人生成 TA 动态/评论）
   window.storeFor = function (cid) { return window.xyStore(G + ':' + cid); };
+  // FIX 2026-09-29 #1416：按 cid 取存储必须和 activeStore 用同一口径分叉——default 桌面要走
+  //   defaultStore()（先读新命名空间、没有再回退旧顶层键），而上面那个 storeFor('default') 只读新命名空间。
+  //   漏这一层已经咬到 #1394 那一族的另一半：通话归属 default、而用户当前正看着别的联系人桌面时，
+  //   replyCfgFor('default') 用 storeFor 读不到未迁移的老「禁止对方挂断」/自定义挂断概率＝判成没设过、
+  //   回落默认 2% ⇒ 对方照样把电话挂了，而设置页明明显示着用户当初设的值（静默失效，与 #1056 同形）。
+  window.storeForCid = function (cid) { return cid === 'default' ? defaultStore() : window.xyStore(G + ':' + cid); };
 
   // ---- 联系人性别 / TA 称呼跟随 ----
   // 存储键：<cid>:partner-gender = 'he' | 'she' | ''（未设置 → 默认「TA」），随联系人命名空间隔离。
@@ -376,8 +450,14 @@
   window.createContact = function (name) {
     const list = getContacts();
     const id = 'c' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
-    list.push({ id: id, name: name || ('联系人' + (list.length)) });
+    const nm = name || ('联系人' + (list.length));
+    list.push({ id: id, name: nm });
     regStore().set('contacts', JSON.stringify(list));
+    // #1541c：新建即写该桌面 lbl-partner＝联系人名——桌面「TA/我」圆签（personalize
+    // paintDeskNames 读它）切过去当场显示名字，与 renameContact 改名同步 lbl-partner
+    // 的既有行为对齐；不写则新桌面回退 taWord() 恒显「TA」，与默认桌面视觉无差＝
+    // 「切了等于没切」（用户口径「添加联系人桌面无反应」的观感之一）。
+    try { window.xyStore(G + ':' + id).set('lbl-partner', nm); } catch (e) {}
     return id;
   };
   window.renameContact = function (id, name) {
@@ -629,7 +709,12 @@
       'beauty-schemes', 'chat-beauty-schemes', 'hide-ta-sticker', 'desk-freq-mode',
       // #937：fhub-freq 此前一直漏排除，被每次刷新迁进 default——把滞留副本写回根键找回
       // （fhub-seen 出生即排除，无存量可回收，列入只为口径一致）。
-      'full-beauty-schemes', 'fhub-freq', 'fhub-seen'].forEach(function (k) {
+      'full-beauty-schemes', 'fhub-freq', 'fhub-seen',
+      // #1293：屏幕适配微调七轴的存量——被旧 migrateLegacy 迁进 default 的副本写回根键找回
+      // （根键已有值时只删副本不覆盖，与 pomo-*/fhub-* 同一处理）；配合上面的前缀守卫，
+      // 找回后不会再被迁走。用户下一次冷启即恢复自己调过的偏移。
+      'screen-adj-top', 'screen-adj-bottom', 'screen-adj-h', 'screen-adj-desk',
+      'screen-adj-shift', 'screen-adj-text', 'screen-adj-side'].forEach(function (k) {
       // FIX 2026-09-15 #527：beauty-undo-stack 已自本回收列表移除（改 per-cid 存储）——
       // 若继续把 default 副本写回根键并删副本，会让新的按桌面隔离存储每次启动被搬空，
       // 撤销栈重新变回「跨桌面共用」（=本修复被这条逻辑反向回滚）。
@@ -640,6 +725,25 @@
         try { def.remove(k); } catch (e) {}
       }
     });
+    // #1541：上面三键（age-confirmed / storage-guide-shown）与 splash-seen:* 的存量副本回收
+    // ——修复前已被误迁进 default 的那份写回根键找回（根键已有值只删副本，pomo-* 同款）：
+    // 不找回＝已确认过年龄的存量用户每次开屏仍要重新勾、引导标记仍缺。splash-seen 副本
+    // 是过期日期标记，只删不回（当日根键由 clock.js 自己重写）。
+    ['age-confirmed', 'storage-guide-shown'].forEach(function (k) {
+      const v = def.get(k);
+      if (v !== null && v !== undefined && v !== '') {
+        try { if (root.get(k) === null || root.get(k) === undefined) root.set(k, v); } catch (e) {}
+        try { def.remove(k); } catch (e) {}
+      }
+    });
+    try {
+      const stale = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const kk = localStorage.key(i);
+        if (kk && kk.indexOf(G + ':default:splash-seen:') === 0) stale.push(kk);
+      }
+      stale.forEach(function (kk) { try { localStorage.removeItem(kk); } catch (e2) {} });
+    } catch (e) {}
     const old = [];
     // v3.6.x：顺带清理存量双重前缀垃圾键（default:default:*）——旧版迁移误把命名空间键
     // 再迁一层产生，读取不命中但占存储，安全删除
@@ -730,6 +834,23 @@
         try { localStorage.removeItem(k); } catch (e) {}
         if (isChat && window.idbDelete) { try { window.idbDelete(k); } catch (e) {} }
       };
+      // #1210：旧键只有在【新键确认落了盘】之后才删。xyStore.set 里 LS 写失败只打脏标记、
+      // IDB 写是 fire-and-forget，而 xyStore.get 优先读内存缓存（刚 set 完必然读得到）＝证不了
+      // 落盘。原实现 set 之后无条件 cleanupOld（聊天还要连 IDB 根键一起删）＝「新键没落成、
+      // 两份旧键已删」的空窗，正是「没删没清却整段聊天记录消失」的出口。证不到就保留旧键、
+      // 下次启动重试（本迁移幂等），宁可重复搬一次也不留下空窗。
+      const settle = function (payload) {
+        try { window.xyStore(G + ':default').set(rest, payload); } catch (e) {}
+        const landed = function (durable) { if (durable) cleanupOld(); next(); };
+        // 小键 LS 有副本即算落盘；大键（chat-msgs 等）按设计不进 LS，只认 IDB 三态探测：
+        // true＝库里确有，false＝没有 / null＝这次读不到（存储繁忙）都不删旧键。
+        try { if (localStorage.getItem(newKey) !== null) { landed(true); return; } } catch (e) {}
+        if (window.idbHasKey) {
+          Promise.resolve(window.idbHasKey(newKey)).then(function (has) {
+            landed(has === true);
+          }).catch(function () { landed(false); });
+        } else landed(false);
+      };
       let v = null; try { v = localStorage.getItem(k); } catch (e) {}
       if (v !== null) {
         // 幂等：default 命名空间已有此键（LS/memoryCache/IDB）则不重复写
@@ -737,15 +858,10 @@
         if (hasNew) { cleanupOld(); next(); return; }
         if (window.idbGet) {
           window.idbGet(newKey).then(function (existing) {
-            if (!existing) { try { window.xyStore(G + ':default').set(rest, v); } catch (e) {} }
-            cleanupOld();
-            next();
-          }).catch(function () { try { window.xyStore(G + ':default').set(rest, v); } catch (e) {} cleanupOld(); next(); });
-        } else {
-          try { window.xyStore(G + ':default').set(rest, v); } catch (e) {}
-          cleanupOld();
-          next();
-        }
+            if (existing) { cleanupOld(); next(); return; }
+            settle(v);
+          }).catch(function () { settle(v); });
+        } else settle(v);
       } else if (window.idbGet) {
         window.idbGet(k).then(r => {
           if (r !== undefined && r !== null) {
@@ -753,10 +869,9 @@
             const hasNew = window.xyStore(G + ':default').get(rest);
             if (hasNew) { cleanupOld(); next(); return; }
             window.idbGet(newKey).then(function (existing) {
-              if (!existing) { try { window.xyStore(G + ':default').set(rest, r); } catch (e) {} }
-              cleanupOld();
-              next();
-            }).catch(function () { try { window.xyStore(G + ':default').set(rest, r); } catch (e) {} cleanupOld(); next(); });
+              if (existing) { cleanupOld(); next(); return; }
+              settle(r);
+            }).catch(function () { settle(r); });
           } else {
             cleanupOld();
             next();
@@ -855,7 +970,11 @@
       ren.style.cssText = 'font-size:12px;padding:4px 8px;border:1px solid var(--pill-border,#ddd);border-radius:8px;background:var(--static-bg,#fafafa);color:var(--ink,#111)';
       ren.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (window.openModal) window.openModal('改名', c.name || '', (v) => { if (v && v.trim()) { window.renameContact(c.id, v.trim()); window.openContactManager(); } });
+        // #1541 续：同「新建联系人」——空值可见化（不再静默 return＝「确认了没反应」无从排查）
+        if (window.openModal) window.openModal('改名', c.name || '', (v) => {
+          if (v && v.trim()) { window.renameContact(c.id, v.trim()); window.openContactManager(); }
+          else { try { if (window.toast) window.toast('没有读到名字——请再试一次；反复出现请到设置→关于/诊断导出诊断单报障'); } catch (e0) {} }
+        });
       });
       acts.appendChild(ren);
       if (c.id !== 'default') {
@@ -872,8 +991,15 @@
     add.style.cssText = 'width:100%;padding:12px;border:none;border-radius:10px;background:var(--ink,#111);color:var(--bg-b,#fff);font-size:14px;font-weight:600';
     add.addEventListener('click', () => {
       if (window.openModal) window.openModal('新建联系人', '', (v) => {
-        const name = (v || '').trim(); if (!name) return;
+        const name = (v || '').trim();
+        // #1541 续：空值不再静默 return——红米 K80 Chrome 实报「确认了没反应」无法远程
+        // 复现（无头全绿），静默失败让用户与排查方都拿不到任何线索；可见化后：
+        // 弹这条＝读值链真收到空（输入法组合/代理断），一条 toast 直接定位方向。
+        if (!name) { try { if (window.toast) window.toast('还没有输入名字——先点输入框打一个名字'); } catch (e0) {} return; }
         const id = window.createContact(name); window.setActiveContact(id); hideContactModal(m);
+        // #1541c：即时反馈——新桌面未设壁纸/头像时与默认桌面视觉相同，无反馈＝
+        // 「点了没反应」错觉；toast 点名已切换＋桌面圆签当场显示新名双保险。
+        try { if (window.toast) window.toast('已创建「' + name + '」的桌面，已为你切换'); } catch (e) {}
       });
     });
     box.appendChild(add);

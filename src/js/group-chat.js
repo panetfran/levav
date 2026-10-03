@@ -1354,7 +1354,8 @@
     }
 // #1203 同单聊口径：群聊「多字卡回复」总开关关闭＝每个成员每条消息只用一张字卡，颜文字卡不再追加
 if (type === 'text' && c['gc-py-en'] === 1 && pool.kaomoji.length && hit(c['gc-kaomoji-prob'])) {
-t += '\n' + pick(pool.kaomoji); // #1051 同单聊 genReplyText：末尾颜文字卡改硬换行相接（\n→<br>），软换行点部分内核不拆行＝末尾显示不全
+const gkj = pick(pool.kaomoji);
+t += (window.chatKaoJoinSep ? window.chatKaoJoinSep(t, gkj, page, body) : '\n') + gkj; // #1051 同单聊：行末放不下才硬换行；#1212 「放得下」借单聊同一份实测（群聊页/群聊容器各传各的，量不到时回 '\n'）
 }
 // v3.26.x #163：文本回复按成员所在桌面混入默认字卡（同聊天页 genOneReply 的
 // getDefaultCards 覆盖语义，dc-overall-chat 概率+分类占比+各开关内部同源生效）——
@@ -1630,9 +1631,11 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     }, delay);
   }
   // v3.9.x：@ 的成员必定回复；其余成员按「每个联系人回复概率」独立掷骰，命中才回
-  function scheduleReply(userText) {
-    const gid = curGid; // FIX 串群 #242：捕获调度时的群，回复/撤回一律落回发起群
-    const members = getMembers();
+  // —— 这一段是「一轮里成员怎么接话」，与你在群里发几句无关；发几句并成几轮由下面的分流决定。
+  function gcReplyRound(userText, atGid) {
+    const gid = atGid || curGid; // FIX 串群 #242：一律落回发起群；#1376 并轮后「到点时你可能已经在别的群里」，故发起群随轮带走
+    const g0 = groups.find(x => x.id === gid) || currentGroup();
+    const members = groupMemberList(g0);
     if (!members.length) return;
     const c = gcCfg();
     // 检测 @提及
@@ -1652,6 +1655,32 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     targets.forEach((cid, i) => {
       setTimeout(() => memberReply(cid, userText, gid), i * (1200 + Math.random() * 1600));
     });
+  }
+
+  // 你在群里连着发的那几条算**一轮**，与单聊共用同一个开关（回复设置 →「连发的算一轮」，
+  // 默认关闭＝一切照旧：每发一条各排一批，群员各自按 gc-rs-min~max 抽延迟）。
+  // 打开后：一轮只让成员们接一次话——你发 5 句不会引来 5 批回复；每多补一句把这轮的收口往后推
+  // GC_TURN_HOLD，最多替你等 GC_TURN_HOLD_MAX（你一直说，总得给人插嘴的时候）；@ 谁、引用什么都以
+  // 这一轮最后那句为准。**每个群各排各的轮**（切到别的群发消息不会顶掉这个群排着的轮）。
+  // 这里只收「哪几句算一轮」的边，成员各自的回复延迟仍走 memberReply 原来的抽样，不额外加一层等待。
+  const GC_TURN_HOLD = 1500, GC_TURN_HOLD_MAX = 8000;
+  const gcTurns = {}; /* gid -> { due, cap, timer, text } */
+  // 只认全局那一枚（gc-turn-en）：早先用按联系人存的 turn-en，群聊会不会并轮就跟着「你最后打开的那位联系人」变
+  function gcTurnOn() { try { return Number(((window.replyCfg && window.replyCfg()) || {})['gc-turn-en']) === 1; } catch (e) { return false; } }
+  window.__gcTurnKeys = function () { try { return Object.keys(gcTurns); } catch (e) { return []; } }; // 只读诊断：哪几个群各排着一轮
+  function scheduleReply(userText) {
+    if (!gcTurnOn()) return gcReplyRound(userText);
+    const gid = curGid;
+    if (!gid) return gcReplyRound(userText);
+    const nowT = Date.now();
+    let t = gcTurns[gid];
+    if (!t) t = gcTurns[gid] = { due: nowT + GC_TURN_HOLD, cap: nowT + GC_TURN_HOLD_MAX, timer: 0, text: userText };
+    else {
+      t.due = Math.min(t.cap, Math.max(t.due, nowT + GC_TURN_HOLD)); // 不早于原计划、不晚于这一轮的封顶
+      t.text = userText;
+    }
+    clearTimeout(t.timer);
+    t.timer = setTimeout(() => { if (gcTurns[gid] === t) delete gcTurns[gid]; gcReplyRound(t.text, gid); }, Math.max(0, t.due - nowT));
   }
 
   // ---- 进入/退出 ----
@@ -2205,33 +2234,14 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     clearTimeout(t._timer);
     t._timer = setTimeout(() => { t.className = 'cc-toast'; }, 2000);
   }
-  // 头像压缩（与聊天设置一致：最长边 256、JPEG 0.85）
-  function compressHead(dataUrl, maxSide) {
-    return new Promise((resolve) => {
-      try {
-        if (typeof dataUrl !== 'string' || !dataUrl || dataUrl.length > 8 * 1024 * 1024) { resolve(null); return; }
-        const img = new Image();
-        img.onload = () => {
-          try {
-            if (img.width * img.height > 26000000) { resolve(null); return; }
-            const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-            const w = Math.max(1, Math.round(img.width * scale));
-            const h = Math.max(1, Math.round(img.height * scale));
-            const c = document.createElement('canvas');
-            c.width = w; c.height = h;
-            c.getContext('2d').drawImage(img, 0, 0, w, h);
-            resolve(c.toDataURL('image/jpeg', 0.85));
-          } catch (e) { resolve(null); }
-        };
-        img.onerror = () => resolve(null);
-        img.src = dataUrl;
-      } catch (e) { resolve(null); }
-    });
-  }
+  // FIX 2026-09-25 #1270：群头像压缩原先是「base64 超 8MB 先拒 ＋ 解码后超 2600 万像素再拒」——
+  // 所有现代手机照片一律判成「图片过大」（＝换群头像怎么传都失败），而那次整幅解码本身又是
+  // 白屏大退的内存来源（48MP＝192MB 位图）。现由 img-ingest.js 统一收口：先嗅文件头像素，支持
+  // 边解边缩的内核按目标尺寸解，不支持才明确报「换图」。最长边 256 口径不变。
   // FIX 2026-09-18 #717：群聊头像选择器改「常驻挂文档」（#677 同族）——原本点击时动态创建、
   // 未挂进文档就 click()：红米/真我等 Android Edge 系静默忽略不弹选择器（点了没反应）、iOS
-  // Safari 选完不保证派发 change。与 chat-settings.js headInput 已验证套路一致；压缩管线
-  // compressHead 256 一字不动。
+  // Safari 选完不保证派发 change。与 chat-settings.js headInput 已验证套路一致；压缩口径
+  // 最长边 256 不变（#1270 只把实现换进统一解码闸）。
   let gcAvatarPickCb = null;
   const gcAvatarPickInput = document.createElement('input');
   gcAvatarPickInput.type = 'file'; gcAvatarPickInput.accept = 'image/*';
@@ -2244,14 +2254,12 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     gcAvatarPickInput.value = ''; // 允许重选同一文件
     if (!f) return;
     const cb = gcAvatarPickCb; gcAvatarPickCb = null;
-    const reader = new FileReader();
-    reader.onload = () => {
-      compressHead(reader.result, 256).then(data => {
-        if (!data) { toast('图片过大或格式不支持，请换一张小图'); return; }
-        if (cb) cb(data);
-      });
-    };
-    reader.readAsDataURL(f);
+    if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+    // FIX 2026-09-25 #1270：File 直接进闸，不再 readAsDataURL 造多 MB base64 字符串
+    window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'gc-head' }).then((r) => {
+      if (!r || r.st !== 'ok' || !r.data) { toast(window.mochiImgIngestMiss(r, '群头像')); return; }
+      if (cb) cb(r.data);
+    });
   };
   function pickAvatarFile(cb) {
     gcAvatarPickCb = cb;
@@ -2696,7 +2704,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     (curSec||settingsBody).appendChild(gcDataLink('导入聊天记录', '从 JSON 文件导入并覆盖当前群聊记录', false, () => {
       // FIX 2026-09-18 #755：统一走 window.mochiFilePick（原实现 detached＋无 label＋accept 迟到）
       window.mochiFilePick({
-        id: 'mochi-gc-import-pick', accept: '.json,application/json',
+        id: 'mochi-gc-import-pick', accept: window.mochiDataPickAccept, // #1413：与整机导入同一份并集（窄串会让转存后改了类型的备份灰显）
         onFiles: (files) => {
         const f = files && files[0];
         if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -2939,28 +2947,17 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       onFiles: (files) => {
       const f = files && files[0];
       if (!f) { toast('没有取到图片，请再选一次'); return; }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const img = new Image();
-        img.onload = () => {
-          try {
-            const dpr = Math.max(1, window.devicePixelRatio || 1);
-            const screenH = (window.screen && window.screen.height) || 1920;
-            const maxSide = Math.min(4096, Math.max(2160, Math.round(screenH * dpr)));
-            const c = document.createElement('canvas');
-            const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-            c.width = Math.max(1, Math.round(img.width * scale));
-            c.height = Math.max(1, Math.round(img.height * scale));
-            c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-            gcBeautySet('bg', c.toDataURL('image/jpeg', 0.85));
-            toast('群聊壁纸已应用');
-          } catch (e) { toast('壁纸处理失败，请换一张'); }
-        };
-        img.onerror = () => { toast('图片读取失败，请换一张'); };
-        img.src = reader.result;
-      };
-      reader.onerror = () => { toast('图片读取失败，请换一张'); };
-      reader.readAsDataURL(f);
+      if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+      // FIX 2026-09-25 #1270：原实现 readAsDataURL + 整幅解码（48MP 照片＝192MB 位图）后画到最高
+      // 4096px 的画布上＝iOS 直接回收页面（壁纸导入白屏大退）。同一口径交给统一解码闸：
+      // 嗅到超预算就按目标边长边解边缩，产物照样过字节收敛。
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const screenH = (window.screen && window.screen.height) || 1920;
+      window.mochiImgIngest(f, { maxSide: Math.min(4096, Math.max(2160, Math.round(screenH * dpr))), quality: 0.85, tag: 'gc-wall' }).then((r) => {
+        if (!r || r.st !== 'ok' || !r.data) { toast(window.mochiImgIngestMiss(r, '群聊壁纸')); return; }
+        gcBeautySet('bg', r.data);
+        toast('群聊壁纸已应用');
+      });
       }
     });
   }
@@ -3477,7 +3474,18 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
   const getGcSchemes = () => {
     try { const s = gcSchemesStore(); const a = JSON.parse((s && s.get(GC_SCHEMES_KEY)) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
   };
-  const saveGcSchemesList = (arr) => { try { const s = gcSchemesStore(); if (s) s.set(GC_SCHEMES_KEY, JSON.stringify(arr)); } catch (e) {} };
+  // FIX 2026-09-27 #1342k：与桌面/聊天美化同一把闸（判据与文案只留一份，见 idb.js #1342i 批注）。
+  // 带壁纸的方案是 IDB-only 大键（#808 那条提醒自陈「一张几百 KB～1MB+」），而这里的读法是同步口——
+  // 读空未确认时再做一次「取列表→改→整本写回」＝库里那本方案被顶成一格。
+  const saveGcSchemesList = (arr) => {
+    try {
+      const s = gcSchemesStore();
+      if (!s) return false;
+      if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(s, GC_SCHEMES_KEY, '群聊美化方案')) return false;
+      s.set(GC_SCHEMES_KEY, JSON.stringify(arr));
+      return true;
+    } catch (e) { return false; }
+  };
   // #808 方案防炸提醒：方案会把当前壁纸整张打包进方案（bg 是高分辨率 JPEG 的 base64，
   // 一张几百 KB～1MB+），带壁纸的方案存多了会把本地存储与备份导出文件撑爆——本批只做
   // 「提醒 + 拒绝重复入库」，不改 #373「应用=真覆盖」的任何数据语义。
@@ -3538,7 +3546,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       if (v !== 'ok') return;
       const list = getGcSchemes();
       list.splice(idx, 1);
-      saveGcSchemesList(list);
+      if (!saveGcSchemesList(list)) return;   // #1342k
       toast('已删除方案');
       window.openGcBeautySchemes();
     }, { noInput: true, staticText: '删除后不可恢复', pills: [{ label: '删除', value: 'ok' }] });
@@ -3644,7 +3652,7 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       const dup = list.find(it => JSON.stringify(it.data || {}) === snap);
       if (dup) { toast('已有内容完全相同的方案「' + dup.name + '」，不用重复保存'); return; }
       list.push({ name, time: Date.now(), data });
-      saveGcSchemesList(list);
+      if (!saveGcSchemesList(list)) return;   // #1342k：不写、也不谎报「已保存」
       x.style.display = 'none'; x.hidden = true;
       toast('已保存方案「' + name + '」，所有桌面通用');
       const m = document.getElementById('gc-beauty-scheme-manager');
@@ -3698,7 +3706,8 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     const ctl = window.openModal('编辑方案名称', s.name, (name) => {
       name = (name || '').trim();
       if (!name) { ctl.hint('名称不能为空'); ctl.stay(); return; }
-      s.name = name; saveGcSchemesList(list); toast('已重命名');
+      s.name = name; if (!saveGcSchemesList(list)) { ctl.stay(); return; }   // #1342k
+      toast('已重命名');
       window.openGcBeautySchemes();
     }, { maxlength: 20, placeholder: '输入方案名称' });
   }
@@ -3892,7 +3901,13 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
     if (gcMicBtn) gcMicBtn.style.display = gcSettingOn('cs-voice-send') ? '' : 'none';
     // 继续说＝群聊唯一入口（顶部那枚已撤销）：显隐与单聊输入栏同源——本联系人桌面开关
     // cs-trigger-bar 或 回复设置→群聊「底部聊天栏按钮触发」（gc-cs-trigger-bar）任一为开即显示
-    if (gcContinueBtn) gcContinueBtn.style.display = (gcSettingOn('cs-trigger-bar') || gcCfg()['gc-cs-trigger-bar'] === 1) ? '' : 'none';
+    // FIX 2026-09-29 #1419（作者点头一并收掉）：原写法读的是命名空间里的裸键 cs-trigger-bar，而**全站没有任何一处写
+    // 这枚键**——单聊那枚开关经 reply-settings 的 saveReplyCfg 存成 reply-cs-trigger-bar（同排的 cs-voice-send /
+    // cs-batch-send 确实是裸键，只有这一枚不是）。于是上面注释里「单聊开关或群聊开关任一为开即显示」的前半句
+    // 一直是死的：单聊开着继续说、群聊那排却藏着。改问单聊同一把现成的尺——chat.js 的 window.mochiContinueBarOn
+    // （#1419 第二半：replyCfg 未就绪时它直读存储键，不吃合并顺序）；拿不到该出口时退回直读 reply-cs-trigger-bar。
+    // 群聊自己那枚 gc-cs-trigger-bar 照常生效；两条都关才藏。零机型／零 UA 分支。
+    if (gcContinueBtn) gcContinueBtn.style.display = ((window.mochiContinueBarOn ? window.mochiContinueBarOn() : gcSettingOn('reply-cs-trigger-bar')) || gcCfg()['gc-cs-trigger-bar'] === 1) ? '' : 'none';
     if (gcBatchBtn) gcBatchBtn.style.display = gcSettingOn('cs-batch-send') ? '' : 'none';
   }
   // 「继续说」：和聊天页 continueChat 同语义——强制让成员回复（无 @ 时随机 1-2 个，不按回复概率过滤）
@@ -4090,37 +4105,21 @@ if (defs && defs.type === 'text' && defs.text) t = defs.text;
       fi.value = ''; // 允许重选同一张
       // 空 FileList：与聊天页同口径给可见反馈，不再静默吞掉（#677h）
       if (!files.length) { toast('没有取到图片，请再选一次'); return; }
+      // FIX 2026-09-25 #1270：原来是「每张各自先读成 base64 → 整幅解码 → 解码失败或画布给出空图
+      // 就把整张原图 dataURL 推进草稿」——多选几张现代手机照片＝几十 MB base64 字符串
+      // 加 192MB 位图同时压在渲染进程（＝发图白屏大退），塞进草稿的原图还会把本地存储撑爆。
+      // 现改为逐张串行过统一解码闸（同一时刻只有一张在解），没成功的这张如实跳过并给一句提示。
+      if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+      let gcImgMiss = 0;
+      let gcImgChain = Promise.resolve();
       files.forEach(f => {
-        const reader = new FileReader();
-        // 读取失败必须可见（#677g 同口径）
-        reader.onerror = () => { toast('图片读取失败，请换一张再试'); };
-        reader.onload = () => {
-          const img = new Image();
-          img.onload = () => {
-            try {
-              const c = document.createElement('canvas');
-              const scale = Math.min(1, 720 / Math.max(img.width, img.height));
-              c.width = Math.max(1, Math.round(img.width * scale));
-              c.height = Math.max(1, Math.round(img.height * scale));
-              c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-              // iOS 画布超限时 toDataURL 回 "data:,"（空图）——绝不把空图当图片塞进草稿（#677 同口径）
-              const out = c.toDataURL('image/jpeg', 0.85);
-              if (out && out.indexOf('data:image/') === 0 && out.length > 128) gcDraftImgs.push(out);
-              else gcDraftImgs.push(reader.result);
-            } catch (err) {
-              gcDraftImgs.push(reader.result);
-            }
-            renderGcDraft();
-          };
-          // 解码失败（HEIC/损坏图）按原图兜底，不静默丢失
-          img.onerror = () => {
-            gcDraftImgs.push(reader.result);
-            renderGcDraft();
-          };
-          img.src = reader.result;
-        };
-        reader.readAsDataURL(f);
+        gcImgChain = gcImgChain.then(() => window.mochiImgIngest(f, { maxSide: 720, quality: 0.85, tag: 'gc-draft' }).then((r) => {
+          if (!r || r.st !== 'ok' || !r.data) { gcImgMiss++; return; }
+          gcDraftImgs.push(r.data);
+          renderGcDraft();
+        }));
       });
+      gcImgChain.then(() => { if (gcImgMiss) toast('有 ' + gcImgMiss + ' 张图片没能导入，请换一张小图或用系统相机重拍'); });
     };
     document.body.appendChild(fi);
     gcImgInput = fi;

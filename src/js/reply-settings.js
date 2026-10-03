@@ -13,6 +13,9 @@
     // 与改造前一字不变）、rl-win 窗口分钟数、rl-max 窗口内最多条数。生效见 chat.js rateLimitFull
     // （计数源＝msgs 里 in 侧收件；已读回执与 nightAllow「用户当刻操作引发」记录不占额度也不拦）
     'rl-en': 0, 'rl-win': 5, 'rl-max': 15,
+    // #1376（用户直派「默认保持 mochi 原机制，但可以切换 nova 的回复机制；开了 nova 不受总量限流限制」）：
+    // turn-en 总开关，**默认 0＝行为一字不变**；生效见 chat.js scheduleReply/scheduleReplyTurn
+    'turn-en': 0,
     'rn-prob': 20, 'touch-prob': 5,
     'sticker-prob': 10, 'emoji-prob': 5, 'image-prob': 5, 'voice-prob': 10,
     'kaomoji-prob': 5, 'quote-prob': 30,
@@ -225,6 +228,9 @@
     // 拍一拍 5%、表情包 10%、emoji 5%、图片 5%、语音 10%、颜文字附加 5%、引用 30%、
     // 撤回 25%、撤回补发 35%；多字卡回复触发概率 50%、最少 2 条、最多 5 条
     'gc-prob': 60, 'gc-rs-min': 1, 'gc-rs-max': 40,
+    // #1376：群聊的并轮开关——群聊设置本来就是全局（gcRead/gcWrite 走 xy-home-v2），
+    // 所以这一枚也全局存；若让它去读按联系人存的 turn-en，群聊会不会并轮就跟着「你最后用的那位联系人」变
+    'gc-turn-en': 0,
     'gc-reply-min': 1, 'gc-reply-max': 2,
     'gc-cs-normal': 0, 'gc-cs-trigger-name': 1, 'gc-cs-trigger-bar': 0,
     'gc-touch-prob': 5, 'gc-sticker-prob': 10, 'gc-emoji-prob': 5, 'gc-image-prob': 5, 'gc-voice-prob': 10,
@@ -245,6 +251,30 @@
     try { window.xyStore('xy-home-v2').set('reply-gc-' + k, String(v)); } catch (e) {}
   }
 
+  // #1451 拼字张数一族的原始读数：缺键／空串／坏值一律算「没单独设过」（null），不与 0 混——
+  //   0 是合法输入吗？不是（张数下限 1），但这里仍只认「有没有这枚键」，把区间解释留给 spellPairFrom
+  function rawNumFrom(store, k) {
+    try {
+      const v = store ? store.get(k) : null;
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return isFinite(n) ? n : null;
+    } catch (e) { return null; }
+  }
+  // #1451 拼字每次几张的【唯一生效算式】：设过自己的用自己的，没设过跟随「最少/最多条数」（＝改造前
+  //   行为）；返回的 min/max 永远有序（抽卡侧 quote-spell.js 拿到的是这同一份数，不再各自 clamp 一遍，
+  //   免得「最少 8／最多 2」在拼字里被抬成恒 8、在多字卡回复里却发 6，两路口径打架）
+  function spellPairFrom(store, out) {
+    const ownMin = rawNumFrom(store, 'reply-qs-min');
+    const ownMax = rawNumFrom(store, 'reply-qs-max');
+    const baseMin = Math.max(1, Math.min(10, Number(out['py-min']) || 2));
+    const baseMax = Math.max(baseMin, Math.min(10, Number(out['py-max']) || 5));
+    let mn = ownMin === null ? baseMin : Math.max(1, Math.min(10, ownMin));
+    let mx = ownMax === null ? baseMax : Math.max(1, Math.min(10, ownMax));
+    if (mx < mn) mx = mn;   // 只设过一枚、而另一枚的跟随值比它更小时：把跟随那枚抬上来，区间不许倒挂
+    return { min: mn, max: mx, own: (ownMin !== null && ownMax !== null) ? 1 : 0, rawMin: ownMin, rawMax: ownMax };
+  }
+
   function getCfg() {
     const out = {};
     Object.keys(DEFAULTS).forEach(k => {
@@ -260,6 +290,16 @@
       }
       out[k] = n;
     });
+    // #1451 拼字张数一对（reply-qs-min／reply-qs-max）——**故意不进 DEFAULTS**：老存档没有这两枚，
+    //   进了 DEFAULTS 就等于给每台设备凭空写上 2/5，把用户已经调好的「最少/最多条数」静默打回 2~5
+    //   （同 #712「DEFAULTS 的数字兜底会写坏非数值键」那族的反面：这里会被兜底凭空造出来）。
+    //   口径＝缺键跟随 py-min/py-max（＝改造前行为一字不变），动过才是独立的一对；生效值在这里一次
+    //   算清，设置页、体检（card-audit.js）、抽卡（quote-spell.js）三处都读 cfg 里这同一份数——
+    //   从前体检自己拿裸键去读，读到的永远是默认值（用户所报「我设的 2~5，可它一直发 5 张」查不下去）。
+    const spPair = spellPairFrom(ls, out);
+    out['qs-min'] = spPair.min;
+    out['qs-max'] = spPair.max;
+    out['qs-pair-own'] = spPair.own;
     // #712 自定义拼接符号——非数值键，故意不进 DEFAULTS：上面循环的数字兜底会把数组/
     // JSON 串改写成默认值，saveAllContactsDo 按 DEFAULTS 全键 String() 同步也会写坏；
     // 这里只把存储原串随 cfg 附带出去（pyJoinCards 按 JSON [{s,on}] 解析，只取 on=1）
@@ -269,6 +309,10 @@
     // FIX 2026-09-21 #953 同口径：造句句尾标点池原串附带（dream-free.js endPunctPool 解析；
     // 空＝用内置默认池。故意不进 DEFAULTS：数字兜底会把标点串 Number() 成 NaN）
     try { out['mjf-punct-pool'] = String(ls.get('reply-mjf-punct-pool') || ''); } catch (e) { out['mjf-punct-pool'] = ''; }
+    // FIX 2026-09-29 #1396 同口径：造句「可用标点」chips 池整串附带（reply-mjf-punct-set＝JSON
+    // [{s,on}]；非数值键故不进 DEFAULTS，理由同上面 #712 那段）。空＝dream-free.js 端仍走上面
+    // 那条 #953 旧链（＝存量设备出句分布一字不变）
+    try { out['mjf-punct-set'] = String(ls.get('reply-mjf-punct-set') || ''); } catch (e) { out['mjf-punct-set'] = ''; }
     return out;
   }
   window.replyCfg = getCfg;
@@ -278,7 +322,7 @@
   window.replyCfgFor = function (cid) {
     const out = {};
     let s = null;
-    try { s = (cid && window.storeFor) ? window.storeFor(cid) : ls; } catch (e) { s = ls; }
+    try { s = (cid && window.storeForCid) ? window.storeForCid(cid) : (cid && window.storeFor) ? window.storeFor(cid) : ls; } catch (e) { s = ls; }
     Object.keys(DEFAULTS).forEach(k => {
       const v = k.indexOf('gc-') === 0 ? gcRead(k) : (s ? s.get('reply-' + k) : null);
       let n = (v === null || v === undefined || v === '') ? DEFAULTS[k] : Number(v);
@@ -291,6 +335,14 @@
     try { out['as-badge-custom'] = String((s || ls).get('reply-as-badge-custom') || '[]'); } catch (e) { out['as-badge-custom'] = '[]'; }
     // FIX 2026-09-21 #953 同 getCfg：造句句尾标点池原串（按目标联系人桌面读，跨桌面回复同样认自己桌面的池）
     try { out['mjf-punct-pool'] = String((s || ls).get('reply-mjf-punct-pool') || ''); } catch (e) { out['mjf-punct-pool'] = ''; }
+    // FIX 2026-09-29 #1396 同 getCfg：造句可用标点 chips 池整串（按目标联系人桌面读，跨桌面回复同样认自己桌面的池）
+    try { out['mjf-punct-set'] = String((s || ls).get('reply-mjf-punct-set') || ''); } catch (e) { out['mjf-punct-set'] = ''; }
+    // #1451 同 getCfg：拼字张数一对按【目标桌面】的存储算生效值——跨桌面来消息/回话同样认自己那台的数，
+    //   不许「设置页显示的是这一台的、发出来是那一台的区间」
+    const spPair2 = spellPairFrom(s || ls, out);
+    out['qs-min'] = spPair2.min;
+    out['qs-max'] = spPair2.max;
+    out['qs-pair-own'] = spPair2.own;
     return out;
   };
   // v3.9.x：群聊页/群聊回复逻辑读取群聊回复设置（含默认值）
@@ -302,13 +354,82 @@
       return out;
     } catch (e) { return {}; }
   };
+  // ===== #1451 「最少／最多」成对收口 =====
+  // 从前这三对 stepper 各写各的：谁都能把区间设成「最少=最多」（于是不再随机，恒定发 N 张），
+  // 甚至倒挂成「最少 8／最多 2」——而抽卡侧为了不自爆，只能把「最多」静默抬平到「最少」，
+  // 于是用户所见就是「我明明设的 2~5，可 TA 一直发 5 张」，界面上又没有任何一处报出当前真正的
+  // 区间（体检那行还读错键、永远显示 2~5，见 card-audit.js）。用户 2026-09-29 选定口径：
+  // **动「最少」→ 把「最多」抬到不小于它；动「最多」→ 把「最少」压到不大于它**，两行数字当场跟着走。
+  const PAIR_SIB = { 'py-min': 'py-max', 'py-max': 'py-min',
+    'qs-min': 'qs-max', 'qs-max': 'qs-min',
+    'gc-py-min': 'gc-py-max', 'gc-py-max': 'gc-py-min' };
+  const isMinSide = (k) => /-min$/.test(k);
+  // 把某一枚的新值算成一对有序值并整对落盘（另一枚按当前【生效】值一起坐实——拼字那一对
+  // 从此不再跟随「最少/最多条数」，这是动它的必然结果，也是设置页该行右侧要标出来的原因）
+  function writePairedRange(k, v) {
+    const sib = PAIR_SIB[k];
+    if (!sib) return false;
+    const gc = k.indexOf('gc-') === 0;
+    const n = Math.round(Number(v));
+    if (!isFinite(n)) return false;
+    const base = getCfg();
+    const other = Math.round(Number(base[sib]));
+    let lo = isMinSide(k) ? n : (isFinite(other) ? other : n);
+    let hi = isMinSide(k) ? (isFinite(other) ? other : n) : n;
+    if (hi < lo) { if (isMinSide(k)) hi = lo; else lo = hi; }   // 谁动收谁的对家
+    lo = Math.max(1, Math.min(10, lo));
+    hi = Math.max(lo, Math.min(10, hi));
+    const minK = isMinSide(k) ? k : sib, maxK = isMinSide(k) ? sib : k;
+    if (gc) { gcWrite(minK, lo); gcWrite(maxK, hi); }
+    else { ls.set('reply-' + minK, String(lo)); ls.set('reply-' + maxK, String(hi)); }
+    // 对家那一格必须立刻跟着动，否则「设了却看不见」原地复发
+    [minK, maxK].forEach(refreshStepperVal);
+    syncSpellPairReadout();
+    return true;
+  }
+  // #1451 读数行：把「抽卡侧真正取用的区间」原样摆出来（设置页显示＝实际出牌，读的是同一份
+  // getCfg 生效值）。跟随/单设、恒 N 张（最少＝最多）都在这行说清——报「我设的 2~5 可它一直
+  // 发 5 张」先看这里：若写着「跟随」而条数那对已是 5~5，病根就在条数那对，不用再猜。
+  function syncSpellPairReadout() {
+    const el = document.getElementById('qs-range-readout');
+    if (!el) return;
+    try {
+      const c = getCfg();
+      const mn = Number(c['qs-min']), mx = Number(c['qs-max']);
+      if (!isFinite(mn) || !isFinite(mx)) { el.textContent = ''; return; }
+      let s = '每次拼字：现在 ' + mn + '~' + mx + ' 张';
+      if (mn === mx) s += '（最少＝最多，命中拼字时固定 ' + mx + ' 张、不再随机）';
+      s += Number(c['qs-pair-own']) === 1 ? '（本组单设）' : '（跟随上方「多字卡回复」的最少/最多条数；动本组任一格即单独设定）';
+      el.textContent = s;
+    } catch (e) {}
+  }
+  // 单行回显（与 syncUI 同规格：手机端只写 input.stp-val，转换器把值转给可见的 ce-box；
+  // 直接写 .stp-val 会命中 ce-box DIV 的 expando，屏幕上根本不变——见上面 syncUI 那段注释）
+  function refreshStepperVal(k) {
+    document.querySelectorAll('#page-reply-settings .stepper, #page-chat-settings .stepper, #group-chat-settings .stepper').forEach(st => {
+      if (st.dataset.k !== k) return;
+      const val = st.querySelector('input.stp-val');
+      if (!val) return;
+      const v = getCfg()[k];
+      val.value = String(v);
+      val.setAttribute('value', String(v));
+    });
+  }
+  // #1511：本会话真实动过的设置键（直接点开关/步进/胶囊＝屏面即用户意图）。
+  // 「保存设置」整包写回时「动过的照常写、没动过的要过读数闸」全靠这本账（见 replyKeyUnvouched）。
+  const sessionSavedKeys = new Set();
   window.saveReplyCfg = function (k, v) {
+    try { sessionSavedKeys.add(k); } catch (e0) {}
     if (k.indexOf('gc-') === 0) {
-      gcWrite(k, v);
+      if (PAIR_SIB[k]) writePairedRange(k, v); else gcWrite(k, v);
       if (k.indexOf('gc-cs-') === 0) document.dispatchEvent(new Event('gc-continue-say-changed'));
       return;
     }
-    ls.set('reply-' + k, String(v));
+    if (PAIR_SIB[k]) {
+      writePairedRange(k, v);
+    } else {
+      ls.set('reply-' + k, String(v));
+    }
     // v3.7.x：主动发送相关设置保存后立即重排定时器——原实现挂起的旧定时器
     // 不重排，改了间隔/概率要等下一轮（最长几小时）才生效
     if (k === 'as-en' || k === 'as-prob' || k === 'as-min' || k === 'as-max' ||
@@ -423,12 +544,14 @@
       }
     });
     // 开关
-    ['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+    ['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en', 'turn-en', 'gc-turn-en'].forEach(k => {
       const el = document.getElementById(k);
       if (el) el.checked = cfg[k] === 1;
     });
     // #807 捎话模式行（rp-thx-mode）非开关/stepper，走本文件注入块自带的同步助手
     try { if (window.rpThxModeSync) window.rpThxModeSync(); } catch (e) {}
+    // #1451 拼字张数读数行（进页/重画时与两格数字同源刷新）
+    syncSpellPairReadout();
   }
 
   // v3.33.x：来电概率（call-incoming）支持 0.01 粒度（可输入 0.05 等 0.0X 小数），
@@ -548,6 +671,8 @@
     'mjf-punct': '造句句尾标点',
     'rc-en': '撤回后补发消息',
     'rl-en': 'TA 消息限流',
+    'turn-en': '连发的算一轮',
+    'gc-turn-en': '连发的算一轮（群聊）',
     'fish-en': '摸鱼值累计', 'work-en': '工作值累计', 'fish-grab-en': '摸鱼抓包浮字',
     'rp-thx-en': '红包领后捎一句话'
   };
@@ -572,7 +697,7 @@
       clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, 1800);
     } catch (e) {}
   }
-  ['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+  ['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en', 'turn-en', 'gc-turn-en'].forEach(k => {
     const el = document.getElementById(k);
     if (el) {
       el.addEventListener('change', () => {
@@ -1011,6 +1136,11 @@
         if (gate(useOk, '词典聊天使用', useOk ? '开（' + ov + '% 概率）' : '关') && !blocked) blocked = '词典「聊天使用」被关（词典独立页里打开）';
         if (useOk && !(typeof ov === 'number' && isFinite(ov) && ov > 0) && !blocked) blocked = '词典「聊天使用概率」为 0（词典独立页调高）';
         // ④ 拼字总开关/概率（本页）
+        // FIX 2026-09-25 #1236：「多字卡回复」（py-en）自本批起是词典拼字的总闸——它关闭时
+        //   quoteSpellPick 整体不返回（单气泡拼字与逐卡连发都不触发）。自检必须把它摆出来，
+        //   否则会出现「各道全绿、屏上却永远不出拼字」的谎报（同 #998/#1000「指路不许说谎」口径）。
+        const pyOk = c['py-en'] === 1;
+        if (gate(pyOk, '多字卡回复总闸', pyOk ? '开' : '关·拼字整体停用') && !blocked) blocked = '「每条消息使用多字卡回复」总开关关着——#1236 起它是词典拼字的总闸，关了就两种形态都不再触发（要拼字就把它打开）';
         const enOk = c['qs-en'] === 1;
         const prob = Number(c['qs-prob']);
         if (gate(enOk, '拼字总开关', enOk ? '开（' + (isFinite(prob) ? prob : 0) + '% 概率）' : '关') && !blocked) blocked = '「词典拼字」总开关被关（本组第一行打开）';
@@ -1041,7 +1171,7 @@
     }
     qsDiagRender();
     // 状态变化即刷新：本组任一开关/词典页场景开关/二级锁解锁与重锁事件
-    ['qs-en', 'qs-one', 'qs-multi', 'qs-cc'].forEach(k => {
+    ['qs-en', 'qs-one', 'qs-multi', 'qs-cc', 'py-en'].forEach(k => { // #1236：py-en 现在是拼字总闸，翻它必须同步刷新自检
       const el = document.getElementById(k);
       if (el) el.addEventListener('change', () => setTimeout(qsDiagRender, 50));
     });
@@ -1101,44 +1231,170 @@
       else show('梦角自由造句已关闭');
     });
   }
-  // ===== FIX 2026-09-21 #953：造句句尾标点池输入框 =====
-  // 用户直派「梦角自由造句使用标点符号也可以修改或关闭」——开关 mjf-punct 走上方通用键表
-  // （0＝完全不补标点），池内容由本框改：存 reply-mjf-punct-pool 原串（非数值键，同 #712
-  // 自定义拼接符号口径；空＝用 dream-free.js 内置默认池）。分隔符用空格或 |，单个池项也
-  // 可多字符（如 ……）；没写分隔符时按字符拆（「。！？」＝三个候选）。失焦/回车即存即提示。
+  // ===== FIX 2026-09-21 #953 → 2026-09-29 #1396：造句「可用标点」改成 #650/#712 同款 chips 池 =====
+  // 用户直派「梦角自由造句的可用标点（空格分隔）与多字卡回复那套拼接符号不一样＝设计不完整」。
+  // 原形态＝一个 132px 文本框（空格/| 分隔、整串截到 60 字符），病灶四条：看不见有哪些候选（默认池
+  // 只躺在 dream-free.js 里）、永远选不到「空格/换行」（按空白切分＋保存时把换行替成空格）、没有去重
+  // 与校验（留空还会静默回落默认池）、句号靠「在默认池里写三遍」加权＝用户既看不到也改不动。
+  // 现在与「拼接符号」同一交互、同一套候选：内置十枚（空格/，/。/！/？/...... /——/换行，另加两枚
+  // 句尾专用的 ~ 与 ……）只能开关不能删；点「＋」加自定义（≤6 字符、≤8 个、与内置及已有去重），
+  // 自定义点本体开关、点「×」删除；至少保留一枚（一枚都不补由上方「句尾标点」开关表达）；
+  // 本项 mjf-punct 关闭＝整行与 chips 一并置灰（仍可点，方便提前配好，沿用 #953 原口径；总开关
+  // mjf-en 关闭时**不**灰——同组的概率/语料/权重/手法都不灰，别在这一行制造组内唯一例外）。
+  // 存储：reply-mjf-punct-set = JSON [{s,on}]（整池，内置也在内）。非数值键故不进 DEFAULTS——理由同
+  // #712 那段：上面循环的数字兜底会把 JSON 串 Number() 成 NaN，saveAllContactsDo 按 DEFAULTS 全键
+  // String() 同步也会写坏。消费在 dream-free.js endPunctPool（该键为空时它仍走 #953 旧链）。
+  // 存量零变化：本键没写过＝用户从没点过 chip ⇒ 出句分布与今天一字不差（旧 reply-mjf-punct-pool 原串
+  // 非空用旧串，否则用内置默认池）；界面此时显示的是按下述 parseLegacy/DEF_LIT 推导出的点亮态，用户
+  // 点一下才落盘，且落盘的是他此刻看到的整套（旧串配好的池不会被清空，只是句号不再偏多）。
   (function () {
-    const POOL_KEY = 'reply-mjf-punct-pool';
-    const el = document.getElementById('mjf-punct-pool');
-    if (!el) return;
-    function poolToast(msg) {
+    const SET_KEY = 'reply-mjf-punct-set';
+    const LEGACY_KEY = 'reply-mjf-punct-pool';
+    // [data-p, 真值, chip 文案]——文案与 #650 那套对齐（空格/换行的真值同样是 ' ' 与 '\n'）
+    const POOL = [['sp', ' ', '空格'], ['dou', '，', '，'], ['per', '。', '。'], ['ex', '！', '！'], ['q', '？', '？'], ['el', '......', '......'], ['dash', '——', '——'], ['nl', '\n', '换行'], ['tilde', '~', '~'], ['ell', '……', '……']];
+    const VAL2P = {}; POOL.forEach(p => { VAL2P[p[1]] = p[0]; });
+    const labelOf = s => { const p = POOL.find(x => x[1] === s); return p ? p[2] : s; };
+    // 从没点过 chip 时的点亮态＝dream-free.js END_PUNCT_DEFAULT 的去重集（只作显示，不复制它的权重）
+    const DEF_LIT = ['。', '~', '！', '……'];
+    const box = document.getElementById('mjf-punct-pool');
+    if (!box) return;
+    function mjfpToast(msg, ms) {
       const d = ccToastEnsure();
-      if (d) { d.textContent = msg; d.className = 'cc-toast'; void d.offsetWidth; d.className = 'cc-toast show'; clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, 2000); }
+      if (d) { d.textContent = msg; d.className = 'cc-toast'; void d.offsetWidth; d.className = 'cc-toast show'; clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, ms || 1800); }
     }
-    function poolSync() {
-      try { el.value = String(ls.get(POOL_KEY) || ''); } catch (e) {}
-      // 手机端 mobile-adapt 会把 input 转成 contenteditable ce-box，属性也要跟着写（同 stepper 口径）
-      try { el.setAttribute('value', el.value); } catch (e) {}
+    const valid = it => !!(it && typeof it.s === 'string' && it.s && it.s.length <= 6);
+    // 旧串解析口径与 dream-free.js endPunctPool 逐字对齐（空格/| 分隔；无分隔则按字符拆）
+    function parseLegacy(raw) {
+      const s = String(raw == null ? '' : raw).trim();
+      if (!s) return null;
+      let arr = s.split(/[\s|]+/).filter(Boolean);
+      if (arr.length < 2) arr = Array.from(s.replace(/[\s|]+/g, ''));
+      arr = arr.filter(x => x.length <= 6).slice(0, 20);
+      return arr.length ? arr : null;
     }
-    function poolCommit() {
-      let v = '';
-      try { v = String(el.value == null ? '' : el.value); } catch (e) { v = ''; }
-      v = v.replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
-      try { ls.set(POOL_KEY, v); } catch (e) {}
-      try { el.value = v; el.setAttribute('value', v); } catch (e) {}
-      if (v === '') poolToast('句尾标点已改为默认（。 ~ ！ ……）');
-      else poolToast('句尾标点已保存：' + v);
+    // 未落盘时的显示态：旧串（或内置默认池）→ 内置十枚的开关态 ＋ 旧串里那几枚非内置的作自定义项
+    function derive() {
+      let lit = null;
+      try { lit = parseLegacy(ls.get(LEGACY_KEY) || ''); } catch (e) {}
+      if (!lit) lit = DEF_LIT;
+      const set = {}; lit.forEach(x => { set[x] = 1; });
+      const list = POOL.map(p => ({ s: p[1], on: set[p[1]] ? 1 : 0 }));
+      Object.keys(set).forEach(v => { if (VAL2P[v] == null) list.push({ s: v, on: 1 }); });
+      return list;
     }
-    poolSync();
-    el.addEventListener('change', poolCommit);
-    el.addEventListener('blur', poolCommit);
-    // 总开关关闭时整行置灰（仍可编辑，方便先把池配好）
-    const row = document.getElementById('mjf-punct-pool-row');
-    const sw = document.getElementById('mjf-punct');
-    if (row && sw) {
-      const syncDis = () => { row.style.opacity = sw.checked ? '' : '.45'; };
-      syncDis();
-      sw.addEventListener('change', () => setTimeout(syncDis, 30));
+    function mjfpGet() {
+      let arr = null;
+      try { arr = JSON.parse(ls.get(SET_KEY) || ''); } catch (e) {}
+      if (Array.isArray(arr)) {
+        arr = arr.filter(valid);
+        if (arr.length) return arr;
+      }
+      return derive();
     }
+    function mjfpSet(list) { try { ls.set(SET_KEY, JSON.stringify(list)); } catch (e) {} }
+    const isCust = it => VAL2P[it.s] == null;
+    const custCount = list => list.filter(isCust).length;
+    // 「至少保留一枚」：内置＋自定义合计（口径同 #712）
+    function otherSel(list, skipIdx) {
+      let n = 0;
+      list.forEach((it, i) => { if (i !== skipIdx && it.on === 1) n++; });
+      return n;
+    }
+    function mjfpDis() {
+      // 只认本项开关：同组「触发概率／语料／权重／手法／混合模式」都不随总开关 mjf-en 变灰，
+      // 这一行也不灰（跨组上游才置灰是 #956 给「拼接随机标点」定的口径，别拿它当同组先例）
+      return getCfg()['mjf-punct'] !== 1;
+    }
+    // 自定义 chips 重渲（插在「＋」前；data-i＝在该池数组里的下标，静态内置走 data-p 不冲突）
+    function renderCust(list, dis) {
+      box.querySelectorAll('.ppy-chip[data-i]').forEach(el => el.remove());
+      const add = document.getElementById('mjfp-add');
+      list.forEach((it, i) => {
+        if (!isCust(it)) return;
+        const el = document.createElement('span');
+        el.className = 'tag ppy-chip ppy-chip-c' + (it.on === 1 ? ' sel' : '') + (dis ? ' dis' : '');
+        el.dataset.i = String(i);
+        el.textContent = it.s;
+        const x = document.createElement('i');
+        x.className = 'ppy-x';
+        x.textContent = '×';
+        el.appendChild(x);
+        if (add && add.parentNode === box) box.insertBefore(el, add); else box.appendChild(el);
+      });
+    }
+    function sync() {
+      const list = mjfpGet();
+      const dis = mjfpDis();
+      box.querySelectorAll('.ppy-chip[data-p]').forEach(ch => {
+        const v = (POOL.find(p => p[0] === ch.dataset.p) || [])[1];
+        if (v == null) return;
+        const it = list.find(x => x.s === v);
+        ch.classList.toggle('sel', !!(it && it.on === 1));
+        ch.classList.toggle('dis', dis);
+      });
+      const add = document.getElementById('mjfp-add');
+      if (add) add.classList.toggle('dis', dis);
+      const row = document.getElementById('mjf-punct-pool-row');
+      if (row) row.style.opacity = dis ? '.45' : '';
+      renderCust(list, dis);
+    }
+    function addFlow() {
+      const cur = mjfpGet();
+      if (custCount(cur) >= 8) { mjfpToast('自定义句尾标点最多添加 8 个（可删掉不要的再加）', 2400); return; }
+      if (!window.openModal) return;
+      window.openModal('添加句尾标点', '', function (v) {
+        const s = String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').trim();
+        if (!s) { mjfpToast('没有输入标点', 2000); return; }
+        if (s.length > 6) { mjfpToast('标点最长 6 个字符', 2000); return; }
+        const list = mjfpGet();
+        if (custCount(list) >= 8) { mjfpToast('自定义句尾标点最多添加 8 个（可删掉不要的再加）', 2400); return; }
+        if (list.some(it => it.s === s)) {
+          mjfpToast(isCust(list.find(it => it.s === s)) ? '该自定义标点已存在' : '这是系统自带标点，点亮对应 chip 即可', 2200);
+          return;
+        }
+        list.push({ s: s, on: 1 });
+        mjfpSet(list);
+        sync();
+        toastSaved('添加句尾标点 ' + s, true);
+      }, { maxlength: 6, placeholder: '输入标点，如 ～ / ❗ / !!!' });
+    }
+    box.addEventListener('click', (ev) => {
+      if (ev.target.closest('#mjfp-add')) { addFlow(); return; }
+      const ch = ev.target.closest('.ppy-chip');
+      if (!ch) return;
+      const list = mjfpGet();
+      let idx = -1;
+      if (ch.dataset.i != null) idx = Number(ch.dataset.i);
+      else {
+        const v = (POOL.find(p => p[0] === ch.dataset.p) || [])[1];
+        if (v != null) idx = list.findIndex(x => x.s === v);
+      }
+      const it = list[idx];
+      if (!it) return;
+      const del = !!ev.target.closest('.ppy-x');
+      if (it.on === 1 && otherSel(list, idx) === 0) {
+        mjfpToast('句尾标点至少保留一枚（想一枚都不补请关上方「句尾标点」开关）', 2400);
+        return;
+      }
+      if (del) {
+        list.splice(idx, 1);
+        mjfpSet(list);
+        sync();
+        mjfpToast('已删除句尾标点 ' + it.s);
+        return;
+      }
+      it.on = it.on === 1 ? 0 : 1;
+      mjfpSet(list);
+      sync();
+      toastSaved('句尾标点 ' + labelOf(it.s), it.on === 1);
+    });
+    sync();
+    const swPunct = document.getElementById('mjf-punct');
+    if (swPunct) swPunct.addEventListener('change', () => setTimeout(sync, 30));
+    // 切桌面 / 备份回填 / 写日志修正后重读（标点池 per-cid，与 #712 同口径）
+    ['contact-switched', 'mochi-restore-done', 'mochi-wrj-heal'].forEach(evN => {
+      document.addEventListener(evN, () => { try { sync(); } catch (e) {} });
+    });
   })();
   // ===== #518：系统预设字卡·聊天触发概率总览（总档 + 分类档） =====
   // 分类档全部复用既有键（不新开键）：pre=存储前缀；blob=整包 JSON（prob 在 settings.prob）的四类互动卡。
@@ -1384,9 +1640,43 @@
 
   // v3.6.x：「保存设置」按钮——把当前页面上所有概率/开关一次性写入本地并提示。
   // 数值本身已随点击即时保存，这里提供明确的「保存」反馈（用户反馈刷新后设置会丢）
+  // ===== #1511 「保存设置」不许拿没读全的屏面值整包顶库 =====
+  // （#1342 美化方案「无法保存，重新刷新过后数据会被清除」iPhone 实报／#1488 市集冷读顶库同族第三处：
+  //   本页＝从存储渲染 →「保存设置」把页面全部 stepper/开关值整包写回。启动回填（idbRestore）
+  //   落定前、或这台机 LS 写失败（配额满/杀进程回滚）只靠 IDB 时，屏面值可能是默认/旧账——
+  //   此刻整包落笔＝把几十枚键一次性顶回默认/旧值，用户看到「保存了，刷新之后又变回去」。
+  //   判据两格，全部当场事实，零机型／零 UA 分支：
+  //   ① store.awaitingBigKey＝数据层唯一那把「这一格读空而库里本该有」的尺（四格证人含
+  //     启动回填未落定 mochiDataPending）；
+  //   ② 启动回填未落定（mochiDataPending）且本会话没动过这一格——LS 里那份可能是写失败
+  //     设备的存量旧账（回填对已有 LS 键不覆盖），没动过＝屏面值没有本会话的新意，顶库纯亏。
+  //   本会话动过的键（sessionSavedKeys，直接交互已即时落库）屏面即意图，照常写＝同 #1342
+  //   「写过即放行」，不把这道闸变成新的存不进去；回填自带 2 分钟上限，健康设备 1~3 秒
+  //   落定＝这道闸对绝大多数会话零感知。
+  function replyStoreFor(k) {
+    if (k.indexOf('gc-') === 0) { try { return window.xyStore ? window.xyStore('xy-home-v2') : null; } catch (e) { return null; } }
+    return ls;
+  }
+  function replyFullKey(k) { return (k.indexOf('gc-') === 0 ? 'reply-gc-' : 'reply-') + k; }
+  function replyKeyUnvouched(k) {
+    const st = replyStoreFor(k);
+    try { if (st && typeof st.awaitingBigKey === 'function' && st.awaitingBigKey(replyFullKey(k))) return true; } catch (e) {}
+    try {
+      if (!sessionSavedKeys.has(k) && window.mochiDataPending && window.mochiDataPending()) return true;
+    } catch (e) {}
+    return false;
+  }
+  function replyAskRehydrate(k) {
+    const st = replyStoreFor(k);
+    try { if (st && st.requestBigKey) st.requestBigKey(replyFullKey(k)); } catch (e) {}
+  }
+  function replyBlockedToast() {
+    toastReply('部分设置这次没读全（存储正忙），先不覆盖：等几秒再点一次保存即可，不需要重新设置', 3200);
+  }
   // v3.26.x：抽出 saveCurrentReplyPage() 公共函数——「保存设置」与「保存全部桌面联系人
   // 设置」共用同一套页面值校验+写入（stepper 范围校验 + 开关落盘），避免两份逻辑漂移
   function saveCurrentReplyPage() {
+    const skipped = []; // #1511：读数未确认的键（这格此刻可能是默认/旧账），不拿屏面值顶库
     try {
       document.querySelectorAll('#page-reply-settings .stepper, #page-call-settings .stepper').forEach(st => {
         const k = st.dataset.k;
@@ -1394,6 +1684,7 @@
         // 同 syncUI：固定选 input.stp-val，避免转换后误读到 ce-box DIV 的过期 expando
         const val = st.querySelector('input.stp-val');
         if (k && val) {
+          if (replyKeyUnvouched(k)) { skipped.push(k); return; } // #1511：这格读数未确认，不拿屏面值顶库
           // 与直接输入同一套范围校验（data-max 缺失 = 不设上限，防 NaN/Infinity 入库）
           const intAttr = (name, def) => { const v = parseInt(st.getAttribute(name), 10); return Number.isNaN(v) ? def : v; };
           const min = intAttr('data-min', 0);
@@ -1404,11 +1695,15 @@
           window.saveReplyCfg(k, v);
         }
       });
-      ['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+      ['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en', 'turn-en', 'gc-turn-en'].forEach(k => {
         const el = document.getElementById(k);
-        if (el) window.saveReplyCfg(k, el.checked ? 1 : 0);
+        if (el) {
+          if (replyKeyUnvouched(k)) { if (skipped.indexOf(k) < 0) skipped.push(k); return; } // #1511：同上，读数未确认不落笔
+          window.saveReplyCfg(k, el.checked ? 1 : 0);
+        }
       });
     } catch (e) {}
+    return skipped;
   }
   function toastReply(msg, ms) {
     const d = ccToastEnsure();
@@ -1417,7 +1712,14 @@
   const saveBtn = document.getElementById('reply-save-btn');
   if (saveBtn) {
     saveBtn.addEventListener('click', () => {
-      saveCurrentReplyPage();
+      const skipped = saveCurrentReplyPage();
+      if (skipped && skipped.length) {
+        // #1511：这页还有没读全的格子，整包保存＝拿默认/旧账顶库——不落笔＋请一趟库＋照实说；
+        // 回填落定后 mochi-restore-done 会重画本页（下方既有接线），再点一次保存即生效
+        replyAskRehydrate(skipped[0]);
+        replyBlockedToast();
+        return;
+      }
       toastReply('已保存全部回复设置');
     });
   }
@@ -1429,7 +1731,14 @@
   // DEFAULTS），保证同步后各桌面回复设置完全一致。覆盖各桌面现有设置 → openModal
   // 二次确认（同美化方案「应用」弹窗模式，pill 预选「确定保存」保证只点底部确定也生效）
   function saveAllContactsDo() {
-    saveCurrentReplyPage();
+    // #1511：同步全部桌面＝拿当前生效值铺满所有联系人——当前页还有没读全的格子时
+    //（getCfg 此时读到的会是默认/旧账），这一步会把旧账写进每一个桌面，破坏面比单桌面更大，先拦
+    const skipped = saveCurrentReplyPage();
+    if (skipped && skipped.length) {
+      replyAskRehydrate(skipped[0]);
+      replyBlockedToast();
+      return;
+    }
     let count = 0;
     try {
       if (window.getContacts && window.storeFor) {

@@ -162,9 +162,16 @@
     if (changed) d.mergedIds = merged;
     return changed;
   }
+  // #1520：加载期自动写的静默读数闸（自动路径不弹 toast；读不全＝宁可不落笔）
+  function ckAutoHold(k) { try { return !!(window.xyBigWriteHold && window.xyBigWriteHold(store, k)); } catch (e) { return false; } }
+  // #1521：跨桌面那一发要按**目标桌面的 store** 问——当前桌面那把尺对它无效
+  function ckAutoHoldIn(st, k) { try { return !!(window.xyBigWriteHold && window.xyBigWriteHold(st, k)); } catch (e) { return false; } }
   function ckLoad() {
     let d = null;
     try { d = JSON.parse(store.get(KEY) || 'null'); } catch (e) { d = null; }
+    // #1519：读空但库里本该有＝大键没读全，当场请库取回一次（#1349a 单次飞行闸）；这一拍仍按旧形状
+    //   走（播种纯预设只在内存里，isNew 守卫不写盘），下一拍读到权威值
+    if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY)) store.requestBigKey(KEY); } catch (e0) {} }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     if (!d.settings || typeof d.settings !== 'object') d.settings = {};
     // 是否使用系统预设问题（默认开启；关闭后只抽用户添加的）
@@ -178,9 +185,9 @@
       });
       d.mergedIds = DEFAULT_QUESTIONS.map(q => q.id);
       // 全新用户不立即写盘——防本地空快照覆盖 IDB 权威数据（与 ta-ask.js 同注释同因）
-      if (!isNew) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      if (!isNew && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
     } else {
-      if (ckMerge(d)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      if (ckMerge(d) && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
     }
     if (!Array.isArray(d.groups)) d.groups = [];
     return d;
@@ -190,6 +197,11 @@
   function ckLoadFrom(s) {
     let d = null;
     try { d = JSON.parse(s.get(KEY) || 'null'); } catch (e) { d = null; }
+    // #1521：这是**跨桌面**的读-改-写（写的是目标桌面的 store，不是当前桌面）——#1520 接闸时只覆盖了
+    //   当前桌面那几发，这里当时漏了（复审 C-3）。盲窗里把「纯预设＋本次改动」写回＝对方桌面的查岗
+    //   题库被清掉。路径是自动的（跨桌面「来消息」抽题，incoming-requests 调 window.ckQuestionPickFor），
+    //   按站内铁律走静默闸：读不全就这一发不落笔（抽题本身不受影响，返回值仍能抽），并请库取回。
+    if (!d) { try { if (s.awaitingBigKey && s.awaitingBigKey(KEY)) s.requestBigKey(KEY); } catch (e0) {} }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     if (!d.settings || typeof d.settings !== 'object') d.settings = {};
     if (d.settings.useDefault === undefined) d.settings.useDefault = true;
@@ -201,20 +213,29 @@
         return nq;
       });
       d.mergedIds = DEFAULT_QUESTIONS.map(q => q.id);
-      if (!isNew) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      if (!isNew && !ckAutoHoldIn(s, KEY)) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
     } else {
-      if (ckMerge(d)) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      if (ckMerge(d) && !ckAutoHoldIn(s, KEY)) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
     }
     if (!Array.isArray(d.groups)) d.groups = [];
     return d;
   }
-  function ckSave(d) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+  // #1519：查岗题库整包写＝读-改-写。大键没读全时把「纯预设＋本次改动」写回＝自定义题被清空，
+  //   判据与文案同 ta-ask（xyBigWriteBlocked 拦下时照实 toast、绝不落笔；回填后再点一次即可）
+  function ckSave(d) {
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY, '查岗问题库')) return false;
+    try { store.set(KEY, JSON.stringify(d)); } catch (e) {}
+    return true;
+  }
 
   // ---------- 抽题：已启用池内随机，避免与上一题相同 ----------
+  // #1315：整类停用（共用件 window.presetGroup，键 pg-groups-off）——只闸系统预设题，
+  //   用户在「我的添加」里自建的同类题不受影响。
+  function pgCatOff(ns, cat) { return !!(window.presetGroup && window.presetGroup.isOff(ns, cat || 'daily')); }
   function pickQ() {
     const d = ckLoad();
     const useDefault = (d.settings || {}).useDefault !== false;
-    const qs = d.questions.filter(q => q && q.enabled !== false && q.text && (useDefault || q.isPreset !== true));
+    const qs = d.questions.filter(q => q && q.enabled !== false && q.text && (useDefault || q.isPreset !== true) && !(q.isPreset === true && pgCatOff('ta-checkin', q.cat)));
     if (!qs.length) return null;
     let pool = qs;
     if (qs.length > 1) {
@@ -334,7 +355,7 @@
     const el = window.chatAddSystem(actionText, { special: 'ask-card', askQuestion: actionText, askOptions: actionOpts ? actionOpts : askOpts, askType: askType, deskCk: isDeskCk, deskCkDir: deskCkDir });
     const msgIdx = el ? Number(el.dataset.idx) : -1;
     // #915：late＝刚从真后台回来的补触发（复用 ta-ask 同一判据），补弹「后台漏掉」的系统通知
-    if (window.bgNotifyCheck) window.bgNotifyCheck(actionHint + actionText, Date.now(), { name: 'TA查岗', late: !!(window.interactLateNotify && window.interactLateNotify()) });
+    if (window.bgNotifyCheck) window.bgNotifyCheck(actionHint + actionText, Date.now(), { name: 'TA查岗', late: !!(window.interactLateNotify && window.interactLateNotify()), kind: 'checkin' });
     // 自动弹窗：后台不弹 / 正在输入不弹 / 已有互动弹窗不弹（卡片仍在聊天里可点）
     // v3.12.x：迟到弹窗守卫——后台冻结的定时器回前台会被一次性补跑，补跑时页面已可见、
     // document.hidden 守卫失效 → 弹出几分钟前已在聊天里看过的旧查岗卡。
@@ -453,6 +474,8 @@
       html += '<button class="cc-tab' + (k === ckSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + esc(label) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
     });
     html += '</div>';
+    // #1315：整类停用条——本页一个分类就是一个「分组」，旧版只能逐张点掉
+    html += window.presetGroup ? window.presetGroup.catBar('ta-checkin', ckSysCat, esc((CATS_CKQ.find(c => c[0] === ckSysCat) || [])[1] || ckSysCat)) : '';
     d.questions.forEach(q => {
       if (!(hit(q) && q.cat === ckSysCat)) return;
       const idx = d.questions.indexOf(q);
@@ -470,6 +493,7 @@
       }
     });
     container.innerHTML = html;
+    if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-checkin', ckSysCat, function () { renderCkSysInto(container, search); });
     container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
       t.addEventListener('click', () => { ckSysCat = t.dataset.cat; renderCkSysInto(container, search); });
     });
@@ -733,7 +757,7 @@
       lines.forEach(t => {
         d2.questions.push({ id: 'k_' + Date.now() + '_' + Math.floor(Math.random() * 9999), cat: 'text', text: t, enabled: true, isPreset: false });
       });
-      ckSave(d2);
+      if (ckSave(d2) === false) return; // #1520：拦下＝输入框原样保留（用户才有料可「再点一次」）
       batchTextEl.value = '';
       renderCkMineInto(document.getElementById('ckq-mine-cats'), '');
       refreshCkCardCounts();

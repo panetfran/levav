@@ -225,7 +225,22 @@
     showFsFallbackTip();
     forcePortrait(5, showRotateTip);
   }
+  // #1282 一次点按只允许一次全屏事务：在途闸＋「已是全屏」短路。
+  // 真机上每一次 requestFullscreen 都开一段系统级全屏切换（收系统栏＋窗口尺寸重排＋
+  // 整页重布），同一段里发两次＝用户所见「点『全屏模式』闪一下、接着黑屏 2~3 秒才进去」。
+  // 判据只有「有没有进行中的请求／是不是已经在全屏里」这两个 API 事实，零机型、零 UA 分支。
+  let _fsFlight = null, _fsFlightTimer = 0;
+  function closeFsFlight() { clearTimeout(_fsFlightTimer); _fsFlight = null; }
+  function openFsFlight(p) {
+    _fsFlight = p || true;
+    clearTimeout(_fsFlightTimer);
+    // 有界释放：内核不返回 promise（老 webkit 前缀路径）或落定事件缺失时，闸最长压 1.5s
+    //（与既有「进入全屏 1500ms 复核」同一口径），绝不把全屏永久锁死
+    _fsFlightTimer = setTimeout(closeFsFlight, 1500);
+    if (p && p.then) p.then(closeFsFlight, closeFsFlight);
+  }
   function enterFs() {
+    if (_fsFlight || isFullscreen()) return _fsFlight; // #1282 在途/已全屏＝不再另开一次切换事务
     try {
       const el = document.documentElement;
       let p;
@@ -242,12 +257,14 @@
       // 进入后锁竖屏（需全屏态，此时已满足）并启动方向监视（iOS 经 Safe 入口跳过）；
       // 无论锁屏 API 是否报成功，监视器都会复核视口方向
       const tryLock = () => { lockFsOrient(); startFsMonitorSafe(); };
-      if (p && p.then) { p.then(tryLock, tryLock); return p; }
+      if (p && p.then) { openFsFlight(p); p.then(tryLock, tryLock); return p; } // #1282 请求落定前挂闸
+      openFsFlight(null);
       setTimeout(tryLock, 300);
     } catch (e) {}
     return null;
   }
   function exitFs() {
+    closeFsFlight(); // #1282 主动退出＝撤闸，别让在途的进入请求挡住随后的恢复
     try {
       unlockFsOrient();
       stopFsMonitor();
@@ -622,8 +639,20 @@
     document.removeEventListener('click', retryClick, true);
     document.removeEventListener('touchstart', retryTouch, true);
   }
-  function retryClick(e) { if (!e.isTrusted) return; doRetry(); }
-  function retryTouch(e) { if (!e.isTrusted) return; doRetry(); }
+  // #1282 让路闸：这一次点按正落在「全屏模式」开关上（设置页 #sf-fullscreen／聊天设置
+  // 镜像 #cs-fullscreen，含包住 input 的 label 装饰层），就交还给开关自己的 change 流程。
+  // 否则同一手势两路各发一次全屏请求（实测温差＝两次请求相隔约 116ms）；更糟的是点「关」
+  // 时 FS_KEY 尚未被写回 0，这句会抢先把全屏又开回来＝开关弹回、全屏关不掉。
+  // 判据是事件落点这一个 DOM 事实，零机型、零 UA 分支。
+  function onFsSwitch(t) {
+    if (!t || typeof t.closest !== 'function') return false;
+    if (t.closest('#sf-fullscreen, #cs-fullscreen')) return true;
+    const lb = t.closest('label');
+    return !!(lb && (lb.htmlFor === 'sf-fullscreen' || lb.htmlFor === 'cs-fullscreen' ||
+      lb.querySelector('#sf-fullscreen, #cs-fullscreen')));
+  }
+  function retryClick(e) { if (!e.isTrusted || onFsSwitch(e.target)) return; doRetry(); }
+  function retryTouch(e) { if (!e.isTrusted || onFsSwitch(e.target)) return; doRetry(); }
   function doRetry() {
     disarmRetry();
     if (store.get(FS_KEY) !== '1' || isFullscreen()) return; // 用户已关闭/已全屏 → 放弃
@@ -806,7 +835,34 @@
     if (_gfsRaf) return;
     _gfsRaf = requestAnimationFrame(function () { _gfsRaf = 0; applyGameFsElevate(); });
   }
-  var _gfsObs = new MutationObserver(_gfsSchedule);
+  // #1301 观察器只对本该它管的变化醒：#338/#970 把「每次评估」的成本一路压低（活集合 +
+  // 无面板直返回 + rAF 合帧），但**触发评估**的条件仍是「body 整树任何一次 class／hidden／
+  // 子节点变化」。而本应用 91% 的 DOM 住在隐藏页里（无头实测 16405/18040 节点），切页与
+  // 页面内每次渲染都会把整批 MutationRecord 推进来——每批都要过一遍 applyGameFsElevate，
+  // 那趟 `document.getElementsByClassName('poke-card').length` 是**全文档**活集合取长
+  // （集合缓存随每次 DOM 变更失效，等于每批重扫整棵树）。393×852 DPR3＋6× 节流实测：
+  // 20 次切页里本观察器自耗时 506ms，另带 ~1.8s 的选择器查询。
+  // 现在改为先在 MutationRecord 上判「这一批里到底有没有碰 .poke-card」：属性记录只看
+  // 被改的那个元素自身，childList 记录只进「新插入／移除的那棵子树」做局部 querySelector
+  // （作用域是那一小段子树，不是整篇文档）。真碰到了才 _gfsSchedule()，评估逻辑一字未动。
+  // 零机型分支：判据是「记录里有没有这个类名」，与内核、UA、型号无关。
+  function _gfsHitOne(n, deep) {
+    if (!n || n.nodeType !== 1) return false;
+    if (n.classList && n.classList.contains('poke-card')) return true;
+    if (!deep) return false;
+    try { return !!n.querySelector('.poke-card'); } catch (e) { return false; }
+  }
+  function _gfsHit(muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var m = muts[i];
+      if (m.type === 'attributes') { if (_gfsHitOne(m.target, false)) return true; continue; }
+      var a = m.addedNodes, r = m.removedNodes, k;
+      for (k = 0; k < a.length; k++) if (_gfsHitOne(a[k], true)) return true;
+      for (k = 0; k < r.length; k++) if (_gfsHitOne(r[k], true)) return true;
+    }
+    return false;
+  }
+  var _gfsObs = new MutationObserver(function (muts) { if (_gfsHit(muts)) _gfsSchedule(); });
   _gfsObs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class', 'hidden'], childList: true });
   applyGameFsElevate();
 })();

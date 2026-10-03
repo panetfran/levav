@@ -156,6 +156,27 @@
     return bar;
   }
 
+  // #1421 提示条不许把列表窗口挤窄：这一族页面自己不滚（`scrollHeight==clientHeight`），滚动权在
+  // 内层那扇窗口上（.gs-scroll/.cal-scroll 那一族——回复设置、美化页都是）。挂在页首＝条子常驻在
+  // 窗口上方当第二层头部：360×640 实测回复设置的窗口被压到 419px、顶部 372px 划下去毫无反应，
+  // 正是 #1411 那一族「页面跟着屏幕一起固定」的同一条几何。判据只看现算的两个事实（页有没有滚动
+  // 区间、子树里谁真的在裁剪内容），零机型／零 UA 分支；整页滚的页（字卡库、存储查看）照旧挂页首。
+  function mountBar(page, bar) {
+    if (page.scrollHeight - page.clientHeight > 0) { page.insertBefore(bar, page.firstChild); return; }
+    const all = page.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const n = all[i];
+      if (n === bar || (n.closest && n.closest('.pc-bar'))) continue;
+      let oy = '';
+      try { oy = getComputedStyle(n).overflowY; } catch (e) { continue; }
+      if (!/(auto|scroll)/.test(oy)) continue;
+      if (!n.firstElementChild || n.clientHeight < 120) continue;
+      n.insertBefore(bar, n.firstChild);
+      return;
+    }
+    page.insertBefore(bar, page.firstChild);
+  }
+
   // ---- 进入页面即按需插入（每页一次；已看/不需要则不再出现） ----
   REG.forEach(function (cfg) {
     const page = document.getElementById(cfg.page);
@@ -170,7 +191,7 @@
           if (page.hidden || seen().indexOf(cfg.id) >= 0) return;
           if (page.querySelector('.pc-bar[data-pc="' + cfg.id + '"]')) return;
           if (typeof cfg.need === 'function' && !cfg.need()) { markSeen(cfg.id); return; }
-          page.insertBefore(buildBar(cfg), page.firstChild);
+          mountBar(page, buildBar(cfg));
           markSeen(cfg.id); // 「一生一次」：显示即标记，避免忽略后反复打扰；要重看走设置里的重置
         } catch (e) {}
       }, 380);

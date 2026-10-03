@@ -91,13 +91,145 @@
   function csBgReconcileActive() {
     const list = csBgList();
     const cur = store.get('cs-bg');
-    if (!cur) { if (csBgActiveId()) store.remove(CS_BG_ACTIVE); return ''; }
+    // FIX 2026-09-25 #1218：读空不等于「壁纸没了」（聊天背景同样是 >200KB 的 IDB 大键，会被
+    // 启动回填按预算挂起）。原来这里顺手 store.remove(CS_BG_ACTIVE)＝把 active-id 指针删掉，
+    // 等原图稍后取回来，面板高亮/删除判定已经找不到当初生效的是哪张；只在内核确认「库里查无
+    // 此图」时才清指针（见 csBgHydrateOnce）。
+    if (!cur) return '';
     const aid = csBgActiveId();
     if (aid && list.indexOf(aid) >= 0 && store.get('cs-bg-item-' + aid) === cur) return aid;
     for (let i = 0; i < list.length; i++) {
       if (store.get('cs-bg-item-' + list[i]) === cur) { store.set(CS_BG_ACTIVE, list[i]); return list[i]; }
     }
     return '';
+  }
+  // FIX 2026-09-25 #1218（用户实报「小米15 / edge 清理数据后再导入显示背景被清除，上传图片显示
+  // 原图已丢失请重新上传」；同族症状：OPPO K13 Turbo Pro + edge「背景图显示被清理需要重启才能
+  // 显示」、红米 K80 + chrome「从通知弹窗点开进聊天页，聊天背景与桌面背景一起莫名消失，刷新又
+  // 恢复正常」）：三态判定与按需取回取数据层唯一一份 window.idbEnsureBigKey（批注在 idb.js，
+  // 根因链与阈值都在那里），本文件只用薄包装。零机型／零 UA 分支＝判据只有内核回执。
+  const ensureBigKey = (k) => (window.idbEnsureBigKey ? window.idbEnsureBigKey(k) : Promise.resolve('unknown'));
+  // 读空 → 按需取回 → { v: 值, st: 'ready'|'absent'|'unknown' }：只有 'absent' 才允许说「已丢失」
+  const readBigKey = (k) => ensureBigKey(k).then((st) => {
+    let v = '';
+    try { v = store.get(k) || ''; } catch (e) {}
+    return { v: v, st: v ? 'ready' : st };
+  });
+  // 两种「读不到」必须说两种话：确认没有＝请重传；没确认＝别让用户白重传一遍
+  const bigKeyMissToast = (st, what) => toast(st === 'absent'
+    ? what + '的原图库里已经查不到了（可能被浏览器清理），请重新上传'
+    : what + '的原图这次没读出来（存储正忙），稍后再点一次即可，不需要重新上传');
+  // FIX 2026-09-25 #1218 写侧（用户实报「有的手机重新上传图片也不行」）：xyStore.set 对大键
+  // 只写内存缓存 + 一个发完不管结果的 IDB 写（LS 那份还被大键规则当场删掉），所以配额满的机器上
+  // 上传是「当场成功、重开就没」——新键在库里根本不存在，重开后被读侧判成「已丢失请重传」，
+  // 用户照做、再传、再丢，转圈。这里取 count(键) 的真回执，两次确认库里没有才报警；
+  // 问不出结果（unknown）闭嘴，不吓正常设备。判据一份来自数据层 window.idbBigKeyLanded。
+  const confirmBigKeys = (keys, what) => {
+    const landed = window.idbBigKeyLanded;
+    if (typeof landed !== 'function') return;
+    try {
+      Promise.all(keys.map((k) => landed(k))).then((sts) => {
+        if (sts.indexOf('missing') < 0) return;
+        toast(what + '没能存进本机存储（存储空间可能已满）：现在能看见，重开就没了。请先去「设置 → 数据备份」导出备份，删掉一些数据后再传一次');
+      }).catch(() => {});
+    } catch (e) {}
+  };
+  // ===== FIX 2026-09-25 #1258「聊天背景图卡住没显示、退出重进就没了」（OPPO A5 Pro + Edge 实报，
+  // 用户明说其他机型同现；零机型／零 UA 分支＝判据只取本机存储事实）=====
+  // #1218 把「MB 级原图只进 IndexedDB、读空先按需取回」收了口，但它的闸门 csBgExpectBg 只认
+  // active-id 指针这一条证据，而指针和大键尺寸索引（__big-idx）、图库清单（cs-bg-glist）**全都落在
+  // localStorage**。Edge/安卓的「杀进程回滚 LS 提交」是已登记的病灶（idb.js 小键写日志那一族的立项
+  // 原因，荣耀 200 Pro + Edge 实报），本机 LS 又被实测撑到 542 键 ≈5.9MB（早已越过 5MB 配额线）——
+  // 于是这三种真实现场都会「指针读空」：①LS 那批小键被回滚；②配额满时那次 setItem 根本没落进去；
+  // ③#1218 之前的旧版把「暂时读空」当永久丢失时顺手删过它。指针一没，闸门就判「用户压根没设壁纸」
+  // ＝当场拆掉铺好的壁纸层＋从此没人再去库里取回＝**背景图真的没了，重开也没有**（用户原话「退出重进
+  // 背景图就没了」；在聊天页里那一阵「卡没」＝切后台释放内存副本后同一条拆层路径）。原图其实一直好
+  // 好躺在库里——库里那份不受 LS 回滚影响，这正是「图没了但占着空间」的错位。
+  // 改法＝判据从「一条 LS 小键」换成「三条独立证据任一成立」，并把库里那份当最终权威：
+  //   S1 指针仍指向图库里某一张（原口径一字不动）；
+  //   S2 大键尺寸索引里还留着 cs-bg 那一行（set 同步记账、remove 同步销账、回填与取回自愈补记）；
+  //   S3 前两条都读空时（＝LS 那批小键整批被回滚／写不进的本机形态）不认死：先别拆层，并就该桌面
+  //      踢一趟数据层的按需取回（#1218 的 idbEnsureBigKey：库里有过就把 MB 级原图读回来、健康连接
+  //      确认没有才认死）＝专治这台机器「重开就没了、从此没人再去库里找」的那一刀。
+  // 问不出结果（'unknown'／内核忙）＝一直停在「未裁决」＝继续留层，绝不据此宣布丢失（旧写法每会话
+  // 封顶两次，第三次就回到拆层那条路＝把同一台机器的症状又放出来一遍）。只有「健康连接确认库里
+  // 没有」与「用户亲手删除」才允许拆层。三条证据都随命名空间（桌面）各自成立：换桌面＝对新联系人
+  // 重新裁决，绝不沿用上一位的结论，也不拿「未裁决」当幌子把别人的壁纸留在这一位脸上。
+  function csBgIdxWitness() {
+    try {
+      const idx = window.idbBigIdxSize;
+      return typeof idx === 'function' && idx('cs-bg') !== undefined;
+    } catch (e) { return false; }
+  }
+  const csBgCurNs = () => { try { return String(window.activePrefix() || ''); } catch (e) { return ''; } };
+  let csBgHydrating = false;   // 一次只跑一份取回
+  let csBgAskedNs = '';        // 已为哪个桌面踢过问库（每桌面每会话一次，不空转；restore-done 重置）
+  let csBgGoneNs = '';         // 该桌面「库里确认没有／用户亲手删」⇒ 允许拆层（换桌面自动失效）
+  let csBgPaintedNs = '';      // 壁纸层当前画的是哪个桌面的图
+  // 「这张壁纸本该还在」的判据（三条证据任一成立；见上）
+  function csBgExpectBg(ns) {
+    const cur = ns || csBgCurNs();
+    const aid = csBgActiveId();
+    if (!!aid && csBgList().indexOf(aid) >= 0) return true;
+    if (csBgIdxWitness()) return true;
+    return csBgGoneNs !== cur;
+  }
+  // 用户亲手删除/清除壁纸时调它：这个桌面就此认死「没有壁纸」，既不再留层也不再问库
+  // （否则「清除」要点完等一次往返才生效＝看起来像「按了没反应」）
+  function csBgForgetThisSession() { csBgGoneNs = csBgCurNs(); }
+  // 指针丢了但原图取回来了 ⇒ 就地把指针重建（优先认图库里内容相同的那张；认不出就用一个只为
+  // 「下次别再走空判」的库侧锚点——它不在清单里，因此不参与面板高亮与删除判定，S1 自然不认它，
+  // 下一轮由 S2/S3 说话，用户真删图时也不会被它复活）。
+  function csBgRebindPointer() {
+    try {
+      if (csBgActiveId()) return;
+      const rec = csBgReconcileActive();
+      if (rec) return;
+      store.set(CS_BG_ACTIVE, '__idb');
+    } catch (e) {}
+  }
+  // 聊天背景被挂起时的补取回：同一个桌面一次会话只踢一趟（同一次只跑一份），落地后重跑
+  // applySettings 自己把层铺回来。返回 true ＝「这一轮先别拆层，等回执」。
+  function csBgHydrateOnce(ns) {
+    const cur = ns || csBgCurNs();
+    if (csBgHydrating || csBgAskedNs === cur || !window.idbEnsureBigKey) return false;
+    try { if (store.get('cs-bg')) return false; } catch (e) { return false; }
+    csBgHydrating = true;
+    csBgAskedNs = cur;
+    readBigKey('cs-bg').then((r) => {
+      csBgHydrating = false;
+      // 这一趟等回执期间用户亲手清掉了壁纸／库里确认没有 ⇒ 这份结果作废：绝不把刚删的图抢回来
+      if (csBgGoneNs === cur) return;
+      if (r.v) {
+        try { csBgRebindPointer(); applySettings(); } catch (e) {}
+        return;
+      }
+      // 'absent'（健康连接确认库里没有）是唯一允许拆层／销指针的那一态；销指针之前仍要过一遍 S2——
+      // Edge 上 LS 被回滚的那一轮指针本来就不在，再销一次等于把「下一轮还能靠索引认回来」的
+      // 路也堵死。索引也记着没有，才算真丢。
+      // 'unknown'（内核忙/超时/隐私模式）则只认「未裁决」：绝不宣布丢失，层原地留着，等下一次
+      // mochi-restore-done 或换桌面重新裁决（asked 标记随之重置）。真丢才重跑 applySettings 拆层；
+      // 未裁决时不跑＝裁决没变，白刷一轮全局样式（#938 那笔账）。
+      if (r.st === 'absent') {
+        csBgGoneNs = cur;
+        try {
+          if (csBgActiveId() && !csBgIdxWitness()) store.remove(CS_BG_ACTIVE);
+        } catch (e) {}
+        try { applySettings(); } catch (e) {}
+      }
+    }).catch(() => { csBgHydrating = false; });
+    return true;
+  }
+  // 「读不到壁纸」时的统一裁决：该等的等（取回），库里确认没有／用户亲手删除的才允许拆层。
+  // 返回 true ＝ 本轮保留现有壁纸层不动。拆层判据只此一处，applySettings 不再各自表达。
+  function csBgHoldLayer() {
+    const cur = csBgCurNs();
+    // 层上正画着**别人**桌面的图：跟这一位无关，照常拆掉（不让「未裁决」变成跨桌面残留壁纸）
+    if (csBgPaintedNs && csBgPaintedNs !== cur) return false;
+    if (!csBgExpectBg(cur)) return false;
+    if (csBgHydrating) return true;
+    if (csBgHydrateOnce(cur)) return true;
+    return csBgExpectBg(cur);
   }
 
   const FONT_SIZES = [
@@ -471,7 +603,11 @@
     // 正常压缩产物（2160-4096px JPEG 0.85）≤6MB，>6MB 判定为异常存量，清除回默认
     let bg = store.get('cs-bg');
     if (bg && typeof bg === 'string' && bg.length > 6 * 1024 * 1024) {
-      try { store.remove('cs-bg'); } catch (e) {}
+      // FIX 2026-09-25 #1218：对齐 personalize.sanitizeBg 的 v3.10.x 口径——超限只跳过本次渲染，
+      // 不再 store.remove。remove 走 activeStore 会把内存+localStorage+IndexedDB 三处的图一起删掉，
+      // 正常压缩产物偶尔略超 6MB 就变成「设置成功、重启后背景被清掉回默认、每次都要重设」。
+      // 只有旧版绕过压缩塞进来的毒数据（>12MB，渲染会拖垮 iOS Safari）才清除自愈。
+      if (bg.length > 12 * 1024 * 1024) { try { store.remove('cs-bg'); } catch (e) {} }
       bg = null;
     }
     // #731：铺满方式由 cs-bg-fit 决定；#762：写在常驻图层 #cs-bg-layer 上，尺寸交回 CSS 关键字。
@@ -497,16 +633,24 @@
       // 两条下限分工：下面这条 .cs-bg-fill 是 #762 的（纯视口单位，只有铺满档享受）；
       // #781 的 .cs-bg-on 那条才是四档共用、且取 max(视口单位, --cs-bg-h)（规则都在 chat-main.css）。
       chatPage.classList.toggle('cs-bg-fill', fit === 'fill');
+      csBgPaintedNs = csBgCurNs();   // #1258：记下这层图属于哪个桌面（跨桌面切换时的拆层依据）
       csBgStableLater();
     } else {
       // #938：本分支每次 applySettings 都跑（＝无壁纸设备点一下抽屉控件也会跑到），原实现的
       // display/backgroundImage 同值重写 + 两记空 remove 每次共脏化 #page-chat 4 个属性＝壁纸层与
       // 数百条气泡的共同祖先整棵重算。全部改成「先比对、真变了才动」。
-      if (bgLayer) {
+      // FIX 2026-09-25 #1218：该有壁纸（active-id 指针在）却读空＝大概率被启动回填挂起，这一轮
+      // 先把层原样留着并踢一次按需取回；拆层正是「聊天背景莫名其妙消失、刷新又回来」的可见形态。
+      // FIX 2026-09-25 #1258：这一判据从「只看指针」换成三条独立证据（指针／大键尺寸索引／库里
+      // count 问证），裁决收进 csBgHoldLayer 一处——指针那条 LS 小键被 Edge 回滚或配额写空时，
+      // 旧判定会把「库里明明还有的背景」当场拆掉且无人再取回＝「退出重进背景就没了」。
+      const waitBg = !bg && csBgHoldLayer();
+      if (bgLayer && !waitBg) {
         if (bgLayer.style.display !== 'none') bgLayer.style.display = 'none';
         if (bgLayer.style.backgroundImage) bgLayer.style.backgroundImage = '';
+        csBgPaintedNs = '';   // #1258：当场拆掉了就销账，别让下一位桌面替这张图「留层」
       }
-      if (chatPage) {
+      if (chatPage && !waitBg) {
         if (chatPage.classList.contains('cs-bg-fill')) chatPage.classList.remove('cs-bg-fill');
         if (chatPage.classList.contains('cs-bg-on')) chatPage.classList.remove('cs-bg-on');
         // 清壁纸时把铺满方式残影一并抹掉（含 #750~#756 期间直接写在页面身上的内联样式）
@@ -551,6 +695,21 @@
   // #762：这里原有的 resize 重跑（#750 为「按新盒高重算冻结尺寸」而加）整块删除——壁纸尺寸
   // 不再由 JS 折算，resize 期重跑 applySettings 只是白白在每次键盘/旋转时重写一遍样式。
   applySettings();
+  // FIX 2026-09-25 #1270（聊天背景「过几分钟自己没了一张」）：#1195e 每次切后台会按体积放掉 cs-bg
+  // 这类 ≥256KB 大键的内存副本（iOS 内存压力下的正解，不动它），而 store.get 是同步读（内存→
+  // localStorage），大键那份 localStorage 本来就被剥掉 ⇒ 回前台后聊天页读空。旧写法要等用户切页面/
+  // 动一下设置再触发 applySettings 才走到 waitBg＋按需取回。这里回前台把 #1258 那套统一裁决自己
+  // 重跑一遍（该等的等、该取回的取回、确认没有的才拆层），落地后 applySettings 把层铺回来。
+  // 双通道＝visibilitychange 之外还接 bg-keep 的 mochi-fg-resume（部分内核只发 focus/pageshow）。
+  const csBgFgRecheck = () => {
+    try {
+      if (chatPage && !chatPage.hidden) csBgHoldLayer();
+    } catch (e) {}
+  };
+  try {
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') csBgFgRecheck(); });
+    document.addEventListener('mochi-fg-resume', csBgFgRecheck);
+  } catch (e) {}
   // v3.11.x：深色/浅色切换时重算默认配色（personalize.js 切换 html data-theme，
   // 这里监听属性变化即时重写内联变量，不用跨模块调用）
   try {
@@ -568,52 +727,27 @@
   //   cs-bg（聊天页 applySettings / 美化方案导出 / 渲染防护等既有链路零改动）。
   //   旧数据自动迁移：cs-bg 有值而图库为空时，首次打开面板把 cs-bg 收为第 1 张。
   // 240px JPEG 缩略图：面板网格渲染专用（与全图分开存，抽屉/面板只碰小图）
+  // #1270：三处「先整幅解码再说」的读图链统一交给 img-ingest.js（文件头算尺寸 →
+  // createImageBitmap 边解边缩 → 解码看门狗 → 字节收敛）。这一处原本是「打开壁纸面板
+  // 时把库里最多 12 张全尺寸壁纸各整幅解码一遍」＝48MP 时代的一张图 33MB 位图×12，
+  // 面板一开就把渲染进程压崩；现在解码产物只有 240px 那一份。零机型／零 UA 分支。
+  const csIngestTo = (src, opts) => (window.mochiImgCompressTo ? window.mochiImgCompressTo(src, opts)
+    : (toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'), Promise.resolve(null)));
   function csBgMakeThumb(dataUrl, maxSide) {
-    return new Promise((resolve) => {
-      if (typeof dataUrl !== 'string' || dataUrl.length > 50 * 1024 * 1024) { resolve(null); return; }
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-          const w = Math.max(1, Math.round(img.width * scale));
-          const h = Math.max(1, Math.round(img.height * scale));
-          const c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          c.getContext('2d').drawImage(img, 0, 0, w, h);
-          resolve(c.toDataURL('image/jpeg', 0.8));
-        } catch (e) { resolve(null); }
-      };
-      img.onerror = () => resolve(null);
-      img.src = dataUrl;
-    });
+    return csIngestTo(dataUrl, { maxSide: maxSide, quality: 0.8, tag: 'cs-thb' });
   }
   // 压缩：v3.5.126 按设备物理像素定上限——之前固定 900px，
   // 在 2-3x 高分屏（物理宽 1080-1440）铺满时被放大发糊
-  function csBgCompress(dataUrl) {
-    return new Promise((resolve) => {
-      // FIX 2026-09-22 #1036：解码看门狗——内核偶发大图解码挂起（onload/onerror 都不回）
-      // 时原 Promise 永久悬空＝多选链卡死＝「换聊天背景没反应、重开好几次」；超时按失败
-      // 回流由调用方提示。零机型分支（与 #1036 chat-settings 头像 compressHead 同口径）。
-      let settled = false;
-      const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); resolve(v); };
-      const watchdog = setTimeout(function () { once(null); }, 20000);
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const dpr = Math.max(1, window.devicePixelRatio || 1);
-          const screenH = (window.screen && window.screen.height) || 1920;
-          const maxSide = Math.min(4096, Math.max(2160, Math.round(screenH * dpr)));
-          const c = document.createElement('canvas');
-          const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-          c.width = Math.max(1, Math.round(img.width * scale));
-          c.height = Math.max(1, Math.round(img.height * scale));
-          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-          once(c.toDataURL('image/jpeg', 0.85));
-        } catch (e) { once(null); }
-      };
-      img.onerror = () => once(null);
-      img.src = dataUrl;
-    });
+  // #1270：maxSide 口径一字未动，只把「怎么解出来」换成统一解码闸（旧实现没有任何像素
+  // 拦截＝48MP 原图整幅解码占 ≈192MB 位图，正是本机「换聊天背景严重卡顿白屏、只能大退」
+  // 那一发；#1036 的 20 秒看门狗随之下沉到闸内，超时仍按失败回流由调用方提示）。
+  function csBgMaxSide() {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const screenH = (window.screen && window.screen.height) || 1920;
+    return Math.min(4096, Math.max(2160, Math.round(screenH * dpr)));
+  }
+  function csBgCompress(src) {
+    return csIngestTo(src, { maxSide: csBgMaxSide(), quality: 0.85, tag: 'cs-bg' });
   }
   // 入库一张并设为当前壁纸（上传/迁移共用）；返回 null 表示压缩失败
   async function csBgAdd(dataRaw) {
@@ -630,6 +764,7 @@
     store.set('cs-bg', data);
     store.set(CS_BG_ACTIVE, id);
     applySettings();
+    confirmBigKeys(['cs-bg-item-' + id, 'cs-bg'], '这张壁纸');
     return id;
   }
   // 持久化多选 input：一次可加多张，逐张按序入库（压缩本身异步，串行防内存叠加）
@@ -647,16 +782,11 @@
         toast('正在处理 ' + fs.length + ' 张图片…');
         let chain = Promise.resolve();
         fs.forEach((f) => {
-          chain = chain.then(() => new Promise((res) => {
-            const reader = new FileReader();
-            // FIX 2026-09-22 #1036：失败图原本不计成功也不提示（全失败＝整批静默无响应），
-            // 现在计数收口并给可感反馈（与 personalize 桌面壁纸同口径）
-            reader.onload = () => {
-              csBgAdd(reader.result).then((id) => { if (id) ok++; else fail++; res(); });
-            };
-            reader.onerror = () => { fail++; res(); };
-            reader.readAsDataURL(f);
-          }));
+          // #1270：File 直接进统一解码闸（旧写法每张先 FileReader 读成 ≈10MB 的 dataURL 再解，
+          // 多选时几份大字符串叠加＝「换聊天背景严重卡顿白屏」的一半成因）。
+          // FIX 2026-09-22 #1036：失败图原本不计成功也不提示（全失败＝整批静默无响应），
+          // 现在计数收口并给可感反馈（与 personalize 桌面壁纸同口径）
+          chain = chain.then(() => csBgAdd(f).then((id) => { if (id) ok++; else fail++; }));
         });
         chain.then(() => {
           if (ok) { toast('已加入 ' + ok + ' 张壁纸' + (fail ? '，' + fail + ' 张失败（太大/格式不支持/读取超时）' : '')); }
@@ -706,39 +836,58 @@
       if (thb) { im.src = thb; }
       else {
         // 缩略图缺失（旧迁移/上次生成被打断）：读这一张全图现生成再回填，本次先用小占位
-        const full = store.get('cs-bg-item-' + id);
         im.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=';
         cell.style.background = 'var(--muted,#888)';
-        if (full) csBgMakeThumb(full, 240).then((th) => { if (th) { store.set('cs-bg-item-thb-' + id, th); im.src = th; cell.style.background = ''; } });
+        const paint = (full) => {
+          if (!full) return;
+          csBgMakeThumb(full, 240).then((th) => { if (th) { store.set('cs-bg-item-thb-' + id, th); im.src = th; cell.style.background = ''; } });
+        };
+        const full0 = store.get('cs-bg-item-' + id);
+        // #1218：灰格＝「原图这会儿没读到」（大键被回填挂起），不等于「这张没了」——
+        // 清库导入后整屏壁纸一起变灰，就是用户看到的「背景被清除」；先按需取回再补缩略图。
+        if (full0) paint(full0);
+        else readBigKey('cs-bg-item-' + id).then((r) => { paint(r.v); });
       }
       cell.appendChild(im);
       cell.addEventListener('click', () => {
         // 只在此刻读被点中的那一张全图（active-id 判断已由对账保证一致）
+        const useFull = (full) => { store.set('cs-bg', full); store.set(CS_BG_ACTIVE, id); applySettings(); toast('已切换壁纸'); m.style.display = 'none'; };
         const full = store.get('cs-bg-item-' + id);
-        if (full) { store.set('cs-bg', full); store.set(CS_BG_ACTIVE, id); applySettings(); toast('已切换壁纸'); m.style.display = 'none'; }
-        // FIX 2026-09-22 #1036：全图数据丢失（存储被系统清理）时原本点格静默无响应＝「点了没反应」
-        else { toast('这张壁纸原图已丢失（可能被浏览器清理），请重新上传'); }
+        if (full) { useFull(full); return; }
+        // FIX 2026-09-22 #1036：全图读不到时原本点格静默无响应＝「点了没反应」，改为明确提示；
+        // FIX 2026-09-25 #1218：提示前先按需取回一次，且只有内核确认「库里查无此图」才说已丢失
+        readBigKey('cs-bg-item-' + id).then((r) => {
+          if (r.v) { useFull(r.v); return; }
+          bigKeyMissToast(r.st, '这张壁纸');
+        });
       });
       const del = document.createElement('div');
       del.textContent = '×';
       del.style.cssText = 'position:absolute;top:2px;right:2px;width:20px;height:20px;line-height:18px;text-align:center;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:14px';
       del.addEventListener('click', (e) => {
         e.stopPropagation();
-        const full = store.get('cs-bg-item-' + id);
-        const thb2 = store.get('cs-bg-item-thb-' + id);
-        const wasActive = id === aid;
-        csBgSaveList(csBgList().filter(x => x !== id));
-        store.remove('cs-bg-item-' + id);
-        store.remove('cs-bg-item-thb-' + id);
-        if (wasActive) { store.remove('cs-bg'); applySettings(); }
-        // 优化⑤：留底 5 秒，面板底部出「撤销」条；每次删除覆盖上一条留底（只保最近一张）
-        if (full) {
-          m.__undoItem = { id, full, thb: thb2, wasActive };
-          if (m.__undoTimer) clearTimeout(m.__undoTimer);
-          m.__undoTimer = setTimeout(() => { m.__undoItem = null; if (m.style.display === 'flex') openCsBgPanel(); }, 5000);
-        }
-        toast('已删除，5 秒内可撤销');
-        openCsBgPanel();
+        // #1218：删除要留 5 秒可撤销的底，而底只能从「手里有值」来——原图被挂起时 store.get
+        // 是空的，留底也是空的＝一次读空把「可撤销的删除」变成不可逆删除。先取回再删
+        //（取不回照删，用户要的就是删掉，只是撤销条诚实出现不了）。
+        const doDelete = (full) => {
+          const thb2 = store.get('cs-bg-item-thb-' + id);
+          const wasActive = id === aid;
+          csBgSaveList(csBgList().filter(x => x !== id));
+          store.remove('cs-bg-item-' + id);
+          store.remove('cs-bg-item-thb-' + id);
+          if (wasActive) { store.remove('cs-bg'); store.remove(CS_BG_ACTIVE); csBgForgetThisSession(); applySettings(); }
+          // 优化⑤：留底 5 秒，面板底部出「撤销」条；每次删除覆盖上一条留底（只保最近一张）
+          if (full) {
+            m.__undoItem = { id, full, thb: thb2, wasActive };
+            if (m.__undoTimer) clearTimeout(m.__undoTimer);
+            m.__undoTimer = setTimeout(() => { m.__undoItem = null; if (m.style.display === 'flex') openCsBgPanel(); }, 5000);
+          }
+          toast('已删除，5 秒内可撤销');
+          openCsBgPanel();
+        };
+        const has = store.get('cs-bg-item-' + id);
+        if (has) { doDelete(has); return; }
+        readBigKey('cs-bg-item-' + id).then((r) => { doDelete(r.v); });
       });
       cell.appendChild(del);
       grid.appendChild(cell);
@@ -780,7 +929,7 @@
       const rmBtn = document.createElement('button');
       rmBtn.textContent = '清除当前壁纸（图库保留）';
       rmBtn.style.cssText = 'width:100%;padding:10px;border:1px solid rgba(163,45,45,.35);border-radius:10px;background:var(--danger-soft,#fff5f5);color:var(--danger-ink,#a32d2d);font-size:13px;margin-bottom:8px';
-      rmBtn.addEventListener('click', () => { store.remove('cs-bg'); store.remove(CS_BG_ACTIVE); applySettings(); toast('已清除，图库里的图还在'); openCsBgPanel(); });
+      rmBtn.addEventListener('click', () => { store.remove('cs-bg'); store.remove(CS_BG_ACTIVE); csBgForgetThisSession(); applySettings(); toast('已清除，图库里的图还在'); openCsBgPanel(); });
       box.appendChild(rmBtn);
     }
     // 优化②：聊天壁纸/图库是 per-联系人独立的——一键同步到其他联系人桌面，
@@ -852,6 +1001,7 @@
     csBgRm.addEventListener('click', () => {
       store.remove('cs-bg');
       try { store.remove(CS_BG_ACTIVE); } catch (e) {}
+      csBgForgetThisSession();
       applySettings();
     });
   }
@@ -1052,33 +1202,12 @@
   // v3.9.x：聊天昵称/头像未单独设置时**跟随桌面**（聊天页回退读桌面键）——设置后聊天域
   // 全部显示聊天专用值；设置页未设时右侧提示「跟随桌面（xx）」，明确当前生效来源。
   // 头像压缩与桌面 bindAvatar 一致（256px JPEG 0.85），内联实现避免依赖 personalize.js 导出。
-  function compressHead(dataUrl, maxSide) {
-    return new Promise((resolve) => {
-      // v3.26.x：放宽 dataURL 上限 8MB→50MB、移除原图总像素上限（原 2600万像素把
-      // 4800/5000 万像素手机主摄原图误拒 → 头像选完不生效，而同文件聊天背景上传无此
-      // 限制能传）。drawImage 缩放到 maxSide 小 canvas 不会 OOM，try-catch + onerror 兜底。
-      if (typeof dataUrl === 'string' && dataUrl.length > 50 * 1024 * 1024) { resolve(null); return; }
-      // FIX 2026-09-22 #1036：解码看门狗——平板/国产内核偶发既不放 onload 也不放 onerror
-      // （大图解码挂起）时，原 Promise 永久悬空＝「换了头像没反应、重开好几次」原型；
-      // 超时按失败回流，调用方照常给用户可感反馈。零机型分支。
-      let settled = false;
-      const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); resolve(v); };
-      const watchdog = setTimeout(() => once(null), 20000);
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-          const w = Math.max(1, Math.round(img.width * scale));
-          const h = Math.max(1, Math.round(img.height * scale));
-          const c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          c.getContext('2d').drawImage(img, 0, 0, w, h);
-          once(c.toDataURL('image/jpeg', 0.85));
-        } catch (e) { once(null); }
-      };
-      img.onerror = () => once(null);
-      img.src = dataUrl;
-    });
+  // #1270：解码走统一解码闸（img-ingest.js）。这一处原本是 v3.26.x 主动「放宽 8MB→50MB、
+  // 删掉原图像素上限」的产物——为了修「4800 万像素原图被误拒」把整幅解码的代价留下了：
+  // 一张 8000×6000 在 iOS 上要 ≈192MB 位图，只为缩成 256px 头像。现在先用文件头算尺寸、
+  // 超预算边解边缩，既不误拒也不赌进程。#1036 的 20 秒看门狗随之内沉，失败口径不变。
+  function compressHead(src, maxSide) {
+    return csIngestTo(src, { maxSide: maxSide, quality: 0.85, tag: 'cs-head' });
   }
   // v3.9.x：红米/真我等 Android Edge 对「点击时动态创建 + 立即 click()」的 file input
   // 会静默忽略（不弹系统选择器）。改为持久化 input：初始化时创建一次、永久挂 body、
@@ -1097,16 +1226,14 @@
   function headPickFile(f) {
     if (!f) return;
     const cb = headCb; headCb = null;
-    const reader = new FileReader();
-    reader.onload = () => {
-      compressHead(reader.result, 256).then(data => {
-        if (!data) { toast('图片过大、格式不支持或读取超时，请换一张小图'); return; }
-        if (cb) cb(data);
-      });
-    };
-    // FIX 2026-09-22 #1036：补 reader.onerror（原缺＝读取失败静默无回调＝「没反应」）
-    reader.onerror = () => toast('图片读取失败，请重试');
-    reader.readAsDataURL(f);
+    // #1270：File 直接进统一解码闸——旧写法先 FileReader 读成 dataURL（8000×6000 照片
+    // ≈10.6MB base64，解成字符串又是 ≈21MB）只为喂给解码器，白付两份大内存；现在整条链
+    // 不产生大字符串。#1036 的三条腿（失败必有声）语义原样保留：闸内已含读失败/解码超时
+    // 两种回执，这里统一按「没出来」提示，不再出现「选了图但静默什么都没发生」。
+    compressHead(f, 256).then(data => {
+      if (!data) { toast('图片过大、格式不支持或读取超时，请换一张小图'); return; }
+      if (cb) cb(data);
+    });
   }
   headInput.onchange = () => {
     const f = headInput.files && headInput.files[0];
@@ -1767,6 +1894,17 @@
   migrateFontBlobs();
   // #787：回填完成清补读计数（预算重置）再补应用一次——restore 可能刚把 blob 带回可读状态
   try { document.addEventListener('mochi-restore-done', () => { _fontHydrateTries = {}; migrateFontBlobs(); applyFont(); }); } catch (e) {}
+  // #1218：备份导入/恢复会整库换血——上一轮「健康连接确认库里没有」的留底当场作废，重置探针
+  // 再补一次聊天背景（用户流程正是「清库 → 导入 → 打开显示背景被清除」，与 #787 字体同口径）
+  // #1258：同处把本桌面的三态留底（「已经问过库」「库里确认没有」）一起清掉——那两条结论都是按
+  // 导入前的库做的，导入把原图带回来时必须允许再问，否则「清库→导入→重开」这一条路仍然修不好。
+  try { document.addEventListener('mochi-restore-done', () => {
+    try { if (window.idbResetBigKeyProbe) window.idbResetBigKeyProbe(); } catch (e) {}
+    csBgHydrating = false;
+    csBgAskedNs = '';
+    csBgGoneNs = '';
+    if (!csBgHydrateOnce()) { try { applySettings(); } catch (e) {} }
+  }); } catch (e) {}
   applyFont();
 
   // ================= 气泡 CSS（自定义样式，极简黑白灰） =================
@@ -1902,7 +2040,15 @@
   const getChatSchemes = () => {
     try { const a = JSON.parse(gStoreChat.get(CHAT_SCHEMES_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
   };
-  const saveChatSchemesList = (arr) => { try { gStoreChat.set(CHAT_SCHEMES_KEY, JSON.stringify(arr)); } catch (e) {} };
+  // FIX 2026-09-27 #1342j：与桌面美化同一把闸（判据与文案全站只留一份，见 idb.js #1342i 批注）。
+  // chat-beauty-schemes 是 IDB-only 的全局根键（>200KB 从不落 localStorage），而这里的读法是同步口
+  // ——切后台释放大键内存副本（#1195e）或启动回填超预算挂起（#975）之后读成 []，下一次「保存/删除/
+  // 重命名」做的正是读-改-写＝库里那本被这一格空账整本顶掉（iPhone／iOS 16.6 实报「美化方案无法
+  // 保存，重新刷新过后数据会被清除」）。写回前先问数据层「这次读空确认了吗」。零机型分支。
+  const saveChatSchemesList = (arr) => {
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(gStoreChat, CHAT_SCHEMES_KEY, '聊天美化方案')) return false;
+    try { gStoreChat.set(CHAT_SCHEMES_KEY, JSON.stringify(arr)); return true; } catch (e) { return false; }
+  };
   // FIX 2026-09-15 #527：聊天美化的用途标记 + 命中计数（与桌面美化同族，见 personalize.js #527）。
   // 旧行为：导入无用途校验、无「识别到几项」反馈，把桌面美化 JSON 粘进聊天导入框照样提示成功。
   const CHAT_BEAUTY_KIND = 'mochi-chat-beauty';
@@ -1947,7 +2093,7 @@
         list = list.filter(s => !(s && drop.has(s.time) && typeof s.name === 'string' && s.name.indexOf('导入前备份') === 0));
       }
       list.push({ name, time: Date.now(), data: cur });
-      saveChatSchemesList(list);
+      if (!saveChatSchemesList(list)) return '';   // #1342j：读空未确认时不写、也不报「已备份」
       const back = getChatSchemes();
       return back.some(s => s && s.name === name) ? name : '';
     } catch (e) { return ''; }
@@ -1987,7 +2133,7 @@
       if (v !== 'ok') return;
       const list = getChatSchemes();
       list.splice(idx, 1);
-      saveChatSchemesList(list);
+      if (!saveChatSchemesList(list)) return;   // #1342j
       toast('已删除方案');
       window.openChatBeautySchemes();
     }, { noInput: true, staticText: '删除后不可恢复', pills: [{ label: '删除', value: 'ok' }] });
@@ -2176,7 +2322,7 @@
       if (!name) { inp.style.borderColor = '#e05a5a'; return; }
       const list = getChatSchemes();
       list.push({ name, time: Date.now(), data });
-      saveChatSchemesList(list);
+      if (!saveChatSchemesList(list)) return;   // #1342j：不写、也不谎报「已保存」
       x.style.display = 'none'; x.hidden = true;
       toast('已保存方案「' + name + '」，所有桌面通用');
       const m = document.getElementById('chat-beauty-scheme-manager');
@@ -2226,7 +2372,8 @@
     const ctl = window.openModal('编辑方案名称', s.name, (name) => {
       name = (name || '').trim();
       if (!name) { ctl.hint('名称不能为空'); ctl.stay(); return; }
-      s.name = name; saveChatSchemesList(list); toast('已重命名');
+      s.name = name; if (!saveChatSchemesList(list)) { ctl.stay(); return; }   // #1342j
+      toast('已重命名');
       window.openChatBeautySchemes();
     }, { maxlength: 20, placeholder: '输入方案名称' });
   }
@@ -2352,6 +2499,12 @@
         }
         parts.push(']}');
         const blob = new Blob(parts, { type: 'application/json;charset=utf-8' });
+        // FIX 2026-09-30 #1488：走统一 Blob 三级导出链（系统分享面板→保存框→确认后下载）——
+        // 原裸 a[download] 在 iPhone 主屏安装（standalone 无下载管理器）与 #758 壳浏览器家族
+        // 静默无反应＝聊天记录导不出去（#172 修聊天美化导出时的同族症状，本处当时漏改）。
+        // 流式 parts 构建【原样保留】（整包 stringify 会顶 V8 字符串上限＝当初分段的全部
+        // 理由），只换落盘通道；统一链不可用时保留裸腿兜底。
+        if (window.mochiExportBlob) { window.mochiExportBlob(blob, '聊天记录_' + new Date().toISOString().slice(0, 10) + '.json', '聊天记录数据'); return; }
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = '聊天记录_' + new Date().toISOString().slice(0, 10) + '.json';
@@ -2370,7 +2523,7 @@
     csImport.addEventListener('click', () => {
       // FIX 2026-09-18 #755：统一走 window.mochiFilePick（原实现 detached＋无 label＋accept 迟到）
       window.mochiFilePick({
-        id: 'mochi-cs-import-pick', accept: '.json,application/json',
+        id: 'mochi-cs-import-pick', accept: window.mochiDataPickAccept, // #1413：与整机导入同一份并集（窄串会让转存后改了类型的备份灰显）
         onFiles: (files) => {
         const f = files && files[0];
         if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -3029,6 +3182,10 @@
       closeInputOrderPanel(false);
     });
     document.addEventListener('chat-input-order-changed', inputOrderSync);
+    // FIX 2026-09-29 #1419：小键写日志合并（mochi-wrj-heal）把 cs-input-order 从库里追回新值之后，
+    // 行内回显与「开着的那份列表」也要跟着重画——否则输入栏已按自定义序排好、这一行还写着「默认排列」
+    // （与本文件上方「我可发送语音」的 syncVs 走同一条广播，判据零机型／零 UA 分支）
+    document.addEventListener('mochi-wrj-heal', () => { inputOrderSync(); if (inputOrderPanelOpen()) renderInputOrderPanel(); });
     // 面板开着时开关被改（本页下方就有「批量发送消息」「我可发送语音」两行）→ 重画一遍，
     // 让「开关未开启」标记跟着变，不必关掉面板重开
     document.addEventListener('batch-send-changed', () => { if (inputOrderPanelOpen()) renderInputOrderPanel(); });

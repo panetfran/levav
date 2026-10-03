@@ -81,10 +81,11 @@
     try { if (window.dcfGet && !(Math.random() * 100 < window.dcfGet('room'))) return ''; } catch (e) {}
     let arr = null;
     try { arr = window.getLibPool ? window.getLibPool('room', GRP[group] || group, FB[fallbackKey] || []) : null; } catch (e) {}
-    if (!arr || !arr.length) arr = FB[fallbackKey] || [];
-    else {
-      try { if (window.isDefaultCardOff) { const f = arr.filter(c => !window.isDefaultCardOff('room', c)); if (f.length) arr = f; } } catch (e) {}
-    }
+    // FIX 2026-09-30 #1498：①数据文件缺该分组时才用内置兜底，且兜底同样过闸；
+    //   ②原写法「过滤后非空才采用」（if (f.length) arr = f）在全关时会把未过滤的池整个留下
+    //   ＝逐张关光/整组停用对房间话术完全无效（实测过闸后 0 条、实际仍用 11 条）。
+    if (!arr || !arr.length) arr = (window.gateCardFallback ? window.gateCardFallback('room', FB[fallbackKey] || []) : (FB[fallbackKey] || []));
+    try { if (window.isDefaultCardOff) arr = arr.filter(c => !window.isDefaultCardOff('room', c)); } catch (e) {}
     // 池与兜底同时为空（分组不存在 + FB 无该键）时不出声：rnd([]) 会把字面量 "undefined" 吐进气泡
     if (!arr.length) return '';
     let t = String(rnd(arr)).replace(/\{n\}/g, pn());

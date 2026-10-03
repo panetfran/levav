@@ -9,8 +9,18 @@
   const store = window.activeStore();
   const CALL = { incoming: 15, pickup: 70, busy: 15, reject: 15, hangup: 2 };
   // 从回复设置读取（可自由调整概率，与星言通话设置一致）
-  function callCfg() {
-    const c = (window.replyCfg && window.replyCfg()) || {};
+  // FIX 2026-09-29 #1394（作者直派「刷新后恢复通话开了，但接上通话后一直不触发挂断概率」）：
+  //   可选参数 cid＝这一通电话的归属桌面。原实现一律读「当前激活桌面」的设置（replyCfg →
+  //   activeStore 按 __activeCid 动态解析），而「通话中挂断概率」这一发掷在通话进行期间——那时
+  //   用户可能已切到别的联系人桌面（或刷新后回到别的桌面），于是「A 的通话」按「B 的概率」判定：
+  //   B 从没存过这个键则回落默认 2%，B 设过 0 就永不挂断；而挂断记录仍写回归属桌面＝设置页看到
+  //   的和实际生效的不是同一个人。
+  //   ⚠ 只在「归属桌面 ≠ 当前桌面」时才改读法：default 桌面的 activeStore 带旧顶层键回退
+  //   （contacts.js 的 defaultStore），storeFor('default') 没有那一层——无条件换读法会把未迁移的
+  //   老数据判成「没设过」＝静默回落默认值，那是新缺陷不是修复。
+  function callCfg(cid) {
+    const own = cid && cid !== (window.__activeCid || 'default');
+    const c = (own && window.replyCfgFor ? window.replyCfgFor(cid) : (window.replyCfg && window.replyCfg())) || {};
     return {
       incoming: c['call-incoming'] !== undefined ? c['call-incoming'] : CALL.incoming,
       pickup: c['call-pickup'] !== undefined ? c['call-pickup'] : CALL.pickup,
@@ -80,34 +90,35 @@
       onFiles: (files) => {
       const f = files && files[0];
       if (!f) { toast('没有取到图片，请再选一次'); return; }
-      const reader = new FileReader();
-      reader.onload = () => {
-        const img = new Image();
-        img.onload = () => {
-          try {
-            const scale = Math.min(1, 600 / Math.max(img.width, img.height));
-            const c = document.createElement('canvas');
-            c.width = Math.max(1, Math.round(img.width * scale));
-            c.height = Math.max(1, Math.round(img.height * scale));
-            c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-            const data = c.toDataURL('image/jpeg', 0.85);
-            store.set(bgKey, data);
-            if (bgKey === CALL_HALF_BG_KEY) applyCallHalfBg(); else applyCallBg();
-            toast(msg || '通话背景已设置');
-          } catch (e) {
-            toast('图片处理失败');
-          }
-        };
-        img.onerror = () => toast('图片读取失败');
-        img.src = reader.result;
-      };
-      reader.onerror = () => toast('图片读取失败');
-      reader.readAsDataURL(f);
+      if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+      // FIX 2026-09-25 #1270：原实现 readAsDataURL + new Image() 整幅解码（48MP 照片＝192MB 位图）→ iOS 直接回收页面
+      // FIX 2026-09-28 #1054（重放）：上限 600 太小——这张图是按 cover 铺满整张通话卡片的，600 边在手机上必然被
+      //   放大糊掉（用户实报「上传通话半框图片很糊」）。#1270 迁到统一 ingest 时这一档被带回 600＝回归，现按原批
+      //   结论提到 1920：缩放/字节收敛都交给 ingest（与聊天背景 csBgMaxSide 那档同量级，零机型分支）。
+      window.mochiImgIngest(f, { maxSide: 1920, quality: 0.85, tag: 'call-bg' }).then((r) => {
+        if (!r || r.st !== 'ok' || !r.data) { toast(window.mochiImgIngestMiss(r, '通话背景')); return; }
+        const data = r.data;
+        store.set(bgKey, data);
+        if (bgKey === CALL_HALF_BG_KEY) applyCallHalfBg(); else applyCallBg();
+        toast(msg || '通话背景已设置');
+      });
       }
     });
   }
   const callBgRow = document.getElementById('call-bg-row');
   if (callBgRow) callBgRow.addEventListener('click', () => pickCallBg(CALL_BG_KEY));
+  // FIX 2026-09-27 #1323：这四行是那份 iPhone 诊断单里唯一还留着「只剩合成腿」的照片门——00:03:15 与
+  // 00:03:35 两发都只有 leg:fire＋fb:onscreen、一条 files=N 都没回来，而同一分钟里头像库那扇铺了真层
+  // 的门 surf:hit＋surf:files=1 当场成功＝同一台设备、同一次会话的 A/B，与机型无关（判据只有「手指
+  // 这一下落在的是不是一个真 file input」）。四行都在 template.html 里静态存在、不随渲染重建＝当场铺
+  // 一次长期有效；共用同一个宿主 mochi-call-bg-pick，管线仍走上面 pickCallBg 那一条（模具见 device.js
+  // #1323，选完图由 surface 交回宿主、按最后一次点按的闭包写各自的键，两把键不会串）。
+  if (window.mochiFilePickDoor) {
+    ['call-bg-row', 'call-bg-edit-row', 'call-half-bg-row', 'call-half-bg-edit-row'].forEach(function (rid) {
+      const door = document.getElementById(rid);
+      if (door) window.mochiFilePickDoor(door, { owner: 'mochi-call-bg-pick', accept: 'image/*' });
+    });
+  }
   // v3.12.x：聊天页「更多功能→通话」半框内直接修改联系人头像 / 通话卡片背景图片
   //   - 联系人头像行 → 收起通话半框，打开「头像互动」半框（上传/点选即换，写 cs-avatar-partner）
   //   - 通话背景图片行 → 与设置页同款上传流程
@@ -455,6 +466,9 @@
     return JSON.stringify({
       cid: currentCall.cid, direction: currentCall.direction, status: currentCall.status,
       startTime: currentCall.startTime, connectedTime: currentCall.connectedTime || 0,
+      // #1394：掷骰的墙钟锚跟着落盘——不带它，刷新/恢复后「下一次该掷的时刻」只能从零重排，
+      //   那正是「反复刷新＝无限续命」的来路。旧载荷没这个字段（读到 0）→ 恢复时按当下重算。
+      hangupAt: currentCall.hangupAt || 0,
       name: currentCall.name || '', av: '', ts: Date.now()
     });
   }
@@ -601,7 +615,17 @@
     stopTimers();
     if (!currentCall.connectedTime) currentCall.connectedTime = Date.now(); // v3.26.x：恢复通话时已有 connectedTime 不覆盖，计时从接通时刻继续
     updateDur(); // v3.13.x：接通立即刷新显示，避免接通瞬间仍停留「00:00」卡一下
-    let checkCount = 0;
+    // FIX 2026-09-29 #1394（作者直派「刷新恢复通话后一直不触发通话中挂断概率」）：掷骰周期从
+    //   「数满 60 个 1 秒 tick」改成墙钟锚 currentCall.hangupAt。两条根因都在「数 tick」这一件事上：
+    //   ①通话进行时页面通常在息屏/后台，隐藏页定时器被内核节流到约 1 次/分钟、安卓 5 分钟后整页冻结
+    //   （#757 在本文件写下过同一事实：心跳 setInterval「页面被系统冻结/杀进程时根本不跑」）——
+    //   60 次 tick 最长要走 60 分钟，冻结期间压根不走；②计数是 startCallDuration 的闭包局部，
+    //   每刷新/恢复一次就从零重数＝反复刷新可无限续命。作者实测所见「接上通话后一直不掷骰」即此。
+    //   锚随 call-active 载荷落盘（见 callActivePayload）并在恢复时带回，故后台与刷新都不再赖账；
+    //   前台节奏一字未动（接通满 3 分钟后每 60 秒一次，与函数头文档同口径）。
+    //   语义取舍（作者点名的口径）：整页冻结 30 分钟后回场，只补掷一次（锚已过期→下一 tick 掷一发，
+    //   然后重新 +60 秒），不按错过的档数成串补掷。
+    if (!currentCall.hangupAt) currentCall.hangupAt = Math.max(currentCall.connectedTime + 180000, Date.now());
     let hbCount = 0;
     durationTimer = setInterval(() => {
       updateDur();
@@ -614,18 +638,14 @@
       // v3.6.x：放宽——原实现 10 秒保护后每 30 秒掷一次，默认 5% 实际效果远超设置字面值
       //（约 3 分钟累计 ~23% 被挂断、10 分钟内累计 ~62%），用户反馈「3 分钟左右自动挂断、
       // 没一通超过 10 分钟」；改 3 分钟保护 + 60 秒周期后，挂断概率才接近设置的字面含义
-      if (currentCall && currentCall.status === 'connected') {
-        if (Date.now() - currentCall.connectedTime >= 180000) {
-          checkCount++;
-          if (checkCount >= 60) {
-            checkCount = 0;
-            // #200：总开关开启或挂断概率 <=0 时硬闸不掷骰——概率为 0 本就不该挂断，
-            // 这里再显式拦一道，防设置读取异常回落默认值导致「设 0 仍被挂断」
-            const hp = callCfg();
-            if (!(hp.nohangup || hp.hangup <= 0) && Math.random() * 100 < hp.hangup) {
-              endCall('对方挂断了电话');
-            }
-          }
+      if (currentCall && currentCall.status === 'connected' && Date.now() >= currentCall.hangupAt) {
+        currentCall.hangupAt = Date.now() + 60000;
+        // #200：总开关开启或挂断概率 <=0 时硬闸不掷骰——概率为 0 本就不该挂断，
+        // 这里再显式拦一道，防设置读取异常回落默认值导致「设 0 仍被挂断」
+        // #1394：按归属桌面读概率（掷骰时用户可能已切桌面）
+        const hp = callCfg(currentCall.cid);
+        if (!(hp.nohangup || hp.hangup <= 0) && Math.random() * 100 < hp.hangup) {
+          endCall('对方挂断了电话');
         }
       }
     }, 1000);
@@ -703,9 +723,12 @@
   // force=true：来电是「错过就没了」的单发事件，绕过 bgNotifyCheck 的 15s 过渡期/去重闸门。
   // avFixed=true：来电归属当前桌面，头像用 partnerAv() 权威值，空则走中立 mochi 图标。
   // #161：加 hint 尾缀——通知文案变为「XX 来电了，快回来接听，对方会等你几分钟」
+  // #1456：callAlert/callTag——让后台来电通知带「振铃感」（振动＋常驻＋重提醒，见
+  //   bg-keep.js bgNotifyCheck 的 extra.callAlert 分支）。后台放不出铃声是移动端内核
+  //   冻结后台页音频的硬限制，通知侧做到最接近来电即是上限。
   function bgCallNotify(name, hint, avOverride) {
     try {
-      if (window.bgNotifyCheck) window.bgNotifyCheck(name + ' 来电了' + (hint ? '，' + hint : ''), Date.now(), { name: name + '来电', av: avOverride || partnerAv(), avFixed: true, force: true });
+      if (window.bgNotifyCheck) window.bgNotifyCheck(name + ' 来电了' + (hint ? '，' + hint : ''), Date.now(), { name: name + '来电', av: avOverride || partnerAv(), avFixed: true, force: true, callAlert: true, callTag: name, kind: 'call' });
     } catch (e) {}
   }
   // #161：响铃挂起——后台来电不再「命中即未接」（用户反馈：点开通知永远接不到，
@@ -728,9 +751,47 @@
   function heldMissedHtml(nm) {
     return '<svg class="st-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>' + nm + ' 来电 · 未接听';
   }
+  // #1456：后台来电「隔 30 秒重弹一次通知」——后台只弹一条「XX 来电了」，用户很容易划掉或没留意；
+  // 真来电是一直在响的，这里用重复提醒模拟「还在响」。边界（防空转/防叠条/防误催）：
+  //   ①由 holdIncomingCall（挂起写入）启动，与 #1291 的 6s 短窗去重互补（重弹间隔 30s > 6s 窗）；
+  //   ②每次重弹仍走 bgCallNotify（force=true，照旧绕过内容去重闸门，不会因同名同文被吞掉）；
+  //   ③同一联系人共用一条通知 tag（见 bg-keep.js 的 extra.callAlert）＝「替换＋再提醒」，
+  //     不是堆一串条，#1291「一条来电攒出一串重复通知」的口径不变；
+  //   ④任一条命中即立刻停：已回到前台（含只发 focus 不发 visibilitychange 的机型）、
+  //     挂起被消费或已写墓碑、换了联系人/姓名、超出 CALL_HOLD_MS 窗口、重弹已达上限。
+  const CALL_REPEAT_MS = 30000;
+  const CALL_REPEAT_MAX = 5;
+  let callRepeatTimer = 0;
+  let callRepeatCount = 0;
+  function stopCallRepeat() {
+    if (callRepeatTimer) { clearTimeout(callRepeatTimer); callRepeatTimer = 0; }
+    callRepeatCount = 0;
+  }
+  function startCallRepeat(name, cid, avOverride) {
+    stopCallRepeat();
+    const wantCid = cid || (window.__activeCid || 'default');
+    const tick = function () {
+      callRepeatTimer = 0;
+      if (currentCall) { stopCallRepeat(); return; } // 已接通/前台响铃中/通话已结束
+      if (document.visibilityState === 'visible') { stopCallRepeat(); return; }
+      let h = null;
+      try { h = readCallHold(); } catch (e) {}
+      if (!h || h.name !== name || h.cid !== wantCid || Date.now() - h.ts > CALL_HOLD_MS) { stopCallRepeat(); return; }
+      if (callRepeatCount >= CALL_REPEAT_MAX) { stopCallRepeat(); return; }
+      callRepeatCount++;
+      bgCallNotify(name, '快回来接听，对方会等你几分钟', avOverride);
+      callRepeatTimer = setTimeout(tick, CALL_REPEAT_MS);
+    };
+    callRepeatTimer = setTimeout(tick, CALL_REPEAT_MS);
+  }
   function holdIncomingCall(name, cid, avOverride, msgWritten) {
     let prev = null;
     try { prev = readCallHold(); } catch (e) {}
+    // #1291（原 #1218 通知批，撞号已改）：同一次响铃经「切后台→回前台重响→再切后台」会反复触发
+    //   holdIncomingCall，每次都无条件 bgCallNotify → 同名「XX 来电了」通知跟着前后台来回攒
+    //   （配 SW 就绪补发＝一条来电攒出一串重复通知，「延迟+重复」的来源之一）。短窗（6s）内已有
+    //   同一联系人的挂起且刚通知过 → 只重建挂起、不再重复发系统通知（不影响挂起语义）。
+    const justNotified = prev && prev.name === name && Date.now() - prev.ts < 6000;
     // 覆盖前先处理上一条已超时未处理的挂起（页面冻结期间第二次来电的场景）。
     // FIX 2026-09-18 #722：只补写「本运行期写下」的过期挂起；跨运行期读到的旧挂起是
     //   墓碑 flush 竞态/LS 回填孤儿（见 HOLD_SID 注释），其未接语义不可信，静默让位
@@ -746,7 +807,10 @@
     const h = { ts: Date.now(), name: name, cid: cid || (window.__activeCid || 'default'), msg: !!msgWritten, sid: HOLD_SID };
     try { localStorage.setItem(CALL_HOLD_KEY, JSON.stringify(h)); } catch (e) {}
     if (window.idbSet) { try { window.idbSet(CALL_HOLD_KEY, h); } catch (e) {} }
-    bgCallNotify(name, '快回来接听，对方会等你几分钟', avOverride);
+    // #1291：仅当短窗内没刚通知过同一联系人的来电时才发系统通知（见上方 justNotified）
+    if (!justNotified) bgCallNotify(name, '快回来接听，对方会等你几分钟', avOverride);
+    // #1456：挂起期间每 30 秒重弹一次（回前台/接通/墓碑/超窗/达上限任一命中即停）
+    startCallRepeat(name, cid, avOverride);
   }
   // #204：暴露给 incoming-requests.js——跨桌面来电后台命中时同走「响铃挂起」（原只发
   // 通知即丢弃，切回应用无来电 UI 也无未接记录）；avOverride 用归属联系人头像
@@ -765,6 +829,9 @@
     } catch (e) { return null; }
   }
   function clearCallHold() {
+    // #1456：挂起被消费/超窗自愈＝这通来电已经不在了，停掉「30 秒重弹」
+    // （否则回前台接听后通知栏还在催「快回来接听」）
+    stopCallRepeat();
     // 写 {ts:0} 而非删除：防 idbRestore 用 IDB 旧值回填出「幽灵挂起」重复记未接
     try { localStorage.setItem(CALL_HOLD_KEY, '{"ts":0}'); } catch (e) {}
     if (window.idbSet) { try { window.idbSet(CALL_HOLD_KEY, { ts: 0 }); } catch (e) {} }
@@ -868,7 +935,7 @@
   // 必须补首发；前台响铃已写 msg=true 则不重复）。currentCall.sysMsg 续传给再次切后台的挂起。
   function incomingCall(isReplay, msgWritten) {
     if (currentCall) return;
-    // 夜间模式：兜住所有直达来电入口（含跨桌面接听、响铃挂起恢复），时段内一律不响铃
+    // 夜间免打扰：兜住所有直达来电入口（含跨桌面接听、响铃挂起恢复），时段内一律不响铃
     if (window.nightModeActive && window.nightModeActive()) return;
     // #651：预览中的弹窗立即让位给真实来电（不拆拦截层，接听/拒绝会点不到）
     closeCallPreview();
@@ -1155,7 +1222,7 @@
   function callLast() { const v = parseInt(store.get('records-call-last'), 10); return isNaN(v) ? 0 : v; }
   function maybeIncoming() {
     try {
-      // 夜间模式（设置里开启后 22:00–7:00 生效）：联系人不再主动打电话
+      // 夜间免打扰（设置里开启后 22:00–7:00 生效）：联系人不再主动打电话
       if (window.nightModeActive && window.nightModeActive()) return;
       if (currentCall) return;
       const now = Date.now();
@@ -1250,7 +1317,8 @@
     // v3.26.x：开启「刷新后恢复通话」→ 重建通话 UI + 从接通时刻继续计时（TA 本地模拟，无需重连）
     if (callCfg().resume !== 0) {
       try {
-        currentCall = { cid: cid, direction: dir, status: 'connected', startTime: info.startTime || info.connectedTime, connectedTime: info.connectedTime, durationSec: 0, name: name, av: info.av || '' };
+        // #1394：hangupAt 跟着带回来（旧载荷没这字段→0→startCallDuration 按当下重算）
+        currentCall = { cid: cid, direction: dir, status: 'connected', startTime: info.startTime || info.connectedTime, connectedTime: info.connectedTime, hangupAt: info.hangupAt || 0, durationSec: 0, name: name, av: info.av || '' };
         shownAv = null; shownName = null;
         if (callMiniEnabled()) {
           if (mask) mask.hidden = true;

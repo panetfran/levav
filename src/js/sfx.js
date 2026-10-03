@@ -295,43 +295,66 @@
     }
     if (wasLoop) playBuiltin(ringBuiltinFallbackId(), true); // 来电兜底：保证不无声
   }
+  // #1485b：自定义铃声播放链提为模块级——playSfx 主路径与「大键空窗补读」共用同一条
+  //   播放链（Blob+对象 URL 优先、失败回落内置），不另起第二份实现。
+  function playRingSrc(src, loop) {
+    if (ringAudio) { try { ringAudio.pause(); } catch (e) {} try { ringAudio.removeAttribute('src'); ringAudio.load(); } catch (e) {} }
+    ringAudio = new Audio(src);
+    ringAudio.loop = loop;
+    ringAudio.volume = 0.9;
+    let failed = false;
+    const fail = function () { if (!failed) { failed = true; ringCustomFail(loop); } };
+    ringAudio.addEventListener('error', fail);
+    ringAudio.play().catch(fail);
+  }
+  // data: 大段 base64 部分安卓内核播放失效（v3.26.x 原案）：Blob+对象 URL 优先、失败直播 dataURL
+  function playRingCustom(v, loop) {
+    if (v.indexOf('data:') === 0) {
+      dataUrlToBlob(v, function (b) {
+        if (b) {
+          try {
+            const newUrl = URL.createObjectURL(b);
+            revokeRingObjUrl(); // 先回收旧 URL，再挂新 URL（顺序不可反：先 revoke 会把新 URL 也一起回收）
+            ringObjUrl = newUrl;
+            playRingSrc(newUrl, loop);
+            return;
+          } catch (e) { revokeRingObjUrl(); }
+        }
+        revokeRingObjUrl();
+        playRingSrc(v, loop); // Blob 不可用（fetch 受限）→ dataURL 直播
+      });
+    } else {
+      revokeRingObjUrl();
+      playRingSrc(v, loop);
+    }
+  }
+  // #1485b：铃声补读代次闸——每次 playSfx('ring') / stopSfx('ring') 各进一代；
+  //   回读/超时兜底落地时代次不匹配（已被接听/挂断/新来电作废）就闭嘴，防迟响与双响。
+  let ringReadGen = 0;
 
   // 播放音效：自定义上传（dataURL）优先，其次内置音效（'none'=静音，缺省=默认内置）
+  // FIX 2026-09-28 #1374e：站内自己的音乐正在出声时，消息类音效不再叠上去。
+  //   用户实报（安卓 iQOO 10／Chrome 150，并明说「这个问题其他设备型号也有出现」「不要覆盖
+  //   修改导致不同型号设备浏览器的 bug 反复出现」）：「网站内播放音乐的时候一直有嘟嘟声，
+  //   一直边放音乐边嘟嘟响，是其他音频设置混进来了，而不是只有音乐的声音」。
+  //   #673 那批把「音乐互动台词」改成静默、并特意留下「普通 TA 对话消息照常响音效」——
+  //   听歌时每来一条回复就响一次，正是用户此刻要消灭的那一路。判据只取一个代码事实：
+  //   那一个 <audio> 元素此刻在不在出声（paused===false，与 bg-keep #1374c 同一把尺），
+  //   零机型／零 UA 分支；用户没在站内放歌时行为一字不变。
+  //   只管消息类（in/out/gc-in/gc-out，群聊 playSfxGc 也是转进来调本函数）：
+  //   来电铃声（ring）是「错过就没了」的单发事件照旧响，且来电时 musicHoldForCall 已把音乐停掉。
+  function siteMusicAudible() {
+    try { const m = window.__mochiMusic; return !!(m && m.el && m.el.paused === false); } catch (e) { return false; }
+  }
   window.playSfx = function (type, opts) {
     try {
+      if (type !== 'ring' && siteMusicAudible()) return;
       const loop = !(opts && opts.loop === false);
       const custom = store.get(KEYS[type]);
       if (custom && typeof custom === 'string' && custom.length > 10) {
         if (type === 'ring') {
           // —— 通话铃声自定义：Blob+对象 URL 优先，播放失败回落内置铃声 ——
-          const playRingWith = function (src) {
-            if (ringAudio) { try { ringAudio.pause(); } catch (e) {} try { ringAudio.removeAttribute('src'); ringAudio.load(); } catch (e) {} }
-            ringAudio = new Audio(src);
-            ringAudio.loop = loop;
-            ringAudio.volume = 0.9;
-            let failed = false;
-            const fail = function () { if (!failed) { failed = true; ringCustomFail(loop); } };
-            ringAudio.addEventListener('error', fail);
-            ringAudio.play().catch(fail);
-          };
-          if (custom.indexOf('data:') === 0) {
-            dataUrlToBlob(custom, function (b) {
-              if (b) {
-                try {
-                  const newUrl = URL.createObjectURL(b);
-                  revokeRingObjUrl(); // 先回收旧 URL，再挂新 URL（顺序不可反：先 revoke 会把新 URL 也一起回收）
-                  ringObjUrl = newUrl;
-                  playRingWith(newUrl);
-                  return;
-                } catch (e) { revokeRingObjUrl(); }
-              }
-              revokeRingObjUrl();
-              playRingWith(custom); // Blob 不可用（fetch 受限）→ dataURL 直播
-            });
-          } else {
-            revokeRingObjUrl();
-            playRingWith(custom);
-          }
+          playRingCustom(custom, loop);
           return;
         }
         // —— 非通话铃声（收发消息音效）自定义：dataURL 直播 + 播完卸 src（OOM 防线）——
@@ -340,6 +363,43 @@
         releaseWhenDone(a);
         a.play().catch(() => {});
         return;
+      }
+      // —— 通话铃声「大键空窗补读」（#1485b）——
+      // sfx-ring 是 IDB-only 大键（>200KB 只进 IndexedDB+内存缓存，从不落 localStorage）：
+      // 切后台被 #1195e 按体积放掉内存副本、启动回填挂起、页面被系统回收后冷启动这几类
+      // 时刻，同步读口交出 null＝「没读到」，长得和「用户没设过」一模一样。旧代码直接落
+      // 内置段，而上传自定义时内置选择已被清掉（handleUpload remove BKEYS）⇒ 内置段同样
+      // 无声＝「自定义铃声有时候不响」（用户实报：一加 Ace3／Edge，多机型同现）。这里先问
+      // 数据层那句证人（放掉名册／启动挂起名单／__big-idx 大键证人／回填未落定），本该有
+      // 数据就异步回读，回来走同一条自定义播放链；确无此键或问不出结果才按内置段收场
+      // （bid 空＝用户真没设过，维持「默认静音」设计不变）。判据＝数据层证人＋代次闸，
+      // 零机型／零 UA 分支。
+      if (type === 'ring') {
+        const sst = sfxUnified() ? gStore : rawStore;
+        let needsAsk = false;
+        try { needsAsk = !!(sst && sst.awaitingBigKey && sst.awaitingBigKey(KEYS.ring)); } catch (e) {}
+        if (needsAsk) {
+          const gen = ++ringReadGen;
+          let settled = false;
+          const tryCustom = function () {
+            if (settled || gen !== ringReadGen) return;
+            let v = null;
+            try { v = sst.get(KEYS.ring); } catch (e) {}
+            if (v && typeof v === 'string' && v.length > 10) { settled = true; playRingCustom(v, loop); }
+          };
+          const builtinSeg = function () {
+            if (settled || gen !== ringReadGen) return;
+            settled = true;
+            const bid = store.get(BKEYS.ring);
+            if (bid !== 'none' && bid && SYNTHS[bid]) playBuiltin(bid, true);
+          };
+          tryCustom(); // 回读可能在问证人期间已落地（竞速窗口）
+          if (!settled) {
+            try { sst.whenBigKeyBack(KEYS.ring, tryCustom); } catch (e) {}
+            setTimeout(builtinSeg, 1600); // 确无此键（'absent' 不回调）或问不出结果时按时收场
+          }
+          return;
+        }
       }
       // —— 内置音效 ——
       const bid = store.get(BKEYS[type]);
@@ -365,6 +425,7 @@
   // 停止长音（来电铃声）：同时停自定义 Audio 与内置 BufferSource
   window.stopSfx = function (type) {
     if (type === 'ring') {
+      ringReadGen++; // #1485b：接听/挂断＝在飞的补读与超时兜底全部作废，不许迟响/双响
       if (ringAudio) { try { ringAudio.pause(); } catch (e) {} ringAudio = null; }
       revokeRingObjUrl();
       if (ringSrc) { try { ringSrc.stop(); } catch (e) {} ringSrc = null; }

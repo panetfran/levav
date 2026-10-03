@@ -36,7 +36,7 @@
   function getLib() { try { return JSON.parse(store.get('avatar-lib') || '[]'); } catch (e) { return []; } }
   function saveLib(list) { store.set('avatar-lib', JSON.stringify(list)); }
   function getEnabled() { const v = store.get('avatar-lib-enabled'); return v === null ? true : v === '1'; }
-  // #876 夜间静默：换头像/换昵称定时器夜间不触发（此前这四个 60s 轮询完全不受夜间模式约束，
+  // #876 夜间静默：换头像/换昵称定时器夜间不触发（此前这四个 60s 轮询完全不受夜间免打扰约束，
   // 是用户报「开了夜间模式挂后台睡觉还在发」的最大来源）。守卫放在周期推进（写 last/next）
   // 之前：被拦的当次不推进周期，7:00 后下一个 60 秒轮询照常补发，不丢不堆积。
   // 主路径读 window.nightModeActive（incoming-requests.js 定义，单一事实源）；兜底直读全局
@@ -51,6 +51,43 @@
   function getMeLib() { try { return JSON.parse(store.get('avatar-me-lib') || '[]'); } catch (e) { return []; } }
   function saveMeLib(list) { store.set('avatar-me-lib', JSON.stringify(list)); }
   function getMeEnabled() { const v = store.get('avatar-me-lib-enabled'); return v === null ? true : v === '1'; }
+  // FIX 2026-09-27 #1349b：两个头像池的整包写回闸门（荣耀畅玩40Plus／夸克实报「后面添加的头像，头像库
+  // 里不知道为什么直接清空」；用户明说其他设备型号也有出现、要求不要覆盖式修补。无头真跑纯 HEAD 产物
+  // 实测：库里 30 条完好，切一次后台后 store.get 读 NULL 且整场不自愈，页面按「池子空了」做一次最正常
+  // 的追加整包写回 ⇒ 库里剩 1 条）。
+  //   根因不在这一页：头像池是 >200KB 的 IDB-only 大键（写入时 LS 那份被主动剥掉），而 #1195e 每次切
+  //   后台按体积放掉它的内存副本——**打开相册选文件本身就是一发切后台**（那张诊断单【环境变化】里每
+  //   一次 avlib-upload 前后都夹着一发后台/前台）。#1195e 注释承诺的「回前台后首次读自动回填」只对
+  //   idbGet 成立，xyStore.get 只认内存与 LS，两样都没有 ⇒ 空读被读成「真没有」。
+  //   数据层侧 #1349a 已让这一格下一读自愈；闸门仍必须有：落笔那一刻取回可能还在路上（#172 表情包、
+  //   #281、#434 那一条防盲写通路早就认了这个理儿，本批只是把它接到头像池上）。
+  //   判据一律零机型／零 UA：只用两把现成尺子——「同步读到了没有」＋库里那份的证人 idbBigIdxSize
+  //   （#1258 那份旁证，切后台释放刻意不清它、remove 时同步销账，所以它说「该有一份 ≥200KB 的副本」
+  //   而这里读空＝读数不可信），取回走 #1218 的三态 idbEnsureBigKey。'unknown' 一律不写、也不许对
+  //   用户说「已清空」。清空按钮（saveFn([])）不依赖读数，本就不必过闸。
+  function readPool(key) {
+    const v = store.get(key);
+    if (v === null || v === undefined || v === '') return [];
+    if (Array.isArray(v)) return v; // #950 同款：大键可能以数组形态直驻内存缓存
+    try { const a = JSON.parse(v); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  }
+  function poolWitness(key) { try { return (window.idbBigIdxSize && window.idbBigIdxSize(key)) || 0; } catch (e) { return 0; } }
+  function commitPool(key, mutate, done) {
+    const settle = (next) => { if (next) store.set(key, JSON.stringify(next)); if (done) done(next || null); };
+    const attempt = (tries) => {
+      const cur = readPool(key);
+      if (cur.length || !poolWitness(key) || !window.idbEnsureBigKey) { settle(mutate(cur)); return; }
+      Promise.resolve(window.idbEnsureBigKey(key)).then((st) => {
+        if (st === 'unknown') {
+          if (tries < 2) { setTimeout(() => attempt(tries + 1), 1200 * (tries + 1)); return; }
+          toast('头像库还在读取，请过几秒再试一次（这一次没有改动库里的头像）'); settle(null); return;
+        }
+        settle(mutate(readPool(key))); // 'ok'＝取回后重读；'absent'＝健康连接确认库里没有 ⇒ 空池就是权威
+      }, () => { toast('头像库还在读取，请过几秒再试一次'); settle(null); });
+    };
+    attempt(0);
+  }
+
   // 昵称清洗（FIX 2026-09-16 #616：用户报「我同意了 TA 的换昵称邀请，我的昵称换成了「」」——
   // 引号里是空的）。根因：**只由零宽字符组成的昵称能穿过 trim()**——U+200B 零宽空格等既不是
   // JS 的 WhiteSpace 也不可见，`'   '.trim()` 会清空但 `'\u200B'.trim()` 原样保留，
@@ -71,10 +108,21 @@
     } catch (e) { return []; }
   }
   function getNickLib() { return loadStrList('nick-lib'); }
-  function saveNickLib(list) { store.set('nick-lib', JSON.stringify(list)); }
+  // #1521：昵称池「添加」是读-改-写（bindNickAdd：读池→push→整包写回），此前是裸写——盲窗里一次
+  //   「添加昵称」＝整池被顶掉。键很小、超 200KB 的概率极低（这闸多半永不触发），但代价只有一行，
+  //   不写就是同族留洞。拦下照实 toast、绝不落笔，等库回填后再点一次即可。
+  function saveNickLib(list) {
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'nick-lib', '昵称池')) return false;
+    store.set('nick-lib', JSON.stringify(list));
+    return true;
+  }
   function getNickEnabled() { const v = store.get('nick-lib-enabled'); return v === null ? true : v === '1'; }
   function getMeNickLib() { return loadStrList('nick-me-lib'); }
-  function saveMeNickLib(list) { store.set('nick-me-lib', JSON.stringify(list)); }
+  function saveMeNickLib(list) {
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'nick-me-lib', '我的昵称池')) return false;
+    store.set('nick-me-lib', JSON.stringify(list));
+    return true;
+  }
   function getMeNickEnabled() { const v = store.get('nick-me-lib-enabled'); return v === null ? true : v === '1'; }
   // 昵称池高亮/随机去重当前生效值口径与头像池一致：聊天专用键优先、回退桌面键
   function curPartnerNick() { return store.get('cs-lbl-partner') || store.get('lbl-partner') || ''; }
@@ -115,37 +163,14 @@
   const AV_TARGET = 180 * 1024;
   function normalizeAvSize(data, cb) {
     if (!data || typeof data !== 'string' || data.indexOf('data:image') !== 0 || data.length <= AV_TARGET) { cb(data); return; }
-    try {
-      // FIX 2026-09-22 #1036：解码看门狗——内核偶发大图解码既不 onload 也不 onerror（挂起）
-      // 时原回调永久悬空＝「换头像没反应、重开好几次」；超时按「解码失败」口径原样放行，
-      // 头像照常落库。零机型分支（与 #1036 chat-settings/personalize 同批同口径）。
-      let settled = false;
-      const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); cb(v); };
-      const watchdog = setTimeout(() => once(data), 20000);
-      const img = new Image();
-      img.onload = function () {
-        try {
-          const iw = img.width || 256, ih = img.height || 256;
-          const scale = Math.min(1, 256 / Math.max(iw, ih));
-          let w = Math.max(1, Math.round(iw * scale));
-          let h = Math.max(1, Math.round(ih * scale));
-          let q = 0.85, out = '';
-          for (let tries = 0; tries < 4; tries++) {
-            const c = document.createElement('canvas');
-            c.width = w; c.height = h;
-            c.getContext('2d').drawImage(img, 0, 0, w, h);
-            out = c.toDataURL('image/jpeg', q);
-            if (out.length <= AV_TARGET) break;
-            w = Math.max(48, Math.round(w * 0.8));
-            h = Math.max(48, Math.round(h * 0.8));
-            q = Math.max(0.5, q - 0.1);
-          }
-          once(out && out.length < data.length ? out : data);
-        } catch (e) { once(data); }
-      };
-      img.onerror = function () { once(data); };
-      img.src = data;
-    } catch (e) { cb(data); }
+    // #1270：解码走统一解码闸（img-ingest.js）。三个口径与旧实现逐字对齐：256px／JPEG 0.85／
+    // ≤AV_TARGET（旧链是「压 4 档、每档边长 ×0.8 且降质」，闸内是同一件事的字节收敛循环）。
+    // 语义不变的两条：①只有压完真的更小才采用，否则原样放行；②解码失败/超时也原样放行
+    // （头像宁可大一点也不能丢）。#1036 的 20 秒看门狗随之内沉到闸里，回调仍然必到。
+    if (!window.mochiImgCompressTo) { cb(data); return; }
+    window.mochiImgCompressTo(data, { maxSide: 256, quality: 0.85, byteLimit: AV_TARGET, tag: 'avlib-norm' }).then((out) => {
+      cb(out && out.length < data.length ? out : data);
+    });
   }
 
   // ===== v3.14.x：聊天头像显示收敛兜底 =====
@@ -280,13 +305,25 @@
   // v3.42.x 头像互动图片懒加载——与表情面板/字卡库同一机制（data-src + IntersectionObserver）：
   // 头像池多张全尺寸图一次全量解码 = 中端机型主线程卡死、头像显示不出（跨机型报障同族）。
   // 只给进入视口的图补 src；无 IntersectionObserver 的浏览器回退即时补 src（行为不变）。
+  // FIX 2026-09-26 #1314：本库「把 data-src 落到 src」的四处写入点（观察器回调、无 IntersectionObserver
+  // 的即时补、首屏 kick、后台预热）共用一把尺子＝令牌交回池（media-pool 的 mochiMediaPaint），由池一次
+  // 写成载荷。旧写法各处自己把 @@m:<hash> 那 44 个字符写进 src，只为让池的观察器按 img[src^="@@m:"] 捞到
+  // 这一格再重写真载荷＝每格两次赋值＋一发注定 404 的相对 URL 请求＋第二次从零解码＝用户实报「图片会闪
+  // 和重新加载」。空串与池没接入时逐字照旧赋值＝最坏情况等于今天，不会更坏。
+  function avPaintSrc(img, src, done) {
+    if (src && window.mochiMediaPaint) {
+      try { window.mochiMediaPaint(img, src, done || null); return; } catch (e) { img.__moPaint = 0; } // 池抛错：交回原写法
+    }
+    try { img.setAttribute('src', src || ''); } catch (e2) {}
+    if (done) { try { done(true); } catch (e3) {} }
+  }
   const avImgObserver = ('IntersectionObserver' in window)
     ? new IntersectionObserver((entries) => {
       for (const en of entries) {
         if (!en.isIntersecting) continue;
         const img = en.target;
         if (img && img.dataset && img.dataset.src && !img.getAttribute('src')) {
-          img.setAttribute('src', img.dataset.src);
+          avPaintSrc(img, img.dataset.src); // #1314 令牌交回池，不上屏
           img.removeAttribute('data-src');
         }
         try { avImgObserver.unobserve(img); } catch (e) {}
@@ -296,7 +333,7 @@
   function avAttachLazy(img) {
     if (!img) return;
     if (avImgObserver) { try { avImgObserver.observe(img); } catch (e) {} }
-    else { img.setAttribute('src', img.dataset.src || ''); img.removeAttribute('data-src'); }
+    else { avPaintSrc(img, img.dataset.src || ''); img.removeAttribute('data-src'); } // #1314 令牌交回池
   }
   // FIX #508（红米 K80 Chrome 等多机型报「头像互动点选换头像，图片闪一下重新加载」）：
   // 换头像后库内容没变，唯一变化是「当前生效」那张的高亮——旧路径 renderGrid()/renderMeGrid()
@@ -386,11 +423,14 @@
         switchAvatarFromLib(src);
       });
       delBtn.addEventListener('click', () => {
-        const l = getLib();
-        l.splice(idx, 1);
-        saveLib(l);
-        renderGrid();
-        syncVal();
+        // FIX 2026-09-27 #1349b：删一条也是整包写回，同过闸门；且按值删不按格子序号删——闸门取回后
+        //   权威池子的长度可能与渲染那一刻不同，拿旧 idx 去 splice 会删错那张（或删不掉还误报成功）。
+        commitPool('avatar-lib', (lib) => {
+          const i = lib.indexOf(src);
+          if (i < 0) return null;
+          lib.splice(i, 1);
+          return lib;
+        }, () => { renderGrid(); syncVal(); });
       });
       avGrid.appendChild(d);
     });
@@ -423,10 +463,13 @@
         switchMyAvatarFromLib(src);
       });
       delBtn.addEventListener('click', () => {
-        const l = getMeLib();
-        l.splice(idx, 1);
-        saveMeLib(l);
-        renderMeGrid();
+        // FIX 2026-09-27 #1349b：同联系人侧——整包写回先过闸门，删按值不按旧序号
+        commitPool('avatar-me-lib', (lib) => {
+          const i = lib.indexOf(src);
+          if (i < 0) return null;
+          lib.splice(i, 1);
+          return lib;
+        }, () => { renderMeGrid(); });
       });
       avMeGrid.appendChild(d);
     });
@@ -580,7 +623,10 @@
       const im = imgs[i];
       let ds = ''; try { ds = (im.dataset && im.dataset.src) || ''; } catch (e) {}
       if (ds && !im.getAttribute('src')) {
-        im.setAttribute('src', ds); // 当场补：不等 IO 回调（令牌载荷同路径，池会按 src 重写真载荷）
+        // #1314 与表情侧同一把尺子：令牌不上屏，池载荷一次写好（旧写法为了被池的观察器捞到，先把
+        //   @@m:<hash> 本身写进 src＝每格两次赋值＋一发注定 404 的相对请求＋第二次从零解码；在飞标记
+        //   __moPaint 由池摆/由池收，avImgReady 读它）。本库现存的还是内联 dataURL＝一次赋值、行为逐字不变。
+        avPaintSrc(im, ds);
         try { im.removeAttribute('data-src'); } catch (e) {}
         try { if (avImgObserver) avImgObserver.unobserve(im); } catch (e) {}
       }
@@ -596,6 +642,7 @@
       const settle = function () {
         if (done) return;
         if (okNow()) { done = true; off(); res(true); return; }
+        if (im.__moPaint) return; // #1314 池的回话还在飞（此刻 src 既没载荷也没令牌）：判「无源」会放行一个没图的格子
         if (srcNow().indexOf('@@m:') !== 0) { done = true; off(); res(false); return; } // 真失败/无源：不挡显示
         // 令牌未解析：池重写 src 后会再触发 load，继续等
       };
@@ -664,11 +711,11 @@
       for (let i = 0; i < imgs.length && n < 24; i++) {
         const im = imgs[i];
         if (im.dataset && im.dataset.src && !im.getAttribute('src')) {
-          im.setAttribute('src', im.dataset.src);
+          avPaintSrc(im, im.dataset.src, function (ok) { if (ok) { try { if (im.decode) im.decode().catch(function () {}); } catch (eD) {} } }); // #1314 令牌交回池；解码发起挪到载荷真落地那一刻
           im.removeAttribute('data-src');
           n++;
         }
-        try { if (im.decode) im.decode().catch(function () {}); } catch (e) {}
+        if (im.getAttribute('src')) { try { if (im.decode) im.decode().catch(function () {}); } catch (e) {} } // #1314 只在「这一格此刻真有源」时解码；在飞的留给池的回话
       }
     }
   };
@@ -723,8 +770,11 @@
     });
   }
   // 上传多张（两个头像池共用）：读取失败的文件会跳过，全部成功/部分失败都有提示
-  function bindPoolUpload(btn, listFn, saveFn, rerender) {
-    if (!btn) return;
+  // FIX 2026-09-27 #1349b：落笔改走 commitPool（键名传进来＝闸门能按这一键问库），本批新增的
+  //   图片先攒在 added 里、在**落笔那一刻**追到权威读数后面——不再拿「打开选择器之前」那一拍的
+  //   读数整包顶回去（选文件期间页面切了一趟后台，那一拍的读数在纯 HEAD 上就是 null）。
+  function bindPoolUpload(btn, key, rerender) {
+    if (!btn || !key) return;
     const input = document.createElement('input');
     input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
     input.id = (btn.id || 'avlib') + '-file-pick'; // FIX 2026-09-18 #717：常驻池选择器身份（诊断/测试句柄，按按钮唯一）
@@ -738,54 +788,41 @@
       const files = Array.prototype.slice.call(input.files || []);
       input.value = '';
       if (!files.length) return;
-      const list = listFn();
+      const added = [];
       let done = 0, okCount = 0, failCount = 0;
+      if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
       files.forEach(f => {
-        // FIX 2026-09-22 #1036：每文件看门狗——解码/读取挂起（内核偶发不放任何回调）时
-        // 原实现 done 永不齐平＝finish 永不执行＝整批静默不落库（「换了没反应」原型）；
-        // 30 秒按失败计数收口，其余文件照常入库。零机型分支。
+        // FIX 2026-09-22 #1036：每文件都必须收口一次（成功或失败都算），否则 done 永不齐平
+        // ＝finish 永不执行＝整批静默不落库（「换了没反应」原型）。
+        // #1270：解码走统一解码闸（256px／JPEG 0.85 口径不变），20 秒看门狗随之内沉到闸里
+        // （原来的 30 秒外层计时器就是为它兜底的）；File 直接进闸，不再先读成 base64。
+        // 同时去掉「画布异常 → push(reader.result)」那发回退＝把相册原图整张烤进头像池，
+        // 池子被 MB 级原图撑爆后每次随机选头像都要重新解码。
         let settled = false;
         const settle = (okFlag) => {
-          if (settled) return; settled = true; clearTimeout(fileTimer);
+          if (settled) return; settled = true;
           done++;
           if (okFlag) okCount++; else failCount++;
           if (done === files.length) finish();
         };
-        const fileTimer = setTimeout(() => settle(false), 30000);
-        const reader = new FileReader();
-        reader.onerror = () => settle(false);
-        reader.onload = () => {
-          const img = new Image();
-          img.onload = () => {
-            if (settled) return; // 看门狗已按失败收口，迟到的解码结果不再塞池
-            try {
-              const c = document.createElement('canvas');
-              const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-              c.width = Math.max(1, Math.round(img.width * scale));
-              c.height = Math.max(1, Math.round(img.height * scale));
-              c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-              list.push(c.toDataURL('image/jpeg', 0.85));
-              settle(true);
-            } catch (e) {
-              list.push(reader.result);
-              settle(true);
-            }
-          };
-          img.onerror = () => settle(false);
-          img.src = reader.result;
-        };
-        reader.readAsDataURL(f);
+        window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'avlib-pool' }).then((r) => {
+          if (!r || r.st !== 'ok' || !r.data) { settle(false); return; }
+          added.push(r.data);
+          settle(true);
+        });
       });
       function finish() {
-        saveFn(list);
-        rerender();
-        if (okCount > 0 && failCount === 0) {
-          toast('成功添加 ' + okCount + ' 张头像');
-        } else if (okCount > 0 && failCount > 0) {
-          toast('添加成功 ' + okCount + ' 张，失败 ' + failCount + ' 张');
-        } else {
-          toast('添加失败，请选择有效的图片文件');
-        }
+        commitPool(key, (lib) => lib.concat(added), (out) => {
+          rerender();
+          if (!out) return; // 闸门拦下＝库里那份没动，提示已由 commitPool 给过，这里不再报「成功」
+          if (okCount > 0 && failCount === 0) {
+            toast('成功添加 ' + okCount + ' 张头像');
+          } else if (okCount > 0 && failCount > 0) {
+            toast('添加成功 ' + okCount + ' 张，失败 ' + failCount + ' 张');
+          } else {
+            toast('添加失败，请选择有效的图片文件');
+          }
+        });
       }
     };
     // FIX 2026-09-18 #717：click 失败不再静默——部分机型上 click() 被策略拦截/抛错时给可见提示
@@ -808,8 +845,8 @@
       else _fb();
     });
   }
-  bindPoolUpload(avUpload, getLib, saveLib, () => { renderGrid(); syncVal(); });
-  bindPoolUpload(avMeUpload, getMeLib, saveMeLib, () => { renderMeGrid(); syncVal(); });
+  bindPoolUpload(avUpload, 'avatar-lib', () => { renderGrid(); syncVal(); });
+  bindPoolUpload(avMeUpload, 'avatar-me-lib', () => { renderMeGrid(); syncVal(); });
   // 添加昵称：**多行批量**，一行一个（用户反馈「添加昵称不能批量添加」）。
   // 走全站唯一弹窗方案的多行框——不用 prompt（安卓 IAB 无 prompt），也不自造弹层。
   // 安卓上这个 textarea 会被 mobile-adapt 转成 contenteditable 的 .ce-box，取值靠
@@ -836,7 +873,7 @@
         lines.forEach(n => { if (list.indexOf(n) >= 0) { dup++; return; } list.push(n); });
         const added = lines.length - dup;
         if (!added) { toast(dup > 1 ? '这 ' + dup + ' 个昵称都已经在池子里了' : '这个昵称已经在池子里了'); return; }
-        saveFn(list);
+        if (saveFn(list) === false) return; // #1521：闸拦下＝这一发没落笔，不重绘也不报「已添加」
         rerender();
         const tail = (dup ? '，' + dup + ' 个已存在' : '') + (blank ? '，跳过 ' + blank + ' 个空行' : '');
         if (dup || blank) toast('已添加 ' + added + ' 个昵称' + tail);
@@ -876,6 +913,7 @@
   // out=true 换我的头像（.msg-out .msg-av 是我的消息旁的头像）
   // data 为空时恢复默认人物图标
   // v3.6.x：img 用属性赋值（dataURL 含引号时拼 innerHTML 会逃逸注入 HTML）
+  let avApplyGen = 0; // #1314 屏外气泡头像分片补写的轮次号（见下面写入面那段注释）
   function applyAvatarImg(data, out, chatOnly) {
     // FIX 2026-09-17 #662：新头像先离屏 decode 一次再落到整列节点——换一次头像会同时改
     //   顶栏 + 8~16 个气泡头像的 src（实测 15 次 src 赋值），不带预热时各节点各自等解码，
@@ -885,8 +923,10 @@
       try {
         const _warm = new Image();
         _warm.decoding = 'async';
-        _warm.src = data;
-        if (_warm.decode) { const _p = _warm.decode(); if (_p && _p.catch) _p.catch(function () {}); }
+        // #1314 交回池：万一值已被令牌化，旧写法 `_warm.src = 令牌` 是发一次必 404 的相对 URL 请求、
+        // 什么也没预热；池把载荷回写那一刻再 decode()＝热缓存照旧先暖上（内联 dataURL 走同一条＝当场）。
+        const warmDecode = function () { try { if (_warm.decode) { const _p = _warm.decode(); if (_p && _p.catch) _p.catch(function () {}); } } catch (eW) {} };
+        avPaintSrc(_warm, data, warmDecode);
       } catch (e) {}
     }
     const chatAv = document.getElementById(out ? 'chat-user-av' : 'chat-partner-av');
@@ -907,10 +947,10 @@
       el.__avApplied = want;
       if (data) {
         const cur = el.querySelector('img');
-        if (cur) { cur.src = data; cur.alt = ''; }
+        if (cur) { avPaintSrc(cur, data); cur.alt = ''; } // #1314 令牌交回池，不上屏（内联值＝逐字同旧的一次赋值）
         else {
           const img = document.createElement('img');
-          img.src = data;
+          avPaintSrc(img, data);
           img.alt = '';
           el.innerHTML = '';
           el.appendChild(img);
@@ -921,7 +961,34 @@
     };
     applyTo(chatAv);
     applyTo(deskRing);
-    document.querySelectorAll((out ? '.msg-out' : '.msg-in') + ' .msg-av').forEach(av => { applyTo(av); });
+    // #1314 写入面：换一次头像原本把**整个已渲染窗口**的气泡头像在同一拍里全部重新赋值——实测
+    //   （无头 390×844、300 条历史、头像互动点第 4 张）＝104 次 src 写／103 次图片载入，而屏上只有
+    //   6~7 个头像看得见。#617 收掉了「拆节点重建」、#662 预热了位图，写入面一直是整窗：用户看得见
+    //   的那几个换图被排在九十几个看不见节点的载入／解码之后＝「图片会闪和重新加载」。
+    //   收口＝按「这一格现在画不画得出来」分档：可见的（含 80px 余量）立刻落，屏外的分片在后续帧里
+    //   补齐（每片 24 个，几帧内一定落地，不留旧头像；用户滚到历史前早已补完）。判据只有几何可见性，
+    //   零机型分支、零视觉改动；拿不到视口（隐藏页／innerHeight 为 0）或内核没有 rAF 时一律照旧一次
+    //   写完＝最坏情况等于今天，不会更坏。
+    const avNodes = document.querySelectorAll((out ? '.msg-out' : '.msg-in') + ' .msg-av');
+    const vh = window.innerHeight || 0;
+    const avTail = [];
+    for (let i = 0; i < avNodes.length; i++) {
+      const av = avNodes[i];
+      if (!vh) { applyTo(av); continue; }
+      let r = null; try { r = av.getBoundingClientRect(); } catch (e) {}
+      if (!r || (r.bottom > -80 && r.top < vh + 80)) applyTo(av);
+      else avTail.push(av);
+    }
+    if (!avTail.length) return;
+    if (!window.requestAnimationFrame) { for (let k = 0; k < avTail.length; k++) applyTo(avTail[k]); return; }
+    const avGen = ++avApplyGen; // 期间又换了一次头像：旧那一轮的剩余分片作废（#169/#228 同族），新那一轮自己会枚举到全部节点
+    const avStep = function () {
+      if (avGen !== avApplyGen) return;
+      const chunk = avTail.splice(0, 24);
+      for (let k = 0; k < chunk.length; k++) applyTo(chunk[k]);
+      if (avTail.length) { try { window.requestAnimationFrame(avStep); } catch (e) { for (let k = 0; k < avTail.length; k++) applyTo(avTail[k]); avTail.length = 0; } }
+    };
+    try { window.requestAnimationFrame(avStep); } catch (e) { for (let k = 0; k < avTail.length; k++) applyTo(avTail[k]); }
   }
   // 聊天里显示系统消息（chatAddSystem 会持久化，下次进聊天也能看到）
   // img：可选，消息里附带换的头像图片
@@ -1129,7 +1196,7 @@
         // v3.6.x：后台时弹窗不可见，发系统通知让用户知道有换头像邀请
         if (document.visibilityState === 'hidden' && window.bgNotifyCheck) {
           const iname = store.get('lbl-partner') || 'TA';
-          window.bgNotifyCheck(iname + ' 想给你换头像', Date.now(), { name: iname, img: data });
+          window.bgNotifyCheck(iname + ' 想给你换头像', Date.now(), { name: iname, img: data, kind: 'invite' });
         }
       } else {
         // 直接换：换上 + 聊天显示"昵称 更换了你的头像" + 新头像图片
@@ -1214,7 +1281,7 @@
         //  这里显式触发一条，避免只有聊天系统消息、后台用户没感知到换头像）
         try {
           if (window.bgNotifyCheck) {
-            window.bgNotifyCheck((store.get('lbl-partner') || 'TA') + ' 更换了头像', Date.now(), { name: store.get('lbl-partner') || 'TA', av: fit });
+            window.bgNotifyCheck((store.get('lbl-partner') || 'TA') + ' 更换了头像', Date.now(), { name: store.get('lbl-partner') || 'TA', av: fit, kind: 'other' });
           }
         } catch (e) {}
       });
@@ -1403,7 +1470,7 @@
         // 后台时弹窗不可见，发系统通知让用户知道有换昵称邀请
         if (document.visibilityState === 'hidden' && window.bgNotifyCheck) {
           const iname = store.get('lbl-partner') || 'TA';
-          window.bgNotifyCheck(iname + ' 想给你换昵称', Date.now(), { name: iname });
+          window.bgNotifyCheck(iname + ' 想给你换昵称', Date.now(), { name: iname, kind: 'invite' });
         }
       } else {
         applyMyNick(name);
@@ -1450,7 +1517,7 @@
       const text = nickMsgPartner(name);
       chatSystem(text, null, true);
       try {
-        if (window.bgNotifyCheck) window.bgNotifyCheck(text, Date.now(), { name: cPartnerName() });
+        if (window.bgNotifyCheck) window.bgNotifyCheck(text, Date.now(), { name: cPartnerName(), kind: 'other' });
       } catch (e) {}
     } catch (e) {}
   }

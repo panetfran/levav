@@ -544,10 +544,10 @@
       const grp = winner === 1 ? '游戏失败·回应' : winner === 2 ? '游戏胜利·回应' : '游戏平局·回应';
       const fb = winner === 1 ? ['让你赢啦，再来？'] : winner === 2 ? ['五连！我赢啦'] : ['平局，再来一局？'];
       const pool = window.getInteractPool ? window.getInteractPool(grp, fb) : fb;
-      const say = pool[Math.floor(Math.random() * pool.length)] || fb[0];
+      const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : ''; // #1515 整组停用＝静默（五子棋）
       // FIX 2026-09-16：800ms 内切联系人桌面，TA 回应会发进新桌面的聊天流——回调前校验命名空间未变
       const cidAtEnd = prefix();
-      setTimeout(() => {
+      if (say) setTimeout(() => {
         if (prefix() !== cidAtEnd) return;
         try { if (window.chatAddIn) window.chatAddIn(say, { silent: true }); } catch (e) {}
       }, 800);

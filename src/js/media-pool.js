@@ -255,6 +255,80 @@
     }).catch(function () { return null; });
   };
 
+  // ===== FIX 2026-09-26 #1314「这一格要显示池载荷」的唯一正道：载荷一次写进 src，令牌本身永不上屏 =====
+  // （红米 K80/Chrome 实报「点击表情包打开的页面，每次打开图片都会闪烁和重新加载」，用户明说其他
+  //  设备型号也有、要求不要覆盖式修补；同族 #457/#508/#509/#547/#617/#662/#692/#704/#716/#907/#1011
+  //  十一轮后仍复报＝用户看的问题根本没解决。零机型／零 UA 分支＝判据只取「这一格现在要显示的是不
+  //  是池载荷」这一个事实。）
+  // 取证（无头 390×844 真跑纯 HEAD 产物，见 tools/verify-1314-panel-single-paint.mjs 的读数）：表情面板首屏 10 个格子＝
+  //  20 次 src 赋值，其中 10 次写的就是 @@m:<hash> 那 44 个字符——内核把它当**相对 URL** 真发一次
+  //  请求（必 404；#1011 台账自己写着「7 次请求＋7 次 404」），第 2 次才是池写回的真载荷。于是每一格
+  //  都「先坏一次、再从零解一次」＝用户所见闪一下重新加载；#1011 的
+  //  `#emoji-list img[src^="@@m:"]{opacity:0}` 只把坏帧藏起来，那发多余请求与第二次解码一直留着。
+  // 为什么旧写法非把令牌塞进 src：池的自愈通路只按 `img[src^="@@m:"]` 找到在等的节点（观察器＋#435
+  //  批量预热），节点不写令牌就捞不到。收口＝池自己记下「哪些节点在等哪个哈希」（paintWait），载荷
+  //  一到手就按登记处一次写成载荷；只有池**确实**回答没有这个哈希，才把令牌交回 src，让观察器＋#397
+  //  缺失占位那一路照原样接手＝缺数据语义一字不改。
+  // 三条纪律：①落笔前复核「src 仍是空的」＝期间节点被重建或已被别人上好图一律不碰（#169/#228 同族
+  //  「旧句柄不许偷走新数据」）；②等待有上限（PAINT_WAIT_MS），到点按旧语义交回令牌，绝不因为这一批
+  //  登记把格子挂空（池慢≠池没有）；③不新增任何一次 IDB 读——去重／在飞／批量读全交回 #435 那把
+  //  尺子，本块只多一张登记表。
+  const paintWait = new Map();          // hash -> [{ el, done }]
+  const PAINT_WAIT_MS = 1200;
+  // 在飞标记（__moPaint）由池自己管，不给每个写入方各摆一次：①面板里落 src 的入口不止一处
+  // （首屏 kick、懒加载泵、后台预热），标记只由池摆/只由池收才不会漏；②#662 的节点回收池会把
+  // 带着旧标记的节点复活，所以每一次落地都显式清，不能只依赖调用方的回调。
+  function paintFinish(el, done, ok) {
+    try { el.__moPaint = 0; } catch (eC) {}
+    try { if (done) done(ok); } catch (eD) {}
+  }
+  function paintDeliver(h, payload) {
+    const list = paintWait.get(h);
+    if (!list) return;
+    paintWait.delete(h);
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i], el = it.el;
+      let cur = '';
+      try { cur = el.getAttribute('src') || ''; } catch (eG) {}
+      if (cur) { paintFinish(el, it.done, false); continue; } // 已被上好图/已被换掉：不插手
+      try { el.setAttribute('src', payload || (TOK + h)); } catch (eS) {} // 有载荷写真载荷，确缺才写令牌
+      paintFinish(el, it.done, !!payload);
+    }
+  }
+  // 把「这一格该显示什么」交给池：非令牌＝逐字同旧写法一次赋值；令牌＝map 命中一发上屏（零请求），
+  // 没命中就登记等池回话，池确缺才落令牌。done(是否拿到载荷) 可选，只给调用方挂自己的后续（如预热解码）。
+  window.mochiMediaPaint = function (el, val, done) {
+    const v = String(val || '');
+    if (!el || !v) { try { if (done) done(false); } catch (e0) {} return; }
+    const m = TOKEN_RE.exec(v);
+    if (!m) {
+      try { el.setAttribute('src', v); } catch (e1) {}
+      paintFinish(el, done, true);
+      return;
+    }
+    const h = m[1];
+    const c = map.get(h);
+    if (typeof c === 'string' && c) { // 热缓存命中（本会话刚落过池/已预热）＝一次赋值、一发请求都不发
+      try { el.setAttribute('src', c); } catch (e3) {}
+      paintFinish(el, done, true);
+      return;
+    }
+    if (missing.has(h)) { // 本会话已确认缺失：当场交回令牌，#397 占位那一路立刻接手（旧语义）
+      try { el.setAttribute('src', v); } catch (e5) {}
+      paintFinish(el, done, false);
+      return;
+    }
+    let list = paintWait.get(h);
+    if (!list) {
+      list = [];
+      paintWait.set(h, list);
+      setTimeout(function () { paintDeliver(h, map.get(h) || null); }, PAINT_WAIT_MS); // 纪律②上限兜底
+    }
+    try { el.__moPaint = 1; } catch (eF) {} // 在飞＝这一格此刻既没载荷也没令牌，面板「等图 ready」闸读它
+    list.push({ el: el, done: done });
+    if (window.mochiMediaWarmTokens) { try { window.mochiMediaWarmTokens([h]); } catch (eW) {} } // 纪律③
+  };
+
   // FIX 2026-09-17 #633 池条目同键换值（压缩图片功能 img-compress.js 调用）：字卡库内联大图
   // 经 #554「自动去重缩库」令牌化后真身在池里（库键只剩 @@m:<hash>），要减小字卡库占用就只能
   // 落在这个池值上。池是内容寻址（键 = SHA-256(值) 前缀），这里**只换值、不动键**——所有
@@ -276,6 +350,7 @@
     return window.idbSet(FULL + h, dataUrl).then(function (ok) {
       if (!ok) return false;
       map.set(h, dataUrl);
+      paintDeliver(h, dataUrl); // #1314 在等这一哈希的格子当场拿新载荷（不经令牌那一趟）
       missing.delete(h);
       try { window.mochiMediaPhRestore(h, dataUrl); } catch (ePH) {} // #439 原位换回自愈
       let nodes;
@@ -411,6 +486,7 @@
         // FIX 2026-09-17 #665d 读失败（超时/连接丢失，idbGet 的 undefined 与「键不存在」不可分）：
         // 不当确认缺失——不拉黑（贴纸/字卡列表不掉项），软占位 + 有界重读自愈。
         if (info.ambiguous) { softMissImg(img, h); return; }
+        paintDeliver(h, null); // #1314 确缺＝把令牌交回在等的格子，让观察器＋#397 占位那一路接手（下一行 #387 的语义一字未动）
         missing.add(h); markMissing(h); return;
       }
       missing.delete(h); // 后续读到有效值＝池已补回（导入完整备份等），解除剔除/占位
@@ -421,6 +497,7 @@
       let nodes;
       try { nodes = document.querySelectorAll('img[src="' + TOK + h + '"]'); } catch (e) { nodes = []; }
       Array.prototype.forEach.call(nodes, function (el) { el.src = v2; });
+      paintDeliver(h, v2); // #1314 同哈希在登记的格子（src 还空着）一并上好图
     }).catch(function () { __tokSettle(); });
   }
   function scanRoot(root) {
@@ -479,6 +556,7 @@
         let nodes;
         try { nodes = document.querySelectorAll('img[src="' + TOK + h + '"]'); } catch (e) { nodes = []; }
         Array.prototype.forEach.call(nodes, function (el) { el.src = v; });
+        paintDeliver(h, v); // #1314 同上：预热回来先喂登记处，别让格子靠「src 里躺着令牌」才被捞到
       });
       if (warmQueue.length) warmT = setTimeout(warmPump, 0);
     }).catch(function () {

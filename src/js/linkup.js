@@ -656,10 +656,10 @@
       } });
       const fb = ['一起连完啦。', '好默契呀。', '最后几张好难找。', '再来一局？'];
       const pool = window.getInteractPool ? window.getInteractPool('游戏平局·回应', fb) : fb;
-      const say = pool[Math.floor(Math.random() * pool.length)] || fb[0];
+      const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : ''; // #1515 整组停用＝静默（连线）
       // FIX 2026-09-16：800ms 内切联系人桌面，回应会发进新桌面——回调前校验命名空间未变
       const cidAtEnd = prefix();
-      setTimeout(() => {
+      if (say) setTimeout(() => {
         if (prefix() !== cidAtEnd) return;
         try { if (window.chatAddIn) window.chatAddIn(say, { silent: true }); } catch (e) {}
       }, 800);

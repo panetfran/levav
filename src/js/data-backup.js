@@ -4,7 +4,8 @@
 // v3.5.24 修复手机端导入丢数据：
 //  - 写 localStorage 前先按字节估算总大小，超出配额的大键（聊天图片/头像库等）自动删掉并计数，
 //    保证昵称/设置/聊天文字记录等小键全部恢复成功（不再因超配额静默丢数据）
-//  - 写入失败逐条回滚（还原被清掉的旧值），不会出现"清空后写一半"的情况
+//  - 写入失败先转 IndexedDB 兜底；兜底也没落成的键逐条还原导入前的旧值（#1210 起这条真的会执行，
+//    此前的整包 rollback() 无人调用＝注释空头承诺），不会出现"清空后写一半、旧数据也没了"的情况
 //  - IndexedDB 改为逐条顺序写入（不再用 Promise.all 一拥而上，手机内存压力大时容易失败）
 //  - 兼容旧 iOS 的 <input type=file> 读取（File.text() 老版本不支持时改用 FileReader）
 (function () {
@@ -14,6 +15,9 @@
   // 一份进 IndexedDB，供「数据几乎全空」时启动弹窗恢复。现已彻底不再写入，本常量只剩两个用途：
   //  ① 导出时排除该键（防自包含无限增长）；② 启动时清理旧版本遗留的那份副本（purgeLegacySnapshot）。
   const SNAPSHOT_KEY = 'xy-home-v2:__auto-backup-snapshot';
+  // #1272：数据导入回执环（device.js mochiImportLog）的 localStorage 键。它是本机取证、不是用户
+  // 数据——两个导出循环各跳过一行，绝不随备份文件传播到别的设备。
+  const IMPORT_LOG_KEY = 'xy-home-v2:__import-log';
 
   function toast(msg) {
     let t = document.getElementById('cc-toast');
@@ -84,19 +88,46 @@
   }
 
   // 兼容旧 iOS：读取文件文本（File.text() 不支持时退回 FileReader）
+  // 跨内核兜底：个别安卓内核上 file.text() 对大文件会静默 resolve 空串（文件实际非空）——空串进
+  // JSON.parse('null') 会误判成「不是 mochi 导出的数据文件」；读回空且文件非空时换 FileReader 再读
+  // 一次（零机型分支，判据只取代码事实）。
+  // #1272：读文件从「只回字符串」升级为「回一张回执」{text, err, why}——原实现第一腿 file.text()
+  // 抛错（大备份超浏览器单串上限时的 RangeError: Invalid string length）被 .catch(() => readViaReader())
+  // 整个吞掉，FileReader 再失败就 resolve('')，真错误永远到不了 #104「太大」分档，用户看到的是
+  // 「不是 mochi 导出的数据文件」（vivo X200s + Edge 实报「上传数据文件显示无效数据」）。
+  // 回执保住内核真错误，判定交回调用方：有文本照用；读空且带错误 → 抛错误走既有分档线；
+  // 读空且无错误 → 空读专属文案。零机型分支＝判据只取内核回执与 file.size 两个结构事实。
   function readFileText(file) {
     return new Promise((resolve) => {
+      const rd = { text: '', err: null, why: '' };
+      function done(why) { rd.why = why; resolve(rd); }
       if (typeof file.text === 'function') {
-        file.text().then(resolve).catch(() => readViaReader());
+        file.text().then((t) => {
+          if (t === '' && file.size > 0) readViaReader();
+          else { rd.text = String(t); done(t === '' ? 'zero-byte' : 'text-ok'); }
+        }).catch((e) => { rd.err = e; readViaReader(); });
       } else readViaReader();
       function readViaReader() {
         const r = new FileReader();
-        r.onload = () => resolve(String(r.result || ''));
-        r.onerror = () => resolve('');
+        r.onload = () => {
+          rd.text = String(r.result || '');
+          // 第二腿读出内容 → 第一腿的错误就此了结（与旧行为一致：换腿成功就不再追责）
+          if (rd.text !== '') { rd.err = null; done('reader-ok'); }
+          else done(rd.err ? 'unreadable' : 'reader-empty');
+        };
+        r.onerror = () => {
+          // reader 的进度事件不带原因，保住第一腿真错误；两腿都无声失败时给一个可读的兜底错误
+          if (!rd.err) rd.err = new Error('读取失败：FileReader 无法读出文件内容');
+          done('unreadable');
+        };
         r.readAsText(file, 'utf-8');
       }
     });
   }
+
+  // #1272：导入链路记账 → device.js 的持久回执环（localStorage，扛得住页面回收——这批设备一次诊断
+  // 实测回收 25 次，内存取证随回收丢失，用户四份诊断报告里「文件选择取证」全是空）。纯取证，不参与业务。
+  function impLog(w) { try { if (window.mochiImportLog) window.mochiImportLog('backup:' + w); } catch (e) {} }
 
   // v3.31.x：Blob → base64 分块转换——旧实现把整块二进制先拼成一个巨大的二进制字符串再
   // 一次性 btoa（大音乐/图片文件上临时内存 ≈ 文件体积 × 2），且 String.fromCharCode.apply
@@ -626,9 +657,11 @@
         const k = localStorage.key(i);
         if (!k || k.indexOf('xy-home-v2:') !== 0) continue;
         if (k === SNAPSHOT_KEY) continue; // v3.7.0：副本键不进导出文件（防自包含无限增长）
+        if (k === IMPORT_LOG_KEY) continue; // #1272：LS 侧跳过导入回执键（本机取证不进备份文件）
         if (cfg.skip(k)) continue; // #275 范围外键（文字模式的媒体池等）同样不进小键段，防 strip 剥成空串入库
         const v = localStorage.getItem(k);
-        if (byteLen(v) > LS_SMALL_LIMIT) lsBig[k] = v; // 大键：留待 IndexedDB 权威读取
+        // FIX 2026-09-29 #1390：媒体池键不按体积走小键段，一律交给下面的 IDB 权威读（体积判据同下 routeValue 那一处）
+        if (byteLen(v) > LS_SMALL_LIMIT || MEDIA_POOL_KEY_RE.test(k)) lsBig[k] = v; // 大键：留待 IndexedDB 权威读取
         else { small[k] = v; cover.see(k, v); }
       }
     } catch (e) {}
@@ -673,6 +706,26 @@
     function routeValue(k, v, own) {
       cover.see(k, v);
       if (isAuthorityKey(k)) { try { delete small[k]; } catch (e) {} } // 有损 LS 快照不得混进备份
+      // FIX 2026-09-29 #1390（小米 REDMI Note 15 Pro／自带浏览器实报「导入数据备份后之前朋友圈发的表情包
+      // 都没了，导入的数据丢失朋友圈动态数据和图片」；同案第 4 次，前三个是 #1359 小米MIX 4、#1363
+      // OPPO Find X9、#1371 iPhone 14 Plus）——根因不在机型也不在体积，在**落点**：媒体池按 #142 的归属
+      // 是 IndexedDB 独有（media-pool.js 只用 idbGet/idbGetMany 取池、全文零 localStorage 读路，而
+      // idb.js 的启动回填 idbRestore 又显式跳过 media: 键「不回填——几百个图片键回填进 memoryCache/LS
+      // 等于把去重省下的内存加倍吃回去」）。旧路由只问「这一格多大」（≤20KB 进备份 ls 段、否则进 idb 段），
+      // 于是**小池条目**（表情包/贴纸/小图正是这一族，用户点名的就是「表情包」）被记进 ls 段，导入侧
+      // 照着 ls 段把值写回 localStorage＝写进一个没有任何人读的地方。更狠的是第二跳：data.ls 里出现这个键
+      // 会让下面 #118/#1359 的 retain 清单把它判成「备份已带、无需保留」，而 idbReplaceAll 是单事务
+      // clear＋批量 put——**本机那份还能正常显示的池条目被 clear 掉，换回来的是一份读不到的 LS 副本**
+      // ＝用户所见「导入之后原本的图没了」，且引用它的 @@m: 令牌还在（feed-posts/chat-msgs 原样带令牌），
+      // 于是渲染侧只能报「图片缺失」，池核对也跟着计 missing。零机型／零 UA 分支：每台设备导入完整备份
+      // 都走同一条路，只是小池条目占比高的用户先中招（同案那张单里 DOM 数着 126 张 img、池只有 54 条）。
+      // 改法＝把「体积」那一维让给「归属」这一维：池键一律走流式 idb 段，与同文件 importChatAllGo 早已
+      // 写对的口径一致（那句注释原文：「媒体池：静默写 IDB（@@m: 令牌解码），不写 LS（media-pool.js 只认
+      // IDB）」）——一条不变量此前被「仅聊天记录」那条通路守着、被「完整备份」这条通路破着。
+      if (MEDIA_POOL_KEY_RE.test(k)) {
+        try { delete small[k]; } catch (eSmall) {} // LS 侧若有旧副本（上一次错路由的遗留）一律让位给权威值
+        return { k: k, v: v, own: own };
+      }
       if (!overSmallLimit(v, LS_SMALL_LIMIT)) { small[k] = v; return null; }
       return { k: k, v: v, own: own };
     }
@@ -697,6 +750,7 @@
         try {
           if (k.indexOf('xy-home-v2:') !== 0) continue;
           if (k === SNAPSHOT_KEY) continue; // v3.7.0：副本键不进导出文件
+          if (k === IMPORT_LOG_KEY) continue; // #1272：IDB 侧同样跳过导入回执键
           // 权威键不跳过（LS 有损快照不能代替 IDB 权威值）；双写一致键 LS 小键已收录则跳过
           if (k in small && !isAuthorityKey(k)) continue;
           if (cfg.skip(k)) { skipped++; if (MEDIA_POOL_KEY_RE.test(k)) skippedMedia++; continue; } // 所选范围之外的键（本地音乐文件/文字模式媒体池）
@@ -861,7 +915,19 @@
     // v3.6.x：记录最近一次成功导出时间——备份提醒条（pwa.js）据此判断是否该提醒。
     // v3.3x.x：#355b 「仅聊天记录」导出只算部分备份，不更新 __last-backup——否则会压制
     // 全量备份提醒，让用户误以为数据已整体备份完（音乐/图片/设置等都还没备份）。
-    if (cfg.mode !== 'chat') { try { localStorage.setItem('xy-home-v2:__last-backup', String(Date.now())); } catch (e) {} }
+    // FIX 2026-09-26 #1307：这条"最近成功导出"时间戳原来只裸写 localStorage——一加 Ace5/Edge
+    //   实报「已经备份了，还在不断弹备份弹窗」的当场证据是同一份导出件写着
+    //   「localStorage 状态：写入失败(QuotaExceededError)」＋整域 10MB 里 9.4MB 是同源兄弟站点
+    //   的键（GitHub Pages 一个源一个 localStorage）。写失败被 catch 吞掉 ⇒ 标记永远是 0 ⇒
+    //   pwa.js 的 due() 永远判「该提醒」。改走 xyStore（内存缓存 + LS 快照 + IndexedDB 三层），
+    //   LS 写不进时内存与 IDB 各留一份，启动回填（idbRestore 对本键无排除规则）把它带回内存。
+    //   xyStore 不在（理论不会：idb.js 先于本文件加载）才退回裸 LS，保持老行为可用。
+    if (cfg.mode !== 'chat') {
+      try {
+        if (window.xyStore) window.xyStore('xy-home-v2').set('__last-backup', String(Date.now()));
+        else localStorage.setItem('xy-home-v2:__last-backup', String(Date.now()));
+      } catch (e) {}
+    }
     // v3.29.x：自动备份副本已下线——导出不再把整包 JSON 复制进 IndexedDB。
     //   旧实现有 ≤3MB 才写的阈值（为修 iOS Safari 导出闪退 / 小米 14U Edge 导出后本地存储被写坏而加），
     //   结果是真正需要备份的大数据量用户永远拿不到副本，副本只留存在旧版本里变成纯冗余占用
@@ -1064,7 +1130,7 @@
           let ok = false;
           try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
           try { if (ta.parentNode) ta.parentNode.removeChild(ta); } catch (e3) {}
-          toast(ok ? '已复制网址和设备信息：粘贴到浏览器地址栏打开，或发给开发者'
+          toast(ok ? '已复制网址和设备信息：粘贴到浏览器地址栏打开'
             : '复制失败，请手动复制上方网址到浏览器打开');
         } catch (e4) {}
       } }
@@ -1244,14 +1310,78 @@
     return lines.join('\n');
   }
 
-  // 导入
+  // FIX 2026-09-28 #1359（小米MIX 4／Edge 153 桌面 PWA 实报「一直在丢失字卡、表情包那些，最近存的
+  // 表情包都没了；我直接导出一个聊天记录，然后导入数据后会自己消失」；随附诊断单里
+  // 「启动挂起未读回 31 格」＋「库里 cc-groups-public 67.26MB、chat-msgs 292.2MB」）——
+  // #440 那批把「清单读不到」当成了未知去中止，但 retain 的【值】那一发仍旧把「没读到」当「不需要保留」：
+  // idbGetMany 超时 resolve 的是「已经回执的那部分」——没答上来的键根本不在 map 里（!(k in map)），
+  // 而 map[k]===undefined 才是「读到了、库里确实没有这个键」。旧写法两样都用 map[k] 判，于是几十 MB 的
+  // 表情包／字卡／媒体池在这种大库慢机上整批没回执＝按「无需保留」放行＝下面 idbReplaceAll 的 clear
+  // 把它们永久删掉（备份越不完整、库越大越必中＝用户口径「导入数据后会自己消失」且高频）。
+  // 判据一律零机型／零 UA 分支＝只取「这一发内核回执了没有」。
+  const RETAIN_BATCH = 8; // 一批八键：整库残留键挤同一趟只读事务，几十 MB 必然超 idbGetMany 的 4s+4s
+  // 返回 值数组（clear 之后要原样 put 回去的旧键），或 { abort: true, unknownKey }＝有键问不出
+  async function readRetainKeys(retain) {
+    const kept = [];
+    for (let i = 0; i < retain.length; i += RETAIN_BATCH) {
+      const slice = retain.slice(i, i + RETAIN_BATCH);
+      let map = {};
+      try { map = (await window.idbGetMany(slice)) || {}; } catch (e) { map = {}; }
+      for (let j = 0; j < slice.length; j++) {
+        const k = slice[j];
+        if (k in map) { // 这一格有回执：值就保留，undefined/null 就是库里确实没有
+          const v = map[k];
+          if (v !== undefined && v !== null) kept.push({ k: k, v: v });
+          continue;
+        }
+        const one = await readRetainedKey(k);
+        if (one.unknown) return { abort: true, unknownKey: k }; // 问不出＝未知，绝不清掉
+        if (one.v !== undefined && one.v !== null) kept.push({ k: k, v: one.v });
+      }
+    }
+    return kept;
+  }
+  // 单键补问三态：{v}＝读到了值／{none:true}＝读到了且库里没有这个键／{unknown:true}＝这一发问不出。
+  // 等待窗按 __big-idx 那份体积尺放大（idbBigSize 免读值，公式同 #716 的聊天大读）——批量那一发
+  // 读不完的正是在慢机上超 4s+4s 的几十 MB 键，不放大等待窗等于没补问。
+  async function readRetainedKey(key) {
+    if (typeof window.idbGet !== 'function') return { unknown: true }; // 连问的口子都没有＝未知，不许按「库里没有」清掉
+    // 先附议「还在飞的那一发」（#1360 第七型的口径：别为同一格另起一整包重读＝堆尖峰＝页面被系统回收）。
+    // 那一发回 undefined 分不出「库里真没有」还是「读挂了」，所以一律算未知——宁可中止，不拿含糊当答案。
+    try {
+      const late = window.idbLateRead && window.idbLateRead(key);
+      if (late) {
+        const lv = await late;
+        if (lv !== undefined && lv !== null) return { v: lv };
+        return { unknown: true };
+      }
+    } catch (e) {}
+    let size = 0;
+    try { size = (window.idbBigSize && window.idbBigSize(key)) || 0; } catch (e) {}
+    const info = { minWaitMs: 4000 + Math.min(28000, Math.ceil(Math.max(size, 1) / 1048576) * 2000) };
+    let v;
+    try { v = await window.idbGet(key, info); } catch (e) { v = undefined; }
+    if (v !== undefined && v !== null) return { v: v };
+    return info.ambiguous ? { unknown: true } : { none: true };
+  }
+
   async function doImport(file) {
     // 大备份读取/解析耗时较长，先亮进度遮罩
     impShow('正在读取数据文件…', '大备份（上百 MB）解析需要几秒，请稍候', null);
     let data;
     try {
-      const text = await readFileText(file);
-      data = JSON.parse(text || 'null');
+      const rd = await readFileText(file);
+      impLog('read:' + rd.why + ' size=' + (file && file.size) + ' name=' + ((file && file.name) || '').slice(0, 24));
+      const text = rd.text;
+      // #1272：不再吞内核读取错误——第一腿抛的错误（大备份超单串上限的 RangeError 最常见）换腿后
+      // 仍读空时原样上抛，让下面的 #104「太大」/#1221「坏了」分档看见真原因，
+      // 而不是落到 JSON.parse('null') 被误诊成「不是 mochi 导出的数据文件」
+      if (!text && rd.err) throw rd.err;
+      // #1272：两腿都回空且内核没抛错（0 字节文件 / 传输还没写完）——文件根本没进到解析这一步，
+      // 不能说「坏了」也不能说「不是 mochi 文件」，走空读专属分档
+      if (!text) throw new Error('读空：内核回读内容为空（' + (rd.why === 'zero-byte' ? '文件是 0 字节' : '两条读取腿都回空') + '，size=' + (file && file.size) + '）');
+      // UTF-8 BOM 兜底剥除（个别内核/传输工具会在文件头带 BOM，JSON.parse 不认，误报「无效的数据文件」）
+      data = JSON.parse((text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text) || 'null');
     } catch (e) {
       impHide();
       // v3.32.x #104：备份文件再大也「导得出去」，但读取侧要把整个文件读成一个字符串再
@@ -1259,6 +1389,7 @@
       // 是把用户往错误方向带（文件没坏，是这台设备读不动这么大的一份）。
       const msg = (e && (e.message || String(e))) || '';
       if (/string length|out of memory|ArrayBuffer length|memory/i.test(msg)) {
+        impLog('fail:too-large');
         if (window.openModal) {
           window.openModal('这份备份太大，本机读不进去', '', function () {}, {
             noInput: true, okText: '知道了', big: true,
@@ -1270,14 +1401,78 @@
         }
         return;
       }
-      toast('无效的数据文件');
+      // #1272：「读空/读取失败」单独一档——与「JSON 解析不了」不是一回事：前者是内核根本没把
+      // 文件内容交回来（0 字节/传输不完整），说「文件损坏」或「不是 mochi 文件」都是误导
+      if (/读空|读取失败/i.test(msg)) {
+        impLog('fail:empty-read');
+        if (window.openModal) {
+          window.openModal('没有从这份文件读出内容', '', function () {}, {
+            noInput: true, okText: '知道了', big: true,
+            staticText: '原因：' + msg + '\n\n浏览器从你选的文件里一个字都没读到（多半是传输/下载不完整，或选到了还没写完的空文件）。\n' +
+              '本机数据没有被改动。\n请回到原设备重新「导出数据」，用云盘/数据线完整传到这台设备（微信发送会压缩改名，容易传坏），再选新文件导入。'
+          });
+        } else {
+          toast('没有从这份文件读出内容，请重新导出并完整传输后再导入');
+        }
+        return;
+      }
+      // #1221：把「文件真坏了」与「读不动」分开说——JSON 语法类错误（截断/损坏/选错文件）此前一律
+      // 归到死胡同「无效的数据文件」，用户分不清是文件问题还是操作问题，也没法带着原因反馈。
+      if (/unexpected (end of|token)|expected .*json|invalid or unexpected token|invalid character|unterminated/i.test(msg)) {
+        impLog('fail:syntax');
+        if (window.openModal) {
+          window.openModal('这份备份文件读不出来', '', function () {}, {
+            noInput: true, okText: '知道了', big: true,
+            staticText: '原因：' + msg + '\n\n多半是文件本身不完整（导出或传输过程被截断/损坏），或选错了文件（不是「导出数据」产生的备份）。\n' +
+              '本机数据没有被改动。\n建议回到原设备重新「导出数据」，用微信文件/云盘等完整传输一份再导入；数据较大时改选「不含音乐文件」或「只备份文字」。'
+          });
+        } else {
+          toast('备份文件不完整或损坏（' + msg + '），请重新导出并完整传输后再导入');
+        }
+        return;
+      }
+      // 其他未知读取/解析错误：把真实原因亮出来，不再给「无效的数据文件」死胡同
+      impLog('fail:read ' + msg.slice(0, 60));
+      if (window.openModal) {
+        window.openModal('读不了这份数据文件', '', function () {}, {
+          noInput: true, okText: '知道了', big: true,
+          staticText: '原因：' + msg + '\n\n本机数据没有被改动。请确认选的是「导出数据」产生的备份文件后重试；反复失败可先重启浏览器（释放被占满的内存）再试。'
+        });
+      } else {
+        toast('读不了这份数据文件：' + msg);
+      }
       return;
     }
     impHide();
-    if (!data || typeof data !== 'object' || !data.ls || typeof data.ls !== 'object') {
+    if (!data || typeof data !== 'object') {
+      impLog('reject:not-object');
       toast('不是 mochi 导出的数据文件');
       return;
     }
+    // #1272：单桌「仅聊天记录」导出文件（{app:'mochi-zika-chat', msgs:[…]}／裸数组）此前在完整备份
+    // 闸口被「不是 mochi 导出的数据文件」挡死——它其实是合法的 mochi 文件，只是该喂给「仅聊天记录」
+    // 入口（用户原话「之前只能上传导入聊天记录数据」＝那条路认这个格式，完整备份这条路不认）。
+    // 文件已到手，一键直交给 runChatAllImport（它自带预览与二次确认，语义不变、只是不再走死胡同）。
+    if (Array.isArray(data) || Array.isArray(data.msgs)) {
+      impLog('route:chat-file');
+      if (window.openModal && window.runChatAllImport) {
+        window.openModal('这份是「聊天记录」备份文件', '', function () { window.runChatAllImport(file); }, {
+          noInput: true, okText: '去导入这份聊天记录', big: true,
+          staticText: '它的内容是单个桌面的聊天记录，不是「导出数据 → 完整备份」产生的整包文件，完整备份入口不会导入它。\n' +
+            '点「去导入这份聊天记录」走「仅聊天记录」通道：先预览条数再确认，只覆盖聊天记录，设置/字卡/音乐都不动。\n' +
+            '（若想恢复全部数据，请在原设备选「导出数据 → 完整备份」。）'
+        });
+      } else {
+        toast('这份是聊天记录文件，请改用「导入数据 → 仅聊天记录」');
+      }
+      return;
+    }
+    // #1272：校验判据收口成一份——此处曾有两把尺子：老硬闸要求 data.ls 必须存在且是对象，
+    // 而下面的 lsLooksMochi 说「ls/idb 任一段有 xy-home-v2: 键就算 mochi」。v3.5.93+ 大键迁 IDB、
+    // IDB 权威备份的 ls 段可以合法缺席，却会被硬闸在这里误拒。现在 ls 段缺席归一成空对象，
+    // 唯一拒绝判据＝lsLooksMochi（两处判据同源）；归一后的 ls 段同时保住 doImportGo 的
+    // Object.keys(data.ls)（那里没有防御，之前靠硬闸挡着）。
+    if (data.ls == null || typeof data.ls !== 'object') data.ls = {};
     // v3.6.x：备份结构强校验——① app 标识不匹配直接拒绝（防误导其他应用的 json）；
     // ② 键前缀完全不匹配 mochi（xy-home-v2:）视为无效文件——原实现 {ls:{},idb:{}}
     // 空结构也能通过校验，配合先清空再写入，会把用户数据全清掉
@@ -1289,6 +1484,7 @@
     // 覆盖 fork 版/手改 app 字段的 mochi 备份（数据本身是 mochi 结构）；只有 app 与键
     // 都不像 mochi 才拒绝（防别的应用 json 误导入）
     if (data.app && data.app !== 'mochi-zika' && !lsLooksMochi) {
+      impLog('reject:app-mismatch');
       toast('不是 mochi 导出的数据文件');
       return;
     }
@@ -1302,10 +1498,11 @@
       // 确认弹窗里点名提醒；不阻止导入（同机重装场景那些偏移本来就是对的）。
       let adjNote = '';
       try {
-        const adjKeys = Object.keys(d.ls || {}).filter(k => /^xy-home-v2:screen-adj-(top|bottom|h|desk|shift|text|side)$/.test(k) && parseInt(d.ls[k], 10));
+        const adjKeys = Object.keys(d.ls || {}).filter(k => /^xy-home-v2:screen-adj-(top|bottom|h|desk|shift|text|side|kbgap)$/.test(k) && parseInt(d.ls[k], 10));
         if (adjKeys.length) adjNote = '\n\n⚠ 这份备份带有屏幕适配偏移（' + adjKeys.length + ' 项，属于原来的那台设备）。换设备恢复后若出现错位/裁切，到 设置→屏幕适配微调 点「全部恢复默认」再重新拖，或用「屏幕适配诊断→一键修正」。';
       } catch (eA) {}
       window.openModal('确定导入数据？将覆盖当前所有数据，且无法恢复。', '', () => {
+        impLog('confirm:go');
         doImportGo(d);
       }, { noInput: true, staticText: summary + adjNote });
     }
@@ -1315,11 +1512,13 @@
       // 原实现直接 toast 拒绝，导致前缀被改过的备份（手动编辑/旧版 fork）无法导入。
       const allKeys = Object.keys(data.ls || {}).concat(Object.keys(data.idb || {}));
       if (!allKeys.length) {
+        impLog('reject:empty-backup');
         toast('备份文件是空的（无任何数据键），没有可导入的数据');
         return;
       }
       const firstColon = allKeys[0].indexOf(':');
       if (firstColon < 0) {
+        impLog('reject:key-format');
         toast('备份文件键格式异常（无冒号分隔），无法导入');
         return;
       }
@@ -1394,6 +1593,7 @@
   }
 
   function doImportGo(data) {
+    impLog('write:start idbKeys=' + Object.keys((data && data.idb) || {}).length + ' lsKeys=' + Object.keys((data && data.ls) || {}).length);
     // #814：导入＝整库替换（IDB 原子替换 + LS clear 重写）＋完成后整页刷新——与「清除本地数据」
     //（personalize.js __resetting 同款屏障）一样必须先落屏障：否则刷新触发的 beforeunload
     // flushSave（chat.js :954 既有闸）会把本会话内存里的**旧**聊天记录（含 chatConsolidate 收口）
@@ -1420,6 +1620,23 @@
     scrubMediaPool(data.idb);
     scrubMediaPool(data.ls);
 
+    // FIX 2026-09-29 #1390（续）：把落在 ls 段里的池键**搬进 idb 段**再走导入——而不是在原子事务之外补写。
+    // 为什么必须搬而不是补：① data.ls 含这把键会让下面 #118/#1359 的 retain 清单把它判成「备份已带、
+    // 无需保留」，于是 idbReplaceAll 那发单事务 clear 先把本机还能显示的活条目删掉；② 若只在事务之后的
+    // 非原子 idbFalls 链里补一次 idbSet，那一发返回 false 时图就真没了，收尾只剩一句「N 项未能存入
+    // IndexedDB」＝把数据丢在一句提示里。搬进 idb 段之后它进的是 pairs＝和其余大键同一发原子事务，
+    // 要么整包落成、要么原样不动（#814/#3.6.x 那条语义），失败路径复用的还是既有那一支。
+    // 只问「这一格是不是池键」这一个代码事实，零机型／零 UA 分支；顺序排在 scrubMediaPool 之后＝
+    // 旧「只备份文字」件里的空串池条目先被丢掉，再不会有脏值被搬进权威段。
+    const lsPoolKeys = Object.keys((data && data.ls) || {}).filter(k => MEDIA_POOL_KEY_RE.test(k));
+    if (lsPoolKeys.length) {
+      if (!data.idb || typeof data.idb !== 'object') { try { data.idb = {}; } catch (eI) {} }
+      lsPoolKeys.forEach(k => {
+        try { data.idb[k] = data.ls[k]; delete data.ls[k]; } catch (eM) {}
+      });
+      impLog('pool:from-ls=' + lsPoolKeys.length); // 非零才记：这一发是「用户手里那份文件是旧形状」的取证信号
+    }
+
     // ---- 1. 备份当前 localStorage 的 xy-home-v2 键（导入失败可回滚） ----
     let backup = null;
     try {
@@ -1435,6 +1652,7 @@
     // 再逐条 idbSet，清空与写入之间有几秒~几分钟无原子窗口，中途崩溃/杀进程会留下
     // 半空库，旧数据无法恢复。单事务失败自动回滚到事务前（旧数据完整保留），
     // 导入真正变成「要么全部替换、要么原样不动」。
+    let retainUnknownKey = ''; // #1359c：有键问不出＝未知 → 这一发中止，并把键名留给回执环与文案（不当「没有」）
     const idbRestored = new Promise((resolve) => {
       if (!data.idb || typeof data.idb !== 'object') { resolve(true); return; }
       const idbKeys = Object.keys(data.idb).filter(k => k.indexOf('xy-home-v2:') === 0 && k !== SNAPSHOT_KEY);
@@ -1453,8 +1671,11 @@
         try { Object.keys(data.ls || {}).forEach(k => { if (k.indexOf('xy-home-v2:') === 0) lsKeySet[k] = true; }); } catch (e) {}
         const backupKeySet = {};
         try { idbKeys.forEach(k => { backupKeySet[k] = true; }); } catch (e) {}
-        const retainStep = (window.idbListKeys && window.idbGetMany)
-          ? window.idbListKeys().then(function (curKeys) {
+        const havePorts = !!(window.idbListKeys && window.idbGetMany);
+        // #1359d：连「问一句」的口子都没有＝未知，绝不能按「无需保留」照常清库（同 #440 那一格的口径）
+        if (!havePorts) { retainUnknownKey = '(no-port)'; }
+        const retainStep = havePorts
+          ? window.idbListKeys().then(async function (curKeys) {
               // FIX 2026-09-14 #440 清单读不到（idbListKeys 严格版 null＝「未知」）绝不能按
               // 「无需保留」继续：保留清单是 #118 防 clear 丢数据的唯一防线，「只备份文字」
               // 备份不含媒体池键，此处放行＝idbReplaceAll clear 把整个媒体池抹掉＝全部图片
@@ -1470,16 +1691,17 @@
                   !backupKeySet[k] && !lsKeySet[k];
               });
               if (!retain.length) return [];
-              return window.idbGetMany(retain).then(function (map) {
-                const kept = [];
-                retain.forEach(function (k) {
-                  const v = map[k];
-                  if (v !== undefined && v !== null) kept.push({ k: k, v: v });
-                });
-                return kept;
+              return readRetainKeys(retain).then(function (r) {
+                if (r && r.abort) {
+                  retainUnknownKey = String(r.unknownKey || '');
+                  impLog('retain:unknown ' + retainUnknownKey.slice(0, 48));
+                } else {
+                  impLog('retain:kept=' + r.length + '/' + retain.length);
+                }
+                return r;
               }).catch(function () { return { abort: true }; });
             }).catch(function () { return { abort: true }; })
-          : Promise.resolve([]);
+          : Promise.resolve({ abort: true }); // #1359d：未知即中止（原因已由上面 havePorts 那格记进 retainUnknownKey）
         retainStep.then(function (kept) {
           if (kept && kept.abort) { resolve(false); return; } // #440 清单未知＝无法安全替换式导入 → 中止（原数据保留）
           const keptPairs = kept || [];
@@ -1517,28 +1739,32 @@
     function clearLs() {
       try {
         Object.keys(localStorage)
-          .filter(k => k.indexOf('xy-home-v2:') === 0)
+          // #1359f：导入回执环是【本机取证】、不是用户数据——导出两侧早就各自跳过它（#1272），
+          // 唯独导入这一发把它连同 xy-home-v2:* 一起清掉＝每次成功导入后「数据导入回执」必为空。
+          // 报障那张单写着「本机还没记录过数据导入动作」而用户明说导入过，根子就在这格。
+          .filter(k => k.indexOf('xy-home-v2:') === 0 && k !== IMPORT_LOG_KEY)
           .forEach(k => localStorage.removeItem(k));
       } catch (e) {}
     }
-    // 回滚：还原导入前的旧数据
-    function rollback() {
-      clearLs();
-      if (backup) {
-        try {
-          Object.keys(backup).forEach(k => localStorage.setItem(k, backup[k]));
-        } catch (e) {}
-      }
-    }
+    // 回滚逐条做在下面的兜底写入链里（#1210）：整包 rollback() 从来没有调用点，而「清空后写一半」
+    // 的真实出口是单键两条写路（LS／IDB 兜底）全断，故按键还原旧值，见 fallsBad 一段。
 
     idbRestored.then((idbOk) => {
+      impLog('write:idb=' + (!!idbOk ? 'ok' : 'fail'));
       // v3.6.x：IDB 原子替换失败 → 数据已由事务回滚保持原样，这里中止后续——
       // 不再继续写 localStorage，否则会出现「localStorage 新数据 + IndexedDB 旧数据」混合态
       if (!idbOk) {
         // #814：导入中止＝留在本会话继续用，撤屏障恢复卸载收口写（否则之后新消息在离页时不落盘）
         try { window.__resetting = false; } catch (e2) {}
         impHide();
-        toast('导入失败：大文件写入未成功，原有数据已保留，请重试');
+        // #1359c：问不出＝中止时这一发不能沿用「大文件写入未成功」——原数据其实没被写过，
+        // 真因是本机那一格太大/太慢这次确认不了，为防它被 clear 掉才停手（键名进回执环，不进文案）
+        if (retainUnknownKey) {
+          toast('导入已中止：本机有一项大文件这次没能读出来（多半是表情包／字卡这类几十 MB 的库），' +
+            '为防它被清掉，原有数据一字未动；等手机空闲时再试一次');
+        } else {
+          toast('导入失败：大文件写入未成功，原有数据已保留，请重试');
+        }
         return;
       }
       impShow('正在导入…', '正在写入设置与聊天记录', 62);
@@ -1608,22 +1834,47 @@
         }
       }
       // 等待 IDB 兜底写入全部完成后，再提示 + 刷新
+      // #1210：只报【确认落成】的件数/体积。原实现把「发起过写入的件数」idbFalls.length 当
+      // 「已存入 IndexedDB」说给用户，而 idbSet 的返回值只喂给一个从没被读过的 fallsOk——
+      // 存储繁忙/事务挂起时 idbSet 返回 false，界面照样是「N 项已存入 IndexedDB」＝假成功。
       let fallsOk = 0;
+      let fallsBytes = 0;
+      const fallsBad = [];
       let p = Promise.resolve();
       idbFalls.forEach(f => {
         p = p.then(() => (window.idbSet ? window.idbSet(f.k, f.v) : Promise.resolve(false)))
-          .then(ok => { if (ok) fallsOk++; });
+          .then(ok => {
+            if (ok) { fallsOk++; fallsBytes += byteLen(f.v); }
+            else fallsBad.push(f.k);
+          });
       });
       p.then(async () => {
         impShow('正在导入…', '写入完成，正在核对数据', 95);
+        // #1210：兜底也没落成的键＝新值既不在 LS 也不在 IDB，而上面 clearLs 已经把旧值清掉。
+        // 逐条回滚：还原导入前那份旧值（新值仍在用户手里的备份文件里，重导即可；旧值清掉就
+        // 找不回来了）。LS 多半仍是满的（这条键当初正是因为写不进 LS 才走兜底），那时把旧值
+        // 放回本会话内存缓存，至少不让页面当场读到空；刷新后仍缺，提示按「未还原」口径说。
+        let rolledBack = 0;
+        if (fallsBad.length && backup) {
+          fallsBad.forEach(k => {
+            const old = backup[k];
+            if (old === undefined || old === null) return;
+            try { localStorage.setItem(k, old); rolledBack++; } catch (e) {
+              try { if (window.idbMemoSet) window.idbMemoSet(k, old); } catch (e2) {}
+            }
+          });
+        }
         const parts = [];
         if (idbOk) parts.push('音乐/字卡/查岗等大文件已恢复');
         else if (data.idb && Object.keys(data.idb).length) parts.push('⚠ IndexedDB 恢复失败，字卡/音乐/查岗等大文件可能缺失，建议重新导入');
         if (chatMoved) parts.push('聊天记录已存入 IndexedDB（不占浏览器小存储）');
         if (writeFailed.length) parts.push(writeFailed.length + ' 项写入失败（存储空间满）');
-        if (idbFalls.length) {
-          const mb = (idbFalls.reduce((s, f) => s + byteLen(f.v), 0) / 1048576).toFixed(1);
-          parts.push('大文件 ' + idbFalls.length + ' 项（约 ' + mb + ' MB）已存入 IndexedDB，不占小存储');
+        if (fallsOk) {
+          const mb = (fallsBytes / 1048576).toFixed(1);
+          parts.push('大文件 ' + fallsOk + ' 项（约 ' + mb + ' MB）已存入 IndexedDB，不占小存储');
+        }
+        if (fallsBad.length) {
+          parts.push('⚠ ' + fallsBad.length + ' 项未能存入 IndexedDB' + (rolledBack ? '（其中 ' + rolledBack + ' 项已还原为导入前的旧数据）' : '（这些键导入前也没有留底）') + '，这部分新数据没导入成功，清出空间后用完整备份重新导入');
         }
         if (!parts.length) parts.push('导入成功');
         // v3.5.101：导入后核对关键数据是否真的恢复（避免"提示成功但数据缺失"）
@@ -1870,7 +2121,7 @@
     if (file) { chatAllImportRead(file); return; }
     // FIX 2026-09-18 #755：统一走 window.mochiFilePick（原实现 detached＋无 label＋accept 迟到）
     window.mochiFilePick({
-      id: 'mochi-chatall-import-pick', accept: '.json,application/json',
+      id: 'mochi-chatall-import-pick', accept: window.mochiDataPickAccept, // #1410：并集里补上 text/plain 与 octet-stream，窄串那两型灰显一并挡掉
       onFiles: (files) => {
         const f = files && files[0];
         if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -1887,6 +2138,12 @@
       // 各桌面 chat-msgs（含默认桌面旧顶层键 xy-home-v2:chat-msgs）
       const chatKeyRe = /^xy-home-v2:(?:chat-msgs|(?:default|c[0-9a-z]{5,}):chat-msgs)$/;
       const mediaKeyRe = /^xy-home-v2:media:/;
+      // FIX 2026-09-28 #1360：lsObj/idbObj 必须**先声明再用**——下面那段分块组装读的是它们，
+      // 声明在后就是 TDZ ReferenceError，而整段被外层 `catch (e) {}` 兜住＝分块备份的组装
+      // 静默不跑（无头实测：库里 900 条的分块桌面，恢复一份自带尾巴的备份之后屏上只剩 1 条、
+      // 块键被删光）。#1066 当年就是按这条理由把声明前置的，后来被并行批的回写打回过。
+      const lsObj = (data && typeof data.ls === 'object') ? data.ls : {};
+      const idbObj = (data && typeof data.idb === 'object') ? data.idb : {};
       // #722 分块格式备份：把各桌面的 chat-blk-idx + chat-blk-<seq> 组装回整包，以旧键形态
       // （<prefix>:chat-msgs）注入 idbObj——下游选择/预览/导入按旧键流转，零改动。缺任一块
       // ＝组装失败宁可不导（绝不导出半份历史）。
@@ -1906,16 +2163,25 @@
             full = full.concat(part);
           }
           const msgKey = prefix + ':chat-msgs';
-          const cur = idbObj[msgKey];
-          const curLen = typeof cur === 'string' ? cur.length : (Array.isArray(cur) ? -1 : -2);
-          if (cur === undefined || (curLen >= 0 && full.join('').length > curLen) || curLen === -1) idbObj[msgKey] = full;
-          try { if (lsObj[msgKey] === undefined) lsObj[msgKey] = full; } catch (e) {}
+          // ===== FIX 2026-09-28 #1360 备份恢复：分块拼出来的整本才是这一桌的全部历史
+          // 同一张文件里可能既有「blk-idx + 块键」又有一条 chat-msgs——在分块桌面上那条
+          // chat-msgs 只可能是 localStorage 的**有损尾巴快照**（整包键在 #722 落盘时已删，
+          // 导出的 LS 兜底循环把这条快照当同名键打包进文件）。旧尺子是「按那份字符串有多长比」：
+          // 把整本数组直接 join 起来对对象恒等于每条 "[object Object]"（15 字符），几千条也只有几
+          // 万字符，永远输给那条 2MB 的尾巴 ⇒ 尾巴赢 ⇒ 预览按尾巴报条数、导入把整桌历史写成
+          // 尾巴，而写入方随后把所有块键删光（无头实测：库里 900 条，恢复一份自带尾巴的备份
+          // 之后屏上 1 条、块键 0 把）＝用户口径的「刚备份完记录反而更少／被吞」。
+          // 尺子换成「这一桌到底有多少条」，两段一起对齐（提取规则 LS 段优先，只改 idb 段无效）。
+          const nOfRaw = (raw) => {
+            if (raw === undefined || raw === null) return -1;
+            try { const a = typeof raw === 'string' ? JSON.parse(raw) : raw; return Array.isArray(a) ? a.length : -1; } catch (e) { return -1; }
+          };
+          const curN = Math.max(nOfRaw(idbObj[msgKey]), nOfRaw(lsObj[msgKey]));
+          if (full.length >= curN) { idbObj[msgKey] = full; lsObj[msgKey] = full; }
         });
       } catch (e) {}
       // 提取规则：LS 段优先（导出的 ls 段里 chat-msgs 存的也是 IDB 权威值——见 runExport 的
-      // 权威键路由），IDB 段兜底同键
-      const lsObj = (data && typeof data.ls === 'object') ? data.ls : {};
-      const idbObj = (data && typeof data.idb === 'object') ? data.idb : {};
+      // 权威键路由），IDB 段兜底同键（lsObj/idbObj 已在上面为分块组装前置声明 #1360）
       const pickRaw = (k) => {
         if (lsObj[k] !== undefined) return { v: lsObj[k], from: 'ls' };
         if (idbObj[k] !== undefined) return { v: idbObj[k], from: 'idb' };
@@ -1968,6 +2234,7 @@
       preview.push('导入将覆盖对应桌面/群聊的全部聊天记录（不可恢复），其他数据不受影响。');
       if (!window.openModal) return;
       window.openModal('确认导入聊天记录？', '', () => {
+        impLog('chat:go 桌=' + chatKeys.length + ' 群=' + groupKeys.length + ' 媒体=' + mediaKeys.length + ' 单桌=' + (Array.isArray(singleMsgs) ? singleMsgs.length : 0)); // #1359e：这条通路此前在回执环里一行都不留（单桌那格按「是不是数组」取，标准备份那一型里 singleMsgs 恒 null＝不兜会把整个回调打死）
         importChatAllGo(chatKeys, groupKeys, singleMsgs, mediaKeys, pickRaw);
       }, { noInput: true, staticText: preview.join('\n') });
     };
@@ -2060,7 +2327,7 @@
         // ⚠ 本段曾被 4b052ae（#975 内存削峰）重写本文件时整块抹掉（当时哨兵 #1014a~h 保的是 bg-keep
         // 同名批次，未罩住这里）——再动这段请先读 tools/verify-1014-import-pick-native.mjs S7。
         pickOk: {
-          entry: 'row-import', accept: '',
+          entry: 'row-import', accept: window.mochiDataPickAccept,
           skipWhen: (m) => m === 'cancel',
           onFiles: (files, mode) => {
             const f = files && files[0];
@@ -2075,7 +2342,8 @@
         staticText: '完整备份：按备份文件恢复全部数据（会覆盖本机现有数据，含设置 / 字卡 / 朋友圈 / 音乐等）。\n' +
           '仅聊天记录：只恢复备份里的聊天记录——全部桌面联系人（含默认桌面）与群聊，' +
           '消息里引用到的图片/语音一并恢复；设置、字卡、朋友圈、音乐一律不动。\n' +
-          '两种都能读「导出数据」产生的备份文件；仅聊天记录还会识别单桌导出的聊天文件。'
+          '两种都能读「导出数据」产生的备份文件；仅聊天记录还会识别单桌导出的聊天文件。\n' +
+          '选文件时若弹出来的是相册，请在选择器里切到「文件／存储空间」再选——备份是 .json 文件。'
       });
     });
   }
@@ -2086,10 +2354,15 @@
     // 合成点击，改 position:fixed 移出屏幕而非 display:none 最稳）；
     // 不设 accept 过滤——部分国产 ROM 文件选择器对 accept 过滤有兼容 bug，
     // 选错文件会在导入时被校验提示「不是 mochi 导出的数据文件」
-    // FIX 2026-09-18 #755：改走统一入口（常驻挂文档 + label 原生激活兜底）；accept 仍刻意留空
-    //（上面的 ROM 兼容理由不变），另从「点按即 new 再 remove」改为常驻复用。
+    // FIX 2026-09-18 #755：改走统一入口（常驻挂文档 + label 原生激活兜底）。
+    // FIX 2026-09-29 #1410：accept 由「刻意留空」改成 window.mochiDataPickAccept 那份并集。上面
+    // 那条旧理由只挡住「灰显选不到」这一型，却放出另一型——空 accept＝不给任何类型线索，手机
+    // 浏览器/WebView 收到无线索的请求就按自家默认弹相册，用户根本走不到文件管理。并集里既没有
+    // 图片类型、也没有通配，两型同时挡掉（逐条说明见 js/device.js 那段）。选错文件的兜底口径不
+    // 变：仍由读取后的内容校验报「不是 mochi 导出的数据文件」。另从「点按即 new 再 remove」改为
+    // 常驻复用（#755 原意不变）。
     window.mochiFilePick({
-      id: 'mochi-backup-import-pick', accept: '',
+      id: 'mochi-backup-import-pick', accept: window.mochiDataPickAccept, // #1410
       onFiles: (files) => {
         const f = files && files[0];
         if (!f) { toast('没有取到文件，请再选一次'); return; }

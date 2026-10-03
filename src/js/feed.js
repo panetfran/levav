@@ -125,11 +125,36 @@
   //   媒体池观察器本就认令牌（#386），保留它不引入新形态。
   const SNAP_MEDIA_RE = /data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+-]*(?:=[^;,]*)?)*,[^\s"'<>]+/g;
   function stripMediaBody(s) { return String(s == null ? '' : s).replace(SNAP_MEDIA_RE, '[图片]'); }
+  // FIX 2026-09-26 #1219 快照「剥什么」要按载荷形态判，不能整组清空（vivo X200s/Edge 实报
+  //   「朋友圈用了贴纸功能，把贴纸贴在配图上则图片会消失、只剩贴纸」，多机型同报；零机型／
+  //   零 UA 分支＝判据只取「这一栏里存的是可自愈引用还是巨型载荷」这一个事实）：
+  //   ①配图侧：#1257 已把发布配图搬进媒体池、动态里只剩 44 字符的 @@m: 令牌（池里读得回真图），
+  //     旧写法 `c.imgs = []` 把令牌和 dataURL 同罪抹掉——于是这份剥图快照本身就成了「照片没了、
+  //     贴纸还在」的元凶本体：主键读空（大键不进 LS／#975 切后台释放内存副本／IDB 挂起）时
+  //     load() 唯一拿得到的就是它。#667 早就给正文内联图定了同一口径（SNAP_MEDIA_RE 只剥
+  //     data:image、保留令牌），这里把同一把尺子接到 imgs／stickers 两栏。
+  //   ②贴纸侧正相反：旧写法一个字没动，src 原样是 dataURL。实测（纯 HEAD 产物）一张 80KB 的
+  //     贴纸连贴 3 张就把主键从 316 推到 240,672 字符 > LS_BIG_LIMIT ⇒ xyStore.set 大键分支
+  //     把 LS 副本 removeItem 掉（动态整包变 IDB-only＝正好落进①的触发条件），同时快照里这一条
+  //     因单条超预算被裁剪成 "[]"（兜底层当场归零）。快照的定义是「只保文本＋可自愈引用」，
+  //     巨型载荷不分配图／贴纸都得剥。
+  function isSnapPayload(u) { return typeof u === 'string' && u.indexOf('data:') === 0; }
   // 剥图：动态/评论/回复里的图片 dataURL 换占位文本，头像清空（快照只保文本历史）
   function stripPostImg(p) {
     if (!p || typeof p !== 'object') return p;
     const c = Object.assign({}, p);
-    if (Array.isArray(c.imgs)) c.imgs = [];
+    if (Array.isArray(c.imgs)) c.imgs = c.imgs.filter(u => !isSnapPayload(u));
+    if (Array.isArray(c.stickers)) {
+      c.stickers = c.stickers.reduce(function (acc, s) {
+        if (!s || typeof s !== 'object') { acc.push(s); return acc; }
+        if (!isSnapPayload(s.src)) { acc.push(s); return acc; }
+        const s2 = Object.assign({}, s);
+        s2.src = '';
+        // 纯图片贴纸剥空后没有任何可显示形态（渲染端 src 空会回落到 ❤️＝说谎），这一格不写进快照
+        if (s2.emoji) acc.push(s2);
+        return acc;
+      }, []);
+    }
     c.authorAv = '';
     c.taAv = '';
     if (typeof c.content === 'string') {
@@ -361,7 +386,42 @@
   let feedAuthSeen = false;
   let feedAuthWritable = null;   // null=未探测；true=确认可写（权威键确实不存在）；false=权威仍在
   let feedAuthRetried = 0;       // 守卫拒写后的权威重读次数上限 2（间隔 10s，防病理存储下无限循环）
+  // FIX 2026-09-27 #1336 「联系人发的朋友圈没过一会儿就不见了」（EC-PAD01 SE 平板／Chrome 138 PWA，
+  //   用户注明其他机型同现；零机型／零 UA 分支＝判据只取「这一轮同步层交得出主键吗」一个事实）：
+  //   #187 那条守则问的是「本会话见过权威没有」，而会话内见过权威之后还会出事——#975/#1195e 在切后台
+  //   时按体积放掉 ≥256KB 大键的内存副本（那是 iOS/安卓内存压力下的正解，本批不动它），而 feed-posts
+  //   过 200KB 就被 LS 大键线剥走那份副本 ⇒ 回前台 `store.get(KEY)` 必然同步读空。旧代码把这次读空
+  //   当成「动态只剩剥图快照那些」：无头实测同一次会话内屏上 16 条→4 条，接一次最正常的点赞整包写回
+  //   ⇒ 库里 15 条抹成 3 条（写小的那一发同时删掉 __big-idx 条目，事后连旁证都不留＝诊断单一律正常）。
+  //   没有快照的那一族更直接：屏上 0 条＋空态宣告「还没有动态」，而库里 12 条好好躺着。
+  //   守则：见过权威之后同步层交不出主键＝读数残缺，不是数据没了——本次整包不写权威键（增量照旧
+  //   并入 feedPending 留在屏上），并按需回库里问一次；只有问出「库里确实没有」(idbHasKey=false)
+  //   才放开写，重建期不受影响。#187 那一条「会话还没见过权威」的路径一字未动。
+  let feedSyncCold = false;      // 本轮同步层交不出权威主键（见过权威之后读空＝内存副本被释放）
+  let feedColdAsking = false;    // 残缺期已发起的权威重读合流标记（同场只问一次）
+  function feedAskIdb() {
+    if (feedColdAsking || !window.idbGet) return;
+    feedColdAsking = true;
+    const settleCold = () => {
+      feedColdAsking = false;
+      // 问不出整包时用既有那把「键在不在」的尺子定性（与 #187 同一把）：确认库里没有＝真重建，放开写
+      if (!feedSyncCold || typeof window.idbHasKey !== 'function') return;
+      window.idbHasKey(uid + ':' + KEY).then(ok => { if (ok === false) feedSyncCold = false; }, () => {});
+    };
+    window.idbGet(uid + ':' + KEY).then(v => {
+      if (v && typeof v === 'string' && v.length > 2) feedSyncCold = false; // 库把整包交回来了
+      settleCold();
+      feedMergeFromIdb(v);   // 合并/重渲染/拒写重试一律走启动那条同款链，不另起第二套口径
+      try { render(); } catch (e) {}
+    }, () => { settleCold(); });
+  }
   function feedGuardWrite(raw) {
+    // #1336：残缺读数没有整包写回资格——先问库，本次增量并进 feedPending（load() 仍把它合在屏上）
+    if (feedSyncCold) {
+      try { feedPending = mergePosts(feedPending || [], feedMem || []); } catch (e) {}
+      feedAskIdb();
+      return Promise.resolve(false);
+    }
     if (feedAuthSeen || store.get(KEY) !== null) {
       try { store.set(KEY, raw); } catch (e) {}
       return Promise.resolve(true);
@@ -416,6 +476,29 @@
     (a || []).concat(b || []).forEach(s => { if (typeof s === 'string' && !seen[s]) { seen[s] = 1; out.push(s); } });
     return out;
   }
+  // FIX 2026-09-26 #1219 贴纸并集——旧写法没有这一栏的合并：Object.assign 让 ts 较大的一侧
+  //   整组盖掉另一侧。剥图快照的 stickers 与权威侧的 stickers 谁新谁赢＝快照那一侧可能带着
+  //   上一时刻的三张贴纸把 IDB 里「第四张刚贴的」整组抹掉，反过来也会让快照里被剥空的格子
+  //   盖掉完整载荷。按「同一格」认人（出生号＋落点＋emoji，刻意不含 src——src 正是会被剥的那一栏），
+  //   同格取「还带得回图的那一版」。
+  function stkKey(s) {
+    return (s.ts || 0) + '|' + (s.role || s.owner || '') + '|' + (s.x || 0) + '|' + (s.y || 0) + '|' + (s.emoji || '');
+  }
+  function unionStickers(a, b) {
+    if (!Array.isArray(a) && !Array.isArray(b)) return undefined;
+    const byKey = {};
+    const out = [];
+    [a, b].forEach(function (arr) {
+      (Array.isArray(arr) ? arr : []).forEach(function (s) {
+        if (!s || typeof s !== 'object') return;
+        const k = stkKey(s);
+        const prev = byKey[k];
+        if (!prev) { const o = Object.assign({}, s); byKey[k] = o; out.push(o); return; }
+        if (!prev.src && s.src) prev.src = s.src;   // 载荷择优：剥空的一侧不许盖掉带图的一侧
+      });
+    });
+    return out;
+  }
   function deepMergePost(a, b) {
     const newer = (b.ts || 0) >= (a.ts || 0) ? b : a;
     const older = newer === a ? b : a;
@@ -426,6 +509,8 @@
     const oMedia = hasMediaBody(older.content), nMedia = hasMediaBody(newer.content);
     if (oMedia !== nMedia ? oMedia : (older.content || '').length > (newer.content || '').length) out.content = older.content;
     out.imgs = (newer.imgs && newer.imgs.length) ? newer.imgs : (older.imgs || []);
+    const stkUnion = unionStickers(older.stickers, newer.stickers);
+    if (stkUnion) out.stickers = stkUnion;
     if (!out.authorAv && older.authorAv) out.authorAv = older.authorAv;
     if (!out.taAv && older.taAv) out.taAv = older.taAv;
     out.likes = unionStrArr(older.likes, newer.likes);
@@ -451,10 +536,23 @@
     // 原写法 `store.get(KEY) || '[]'` 在键缺失时返回空数组提前 return，快照兜底永不生效
     const raw = store.get(KEY);
     if (raw !== null) {
+      feedSyncCold = false; // 这一轮同步层交出了权威副本（含清空后的 '[]'）
       try {
         const a = JSON.parse(raw);
         if (Array.isArray(a)) list = a.map(normPost);
       } catch (e) {}
+    } else if (feedAuthSeen || (store.awaitingBigKey && store.awaitingBigKey(KEY))) {
+      // FIX 2026-09-27 #1336：本会话已经交出过一次整包，此刻却交不出——唯一可能是内存副本被切后台
+      //   释放（#975/#1195e），不是动态被删。旧注释说「模块底部 idbGet 会随后重渲染」只对启动那一轮
+      //   成立（那条链整场会话只跑一次），所以残缺期由这里按需问回来。
+      // FIX 2026-09-28 #1358e：判据补上数据层那把现成的尺（#1342 的 awaitingBigKey）——「本会话还
+      //   没见过权威」不等于「库里没有」。启动那一发 idbGet 没交出整包（慢内核／回填未完成就被点
+      //   进来）时，旧写法既不打残缺旗也不问库，于是拿一份交不出货的快照当面宣告「还没有动态」，
+      //   而同一条键几百毫秒后就能交出 20 条（OPPO Reno14／Edge 实报「朋友圈前一秒还有后一秒点进去
+      //   突然没了，没有刷新或者更新」；无头实测屏上 0 条＋空态、下一读 store＝20、库里 20 条完好）。
+      //   全新安装那一格不在名册也不在挂起名单 ⇒ awaitingBigKey 回 false ⇒ 空态照旧，不放新闸。
+      feedSyncCold = true;
+      feedAskIdb();
     }
     // v3.7.x：LS 主键缺失兜底——大列表只进 IDB（Edge 丢 IDB / LS 被清）时读剥图快照，
     // 文本+作者+时间保留；IDB 存活时模块底部 idbGet 会随后用完整数据重渲染
@@ -568,10 +666,158 @@
     feedWriteTimer = null;
     if (arr) { try { feedGuardWrite(JSON.stringify(arr)); scheduleSnap(arr); lastFeedWriteAt = performance.now(); } catch (e) {} }
   }
+  // FIX 2026-09-28 #1363 落盘前整包媒体归一——把「图片载荷必须先是可自愈引用」这条纪律收在一处闸
+  //   （OPPO Find X9／Edge 153 实报「朋友圈发的表情包消失，剩下那个贴纸；梦角朋友圈消失了几条发过的
+  //   朋友圈」，用户明说其他机型同现、不要覆盖式修补；零机型／零 UA 分支＝判据只取「这一格里存的是
+  //   巨型载荷还是内容寻址引用」一个事实）：
+  //   #1257 只给「我发布配图」、#1219 只给「贴纸」接了媒体池令牌化，其余每一个写入口（TA 自动发动态的
+  //   配图、评论/回复贴图、外部模块 feedAddPost、以及以后新增的任何一条）一直把整张 dataURL 原样塞进
+  //   主键。逐入口补正是用户说的「覆盖式修补」，而且实测证明这条路走不完——纯产物无头真跑（报障机同型：
+  //   Edge／standalone PWA／该页被系统回收 56 次），只让 TA 自己发 6 条带表情包 的动态：
+  //   ①主键 234,383B 越过 LS 大键线 200KB ⇒ localStorage 那份副本被 xyStore.set 主动剥掉（读数 lsLen=null），
+  //     于是「同步层交得出整包」这件事从此再也不成立；切后台那一次放掉内存副本，当场 store.get=NULL 而
+  //     __big-idx 证人写着 277,328B＝库明明好好的。
+  //   ②唯一兜底那一层（剥图快照）此刻成了屏幕的来源，而它里面 64 张表情包一张都不剩（snapLen 仅 1,306B
+  //     对 277,331B）＝用户所见「表情包消失、剩下那个贴纸」（配图栏被剥空就画 .feed-imgs-blank 那张底纸）；
+  //     快照又按 200KB 从新到旧裁剪，更早的动态整条不在兜底层里＝「梦角朋友圈消失了几条」。
+  //   ③这一发大值此后只靠一次异步 IDB 事务活着，而这台机每小时被系统回收好几次＝#1257 记过的老账
+  //     「未提交的 IDB 值随进程一起没了」；小键那一档则有 localStorage 同步落盘，回收碰不掉。
+  //   改法＝聊天那套已经入库验证过的同一模具（chat.js mediaNormalizePass / #186）：落盘这一处闸上整包扫
+  //   一遍，凡 ≥1024 的图片载荷一律换成 44 字符的 @@m:hash 引用（池里读得回真图），主键恒为小键 ⇒ ①②③
+  //   同时不再成立，#667「快照保留令牌」那条口径到这里才真正吃满（快照与权威同形）。存量一并自愈：
+  //   老动态里原样存着的 dataURL，下一轮落盘即换成令牌。
+  //   纪律照抄 #186：池确认落盘之后才让引用落库，写池失败整批回滚原件（绝不让令牌先进库、图体只在内存）；
+  //   <1024 的载荷媒体池本就不收（mochiMediaTokenize 那道闸门），保持内联＝原样，不更坏。
+  //   只动内存真相层 feedMem：它只由 save() 与非降级的 feedMergeFromIdb 抬起来（#667/#1336 的口径），
+  //   所以这一闸永远不会拿剥图快照那份残缺读数去改写权威键。
+  const FEED_TOK_PAYLOAD_RE = /data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+-]*(?:=[^;,]*)?)*,[^\s"'<>]+/g;
+  let _feedTokT = null, _feedTokBusy = false, _feedTokInPass = false;
+  // 每条动态按「内容形状签名」记账：签名没变＝这一格整场扫过（大库不逐趟重扫，#441/#496 长任务纪律），
+  //   签名变了＝有新评论/回复/贴纸/配图长进来（那些正是载荷的入口）→ 重新扫这一格。
+  //   刻意不用「扫过就永久跳过」的集合：实测那样会让后来贴进评论的那张图永远留在内联形态（本脚本 A2 抓到）。
+  const _feedTokSig = new WeakMap();
+  function feedTokSig(p) {
+    const cms = Array.isArray(p.comments) ? p.comments : [];
+    const stk = Array.isArray(p.stickers) ? p.stickers : [];
+    const imgs = Array.isArray(p.imgs) ? p.imgs : [];
+    let repN = 0, repLen = 0, cmtLen = 0;
+    for (let i = 0; i < cms.length; i++) {
+      const c = cms[i] || {};
+      cmtLen += String(c.content || '').length;
+      const rp = Array.isArray(c.replies) ? c.replies : [];
+      repN += rp.length;
+      for (let j = 0; j < rp.length; j++) repLen += String((rp[j] || {}).content || '').length;
+    }
+    return imgs.length + '|' + stk.length + '|' + cms.length + '|' + repN + '|' + String(p.content || '').length + '|' + cmtLen + '|' + repLen;
+  }
+  const _feedTokMemo = new Map();      // 载荷串 → 令牌（同一份表情包被 20 条动态引用也只哈希一次）
+  function scheduleFeedTokPass(delay) {
+    if (!window.mochiMediaTokenize || !window.mochiMediaFlush) return;
+    clearTimeout(_feedTokT);
+    _feedTokT = setTimeout(feedNormalizeMediaPass, delay || 1500);
+  }
+  async function feedNormalizeMediaPass() {
+    if (_feedTokBusy) { scheduleFeedTokPass(4000); return; }
+    if (!feedDbReady) { scheduleFeedTokPass(6000); return; }  // 权威还没交出来＝不改写，等下一轮
+    // 只认内存真相：手上没有整包就什么也不做（下一发 save()／启动合并会把它抬起来，届时再接上）。
+    //   刻意不在这儿调 feedAskIdb()——那条链自带一次整列表 render()，本批只是「换个存放位置」，
+    //   不该为它多打一次库读＋整列表重绘（邻族 verify-feed-comment-perf D3/E4 实测：定时器路径
+    //   的兄弟卡片 DOM 身份被这一次重绘打掉＝#496 局部刷新那条纪律被旁路）
+    if (!feedMem || feedMem.length === 0) { scheduleFeedTokPass(6000); return; }
+    const list = feedMem;
+    _feedTokBusy = true;
+    let changed = 0;
+    const rollback = [];               // [{o,p,v}]——写池失败时逐格退回原件
+    const touched = [];                // 本轮改过的动态，回滚时把形状签名抹掉好重试
+    let cur = null;
+    const mark = (p) => { if (p && cur !== p) { cur = p; touched.push(p); } };
+    async function tokSlot(holder, prop, p) {
+      if (!holder || typeof holder[prop] !== 'string' || holder[prop].length < 1024) return;
+      const raw = holder[prop];
+      if (raw.indexOf('data:') !== 0) return;
+      let t = _feedTokMemo.get(raw);
+      if (t === undefined) {
+        try { t = await window.mochiMediaTokenize(raw) || ''; } catch (e) { t = ''; }
+        if (_feedTokMemo.size > 600) _feedTokMemo.clear();
+        _feedTokMemo.set(raw, t);
+      }
+      if (!t || t === raw) return;
+      rollback.push({ o: holder, p: prop, v: raw });
+      holder[prop] = t; changed++; mark(p);
+    }
+    async function tokInStr(holder, prop, p) {
+      const s = holder && holder[prop];
+      if (typeof s !== 'string' || s.length < 1024 || s.indexOf('data:') < 0) return;
+      let out = s, n = 0;
+      const found = s.match(FEED_TOK_PAYLOAD_RE);
+      if (!found) return;
+      for (let i = 0; i < found.length; i++) {
+        const raw = found[i];
+        if (raw.length < 1024 || out.indexOf(raw) < 0) continue;
+        let t = _feedTokMemo.get(raw);
+        if (t === undefined) {
+          try { t = await window.mochiMediaTokenize(raw) || ''; } catch (e) { t = ''; }
+          if (_feedTokMemo.size > 600) _feedTokMemo.clear();
+          _feedTokMemo.set(raw, t);
+        }
+        if (!t) continue;
+        out = out.split(raw).join(t); n++;
+      }
+      if (!n || out === s) return;
+      rollback.push({ o: holder, p: prop, v: s });
+      holder[prop] = out; changed++; mark(p);
+    }
+    try {
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        if (!p || typeof p !== 'object') continue;
+        const sg = feedTokSig(p);
+        if (_feedTokSig.get(p) === sg) continue;   // 这一格形状没变＝整场扫过，不重扫（大库长任务纪律）
+        _feedTokSig.set(p, sg);
+        const imgs = Array.isArray(p.imgs) ? p.imgs : [];
+        for (let j = 0; j < imgs.length; j++) await tokSlot(imgs, j, p);
+        await tokInStr(p, 'content', p);
+        const stks = Array.isArray(p.stickers) ? p.stickers : [];
+        for (let j = 0; j < stks.length; j++) await tokSlot(stks[j], 'src', p);
+        const cms = Array.isArray(p.comments) ? p.comments : [];
+        for (let j = 0; j < cms.length; j++) {
+          await tokInStr(cms[j], 'content', p);
+          const rp = (cms[j] && Array.isArray(cms[j].replies)) ? cms[j].replies : [];
+          for (let k = 0; k < rp.length; k++) await tokInStr(rp[k], 'content', p);
+        }
+        await new Promise(r => setTimeout(r, 0)); // 整包扫描让出主线程（#441 大库冻结同款纪律）
+      }
+      if (!changed) return;
+      const okPool = await window.mochiMediaFlush(); // 池先落盘，引用后落盘（顺序不可反，#186）
+      if (okPool === false) {
+        for (let r = 0; r < rollback.length; r++) { try { rollback[r].o[rollback[r].p] = rollback[r].v; } catch (e) {} }
+        for (let r = 0; r < touched.length; r++) { try { _feedTokSig.delete(touched[r]); } catch (e) {} }
+        scheduleFeedTokPass(8000);
+        return;
+      }
+      // 整包在飞这几秒里可能易主（新评论/新动态经 load() 的并集抬成另一份数组）＝本轮作废：
+      //   绝不拿旧读数写回（#1336「自愈那一发不得顶掉排队中的新整包」同一条纪律；本批被邻族
+      //   verify-feed-comment-perf A5 实测抓到过一发：旧数组写回把刚落下的第二条评论顶掉了）
+      if (feedMem !== list) { scheduleFeedTokPass(1500); return; }
+      _feedTokInPass = true;
+      try { save(list); } finally { _feedTokInPass = false; }
+      // 刻意不重绘：这一发换的是「同一张图的存放位置」，屏幕上那张 img 的 src 早已解析成真图，
+      //   重绘反而会把兄弟卡片整列表换掉（邻族 verify-feed-comment-perf A3/D3/E4 实测：#496 局部
+      //   刷新那条 DOM 身份纪律被打破），下一次自然渲染自会按令牌走观察器解析。
+    } catch (e) {
+      for (let r = 0; r < rollback.length; r++) { try { rollback[r].o[rollback[r].p] = rollback[r].v; } catch (e2) {} }
+    } finally { _feedTokBusy = false; }
+  }
   function save(list) {
     const arr = list || [];
     // #496：内存真相立即生效（load() 不再重读持久层），落盘延后到空闲窗口
     feedMem = arr;
+    if (!_feedTokInPass) scheduleFeedTokPass(); // #1363：任何一写入口带进来的巨型载荷，都在这一处闸换回引用
+    // FIX 2026-09-27 #1336：残缺期这次整包没有写回资格，当场就把它并入既有的 feedPending——
+    //   只挂在延后落盘的 feedWritePending 上不够：自愈那一发是 feedMergeFromIdb，它按
+    //   base＋store.get＋feedPending 三方合流、算完就顶掉 feedMem，排在后面的那发根本不知道，
+    //   于是「新发的动态先落库、再被下一次普通点赞按 15 条的旧整包顶掉」（无头实测 16→15）。
+    if (feedSyncCold) { try { feedPending = mergePosts(feedPending || [], arr); } catch (e) {} }
     // v3.10.x：清理存量评论/回复的 authorAv（旧数据存了头像 dataURL，撑大主键 >200KB
     //   → 只进 IDB 不进 LS → Edge 丢 IDB 后评论丢失）。新评论经 stampAuthor 已不存。
     for (let i = 0; i < arr.length; i++) {
@@ -734,16 +980,29 @@
   }
   // 无重复抽取器：同一轮生成内不重复抽同一张卡（池子抽完一轮后重新洗牌再继续），
   // 修复小字卡池下同一条动态/评论连续重复同一张卡（如「爱你爱你爱你…」）
-  function makePicker(arr) {
+  // FIX 2026-09-28 #1356 荣耀畅玩40Plus(RKY-AN00)／夸克 10.18.6 实报「朋友圈还老是只发一个反复的文字
+  //   比如：1 1 1 1 1 1 1 或 1 2 1 2 1 2」＋「不要覆盖式修补、其他设备型号也有出现」：
+  //   makePicker 那句「池子抽完一轮后重新洗牌再继续」在池子只剩 1~2 张时是**空头承诺**——重洗回来的
+  //   还是同一张，于是「一轮不重复」变成「一轮全是重复」。诊断实锤这台机的文字桶只剩 1 张
+  //   （回复字卡池：池text=1 / kaomoji=493 / emoji=108 / 自定义字卡=515——515 张里 514 张是媒体/颜文字/
+  //   令牌形态被 #948 那四道守卫剔出文字池，#319 又把系统预设默认整体锁上），而生成器照「每条拼
+  //   minCardsPost~maxCardsPost（默认 4~15）张」的设定硬抽 ⇒ 同一张卡原样重复 4~15 遍＝用户所见。
+  //   判据零机型／零 UA：只取「这一轮还剩没有抽过的新卡」一个事实——noWrap 档抽干即返回 undefined，
+  //   调用方据此换桶或收笔，不再回头把同一张卡再发一遍。池子够深时（绝大多数设备）逐字行为不变。
+  function makePicker(arr, noWrap) {
     const a = arr.slice();
     let i = a.length;
+    let dealt = false; // 首发的 i=a.length 只是「还没洗过牌」的起点，不算抽过一张（i 的初值即旧语义）
     return function () {
       if (i >= a.length) {
+        // 已经发过一轮，再要就是回头重复同一张卡 ⇒ 交调用方决定换桶还是收笔
+        if (noWrap && dealt) return undefined;
         for (let j = a.length - 1; j > 0; j--) {
           const k = Math.floor(Math.random() * (j + 1));
           const t = a[j]; a[j] = a[k]; a[k] = t;
         }
         i = 0;
+        dealt = true;
       }
       return a[i++];
     };
@@ -758,30 +1017,49 @@
   //       imgP 为表情包+图片合并概率（评论/回复用「使用表情包概率」fd-image-prob）
   // v3.6.x：cid 指定用该联系人桌面的字卡（朋友圈 TA 评论/回复/动态都用所属桌面字卡）
   // v3.6.x：各分类字卡去重 + 无重复抽取（同轮不抽同一张卡），修复小池内容大量重复
+  // #1422（作者 2026-09-29）：TA 在朋友圈的点评与回复这两池原写死在本文件里（字卡库没有页面，
+  //   旧的跨分类搜索登记过 → 「搜得到、看不到、关不掉」）。现单一数据源在
+  //   DEFAULT_CARD_DATA.interact 的「朋友圈·TA的点评」「朋友圈·TA的回复」两组
+  //   （字卡库→系统预设字卡→其他互动功能字卡→互动回应），逐句开关 dc-off-interact:<文案>
+  //   与整组停用都在取用时生效；上面/下面的数组只留作数据缺失时的兜底，句子逐字未改。
+  function feedPresetLines(group, fallback) {
+    try { if (typeof window.getPresetGroupLines === 'function') return window.getPresetGroupLines(group, fallback); } catch (e) {}
+    return fallback.slice();
+  }
+  function feedFallbackPool() {
+    return uniqArr(feedPresetLines('朋友圈·TA的点评', TA_COMMENT_POOL).concat(feedPresetLines('朋友圈·TA的回复', TA_REPLY_POOL)));
+  }
   function genMixedCards(cfg, minN, maxN, opts, cid) {
     const o = opts || {};
     const pool = cardPool(cid);
-    const fb = uniqArr(TA_COMMENT_POOL.concat(TA_REPLY_POOL));
+    const fb = feedFallbackPool();
     const pick = {
-      image: makePicker(uniqArr(pool.image)),
-      sticker: makePicker(uniqArr(pool.sticker)),
-      si: makePicker(uniqArr(pool.sticker.concat(pool.image))),
-      emoji: makePicker(uniqArr(pool.emoji)),
-      kaomoji: makePicker(uniqArr(pool.kaomoji)),
-      text: makePicker(uniqArr(pool.text)),
-      fb: makePicker(fb)
+      image: makePicker(uniqArr(pool.image), true),
+      sticker: makePicker(uniqArr(pool.sticker), true),
+      si: makePicker(uniqArr(pool.sticker.concat(pool.image)), true),
+      emoji: makePicker(uniqArr(pool.emoji), true),
+      kaomoji: makePicker(uniqArr(pool.kaomoji), true),
+      text: makePicker(uniqArr(pool.text), true),
+      fb: makePicker(fb, true)
     };
-    const n = minN + Math.floor(Math.random() * Math.max(1, maxN - minN + 1));
+    // #1356：一轮要几张，取「设定要几张」与「这一轮一共有几张不重复的可给」的较小者——
+    //   池子只剩 1~2 张时不再把同一张卡原样铺满一条动态（＝用户所见「1 1 1 1」「1 2 1 2」）。
+    const want = minN + Math.floor(Math.random() * Math.max(1, maxN - minN + 1));
+    const room = uniqArr(pool.image.concat(pool.sticker, pool.emoji, pool.kaomoji, pool.text, fb)).length;
+    const n = Math.max(1, Math.min(want, room));
     const parts = [];
     for (let i = 0; i < n; i++) {
       const r = Math.random() * 100;
       let pushed = false;
-      if (o.imP > 0 && pool.image.length && r < o.imP) { parts.push(pick.image()); pushed = true; }
-      if (!pushed && o.stP > 0 && pool.sticker.length && r < o.stP) { parts.push(pick.sticker()); pushed = true; }
-      if (!pushed && o.imgP > 0 && (pool.sticker.length || pool.image.length) && r < o.imgP) { parts.push(pick.si()); pushed = true; }
-      if (!pushed && o.emoP > 0 && pool.emoji.length && r < o.emoP) { parts.push(pick.emoji()); pushed = true; }
-      if (!pushed && o.kaoP > 0 && pool.kaomoji.length && r < o.kaoP) { parts.push(pick.kaomoji()); pushed = true; }
-      if (!pushed) parts.push(pool.text.length ? pick.text() : pick.fb());
+      const take = (f) => { const v = f(); if (v === undefined) return false; parts.push(v); return true; };
+      if (o.imP > 0 && pool.image.length && r < o.imP && take(pick.image)) pushed = true;
+      if (!pushed && o.stP > 0 && pool.sticker.length && r < o.stP && take(pick.sticker)) pushed = true;
+      if (!pushed && o.imgP > 0 && (pool.sticker.length || pool.image.length) && r < o.imgP && take(pick.si)) pushed = true;
+      if (!pushed && o.emoP > 0 && pool.emoji.length && r < o.emoP && take(pick.emoji)) pushed = true;
+      if (!pushed && o.kaoP > 0 && pool.kaomoji.length && r < o.kaoP && take(pick.kaomoji)) pushed = true;
+      // 文字桶抽干后落到内置对话兜底池（与旧写法同一兜底语义：池里没有可读文字才用它），
+      // 两条腿都抽干＝这一轮真的没有新卡了，收笔（宁少拼一张，不把同一张卡重复两遍）
+      if (!pushed && !(take(pick.text) || take(pick.fb))) break;
     }
     // #1198 评论/回复里每两条字卡中间走「拼接符号」池（回复设置 → 朋友圈「拼接随机标点」，默认关
     // ＝仍用空格＝老样子）；符号池与聊天共用同一套（含内置「换行」），按【动态所属桌面】读设置。
@@ -794,25 +1072,29 @@
   // v3.6.x：各分类字卡去重 + 无重复抽取（同轮不抽同一张卡），修复小池内容大量重复
   function genPostContent(cfg, cid) {
     const pool = cardPool(cid);
-    const fb = uniqArr(TA_COMMENT_POOL.concat(TA_REPLY_POOL));
+    const fb = feedFallbackPool();
     const pick = {
-      image: makePicker(uniqArr(pool.image)),
-      sticker: makePicker(uniqArr(pool.sticker)),
-      emoji: makePicker(uniqArr(pool.emoji)),
-      kaomoji: makePicker(uniqArr(pool.kaomoji)),
-      text: makePicker(uniqArr(pool.text)),
-      fb: makePicker(fb)
+      image: makePicker(uniqArr(pool.image), true),
+      sticker: makePicker(uniqArr(pool.sticker), true),
+      emoji: makePicker(uniqArr(pool.emoji), true),
+      kaomoji: makePicker(uniqArr(pool.kaomoji), true),
+      text: makePicker(uniqArr(pool.text), true),
+      fb: makePicker(fb, true)
     };
-    const n = cfg.minCardsPost + Math.floor(Math.random() * Math.max(1, cfg.maxCardsPost - cfg.minCardsPost + 1));
+    // #1356：同 genMixedCards——要拼的张数不超过这一轮真正拿得出的不重复张数
+    const want = cfg.minCardsPost + Math.floor(Math.random() * Math.max(1, cfg.maxCardsPost - cfg.minCardsPost + 1));
+    const room = uniqArr(pool.image.concat(pool.sticker, pool.emoji, pool.kaomoji, pool.text, fb)).length;
+    const n = Math.max(1, Math.min(want, room));
     const textParts = [];
     const imgs = [];
     for (let i = 0; i < n; i++) {
       let pushed = false;
-      if (cfg.postImage > 0 && pool.image.length && Math.random() * 100 < cfg.postImage) { imgs.push(pick.image()); pushed = true; }
-      if (!pushed && cfg.postSticker > 0 && pool.sticker.length && Math.random() * 100 < cfg.postSticker) { imgs.push(pick.sticker()); pushed = true; }
-      if (!pushed && cfg.postEmoji > 0 && pool.emoji.length && Math.random() * 100 < cfg.postEmoji) { textParts.push(pick.emoji()); pushed = true; }
-      if (!pushed && cfg.postKaomoji > 0 && pool.kaomoji.length && Math.random() * 100 < cfg.postKaomoji) { textParts.push(pick.kaomoji()); pushed = true; }
-      if (!pushed) textParts.push(pool.text.length ? pick.text() : pick.fb());
+      const take = (f, to) => { const v = f(); if (v === undefined) return false; to.push(v); return true; };
+      if (cfg.postImage > 0 && pool.image.length && Math.random() * 100 < cfg.postImage && take(pick.image, imgs)) pushed = true;
+      if (!pushed && cfg.postSticker > 0 && pool.sticker.length && Math.random() * 100 < cfg.postSticker && take(pick.sticker, imgs)) pushed = true;
+      if (!pushed && cfg.postEmoji > 0 && pool.emoji.length && Math.random() * 100 < cfg.postEmoji && take(pick.emoji, textParts)) pushed = true;
+      if (!pushed && cfg.postKaomoji > 0 && pool.kaomoji.length && Math.random() * 100 < cfg.postKaomoji && take(pick.kaomoji, textParts)) pushed = true;
+      if (!pushed && !(take(pick.text, textParts) || take(pick.fb, textParts))) break;
     }
     // #1198 与评论/回复同一口径：TA 发动态的文字卡中间走「拼接符号」池（自家开关默认关＝原样空格）
     const rcf = window.replyCfgFor ? window.replyCfgFor(cid) : null;
@@ -832,7 +1114,9 @@
     // （mail.js renderBody 同款已生效模式）
     // v3.26.x：对齐 inlineBody——base64、svg 类非 base64 dataURL 与带前缀外链图都并入图片网格
     content = content.replace(/((?:sticker|image):)?(https?:\/\/[^\s"'<>]+|@@m:[0-9a-f]{32}|data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+-]*(?:=[^;,]*)?)*,[^\s"'<>]+)/g, (m, pre, u) => { if (u.indexOf('http') === 0 && pre !== 'sticker:' && pre !== 'image:') return m; imgs.push(u); return ' '; });
-    let html = inlineBody(content, (p.role || p.by) === 'me' ? '' : p.owner);
+    // #1406：正文单独一层（.feed-body）——长信折行只收这一块，配图区与展开按钮不受裁剪
+    const clamp = feedLongBody(content);
+    let html = '<div class="feed-body' + (clamp ? ' feed-clamp' : '') + '">' + inlineBody(content, (p.role || p.by) === 'me' ? '' : p.owner) + '</div>';
     // #845：配图区不再只跟配图走——纯文字动态贴过贴纸时也要画一张空白底纸（.feed-imgs-blank），
     // 否则贴纸存进了数据却没有任何承载层可显示（「那一行没有贴纸按钮」的连带缺陷）。
     const hasStickers = Array.isArray(p.stickers) && p.stickers.length > 0;
@@ -840,6 +1124,8 @@
       // #302：贴纸回复——贴纸绝对定位叠在配图区上（x/y 为区块百分比），随卡片一起局部刷新
       html += '<div class="feed-imgs' + (imgs.length ? '' : ' feed-imgs-blank') + '">' + imgs.map(u => '<img src="' + attrEsc(u) + '" alt="图片" loading="lazy">').join('') + feedStickersHtml(p) + '</div>';
     }
+    // #1406：被收起来的长文给一个展开入口（就地展开，不弹层、不跳页）
+    if (clamp) html += '<button class="feed-expand" type="button" data-expand="' + esc(p.id) + '">展开全文</button>';
     return html;
   }
   // #302 贴纸回复：配图上的贴纸层（仅贴过才有输出）；我贴的可点撤回
@@ -895,6 +1181,22 @@
     // 「使用表情包概率」fd-image-prob：每张卡出现表情包/图片的概率；颜文字/emoji 固定 15%
     return genMixedCards(c, 1, maxN, { imgP: c.imageProb, kaoP: 15, emoP: 15 }, cid);
   }
+  // #1485a：TA 生成内容前的「按桌面就绪」原语——非当前桌面的 cc-groups 是 IDB-only 大键
+  //   （>200KB 只进 IndexedDB+内存缓存，从不落 localStorage），启动回填不轮到非活跃桌面、
+  //   切后台又被 #1195e 按体积放掉内存副本；此刻 cardPool(cid) 同步读到的是空库，而
+  //   hydrateLibForCid 的取回是 fire-and-forget——旧写法「先发起取回、立刻读池」把「没读到」
+  //   当成「这个桌面没有字卡」，TA 发的动态/评论只剩默认字卡与兜底句（多联系人实报：
+  //   与 A 对话时 B 发的朋友圈反复只有颜文字，正常字卡一张不用；多机型同现，与设备无关）。
+  //   修法＝生成前先等取回落定（hydrateScope 内部：已有数据短路 / 健康连接确认无键短路 /
+  //   在飞复用，对真无字卡的桌面零开销），拿到库再抽卡。判据只认「cid 是不是当前桌面」，
+  //   零机型／零 UA 分支。cb 落定后同步跑，调用方自己兜 try。
+  function poolReadyFor(cid, cb) {
+    const cur = window.__activeCid || 'default';
+    if (cid === cur || !window.hydrateLibForCid) { cb(); return; }
+    try {
+      window.hydrateLibForCid(cid).then(function () { cb(); }, function () { cb(); });
+    } catch (e) { cb(); }
+  }
   // v3.5.57：TA 回应我的回复的回复池
   const TA_REPLY_POOL = ['哈哈，好呀', '那你呢？', '嗯嗯，说得对', '我记住啦', '跟你分享过的', '被你发现了', '那很好呀', '我也这么觉得'];
 
@@ -941,36 +1243,23 @@
         cover.style.backgroundImage = '';
         cover.classList.remove('has-bg');
       }
+      // #1311：封面「真·可点层」在渲染处幂等补挂＋按背景开关可命中性（定义与理由见下方 armCoverLayer）
+      armCoverLayer(cover, 'dev-feed-cover-tap', 'dev-feed-cover-bg', !!bg);
     }
   }
   // 压缩图片（最长边 800px，JPEG 0.82，避免撑爆 localStorage 配额）
+  // #1270：解码走统一解码闸（img-ingest.js）。这条是「没闸」那一派：800×0.82 的产物很
+  // 小，但旧链为了得到它先把用户相册里的 4800 万像素原图整幅解出来（iOS 上 ≈192MB 位图
+  // ＋一条 ≈10MB 的 base64 字符串），朋友圈发图/换封面＝一次白屏大退。现在先用文件头
+  // 算尺寸、超预算边解边缩，产物尺寸与画质口径（800px / JPEG 0.82）一字未动。
+  // FIX 2026-09-22 #1036：读图三条腿（FileReader onerror ＋ 20 秒解码看门狗 ＋ 失败统一
+  // 回调 null）随之内沉到闸里，闸没加载上时这里补最后一声，仍然不会静默。
   function compressImage(file, cb) {
-    // FIX 2026-09-22 #1036：读图三条腿收口——FileReader 补 onerror、解码加看门狗，
-    // 失败/超时统一回调 null（国产平板内核偶发解码不回调＝「选了图没反应」的原型，
-    // 与 chat-settings #813 系列同族，零机型分支）。
-    let done = false;
-    const once = (v) => { if (done) return; done = true; clearTimeout(timer); cb(v); };
-    const timer = setTimeout(() => { toast('图片读取超时，请重试'); once(null); }, 20000);
-    const reader = new FileReader();
-    reader.onerror = () => { toast('图片读取失败'); once(null); };
-    reader.onload = (ev) => {
-      const img = new Image();
-      img.onload = () => {
-        const max = 800;
-        let w = img.width, h = img.height;
-        if (Math.max(w, h) > max) {
-          const r = max / Math.max(w, h);
-          w = Math.round(w * r); h = Math.round(h * r);
-        }
-        const cv = document.createElement('canvas');
-        cv.width = w; cv.height = h;
-        cv.getContext('2d').drawImage(img, 0, 0, w, h);
-        once(cv.toDataURL('image/jpeg', 0.82));
-      };
-      img.onerror = () => { toast('图片读取失败'); once(null); };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
+    if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); cb(null); return; }
+    window.mochiImgIngest(file, { maxSide: 800, quality: 0.82, tag: 'feed-800' }).then((r) => {
+      if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '图片')); cb(null); return; }
+      cb(r.data);
+    });
   }
   // v3.5.63：联系人在朋友圈展示的昵称/头像/背景（可独立于聊天修改）
   // v3.6.x：多桌面——按当前桌面独立存储，回退全局旧键（老数据兼容）
@@ -1019,6 +1308,134 @@
       '<button class="feed-act feed-fav' + (faved ? ' faved' : '') + '" data-fav="' + p.id + '"><svg viewBox="0 0 24 24" fill="' + (faved ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><path d="M12 2l2.4 5 5.6.8-4 4 .9 5.6-4.9-2.6-4.9 2.6.9-5.6-4-4 5.6-.8z"/></svg>收藏</button>' +
       '</div>' + likes + commentsHtmlFor(p, name) + '</div>';
   }
+  // ==== #1406 朋友圈「本周＋按月」翻页折叠（作者直派：动态与长信堆在一起太杂，默认只显示本周，
+  //   其余按月收起来手动切）。判据只取 ts、零机型／零 UA 分支：一条动态恰好属于一个桶——
+  //   本周＝本自然周（周一 00:00 起），更早的按「年-月」归桶，两桶不重叠所以不会同一条出现两次。
+  //   选中的那一页只活在内存里：刷新/重进桌面回本周，不会哪天打开发现自己还停在三个月前。
+  const FEED_WEEK_LABEL = '本周';
+  const FEED_CLAMP_LINES = 6, FEED_CLAMP_CHARS = 120;
+  let feedRangeKey = 'week';
+  let feedRangeBuckets = [];
+  // 当前这一页里的动态——「查看更早」要在本页内增量接，不能拿全量列表的尾数去接
+  let feedMainPosts = [];
+  // #1406：跨页定位只认「主列表里那一个节点」。feedPostEl 在全部朋友圈页收着时按 document 全局找，
+  //   而那一页的 #feed-all-list 平时也被预渲染着（#785 那条补渲路径，见 feedAllCid 初值）＝同名卡片
+  //   有两份；翻成本周/按月之后主列表一屏只剩几十条，拿 document 作用域跳旧动态就会命中藏在隐藏页
+  //   里的那一份——闪一下高亮，用户屏幕上什么都没发生。
+  function feedMainPostEl(pid) {
+    const l = document.getElementById('feed-list');
+    return l ? l.querySelector('[id="feed-post-' + pid + '"]') : null;
+  }
+  function feedWeekStart(now) {
+    const d = new Date(now);
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // getDay() 0＝周日，把周一当一周的第一天
+    return d.getTime();
+  }
+  function feedMonthKeyOf(ts) {
+    const d = new Date(ts);
+    return d.getFullYear() + '-' + (d.getMonth() + 1);
+  }
+  // 这条动态落在哪一页：回忆闪回／通知跳转要先切到那一页，节点才在 DOM 里
+  function feedBucketKeyFor(ts) {
+    const t = Number(ts) || 0;
+    if (!t) return 'none'; // #1416：没有 ts 的老动态不猜日期（下面分桶同口径，归「更早」）
+    return t >= feedWeekStart(Date.now()) ? 'week' : feedMonthKeyOf(t);
+  }
+  function feedBuckets(posts) {
+    const ws = feedWeekStart(Date.now());
+    const nowY = new Date().getFullYear();
+    const week = [];
+    const months = {};
+    for (let i = 0; i < posts.length; i++) {
+      const p = posts[i];
+      // FIX 2026-09-29 #1416：缺 ts 的历史动态原来一律算成 0 ⇒ 落进 feedMonthKeyOf(0) 那个桶，
+      //   组标题直书「1970年1月」＝拿默认值冒充日期（同批 idb.js 的 mochiHistFold 对同一事实的
+      //   口径是「不猜日期、归『更早』」）。判据只问「这条到底带没带 ts」，带了才换算年月。
+      const ts = Number(p && p.ts) || 0;
+      if (ts && ts >= ws) { week.push(p); continue; }
+      const k = ts ? feedMonthKeyOf(ts) : 'none';
+      if (!months[k]) {
+        const d = ts ? new Date(ts) : null;
+        months[k] = { key: k, y: d ? d.getFullYear() : 0, m: d ? d.getMonth() + 1 : 0, unknown: !d, items: [] };
+      }
+      months[k].items.push(p);
+    }
+    const out = [{ key: 'week', label: FEED_WEEK_LABEL, items: week }];
+    const keys = Object.keys(months);
+    keys.sort((a, b) => (months[b].y - months[a].y) || (months[b].m - months[a].m));
+    for (let i = 0; i < keys.length; i++) {
+      const b = months[keys[i]];
+      out.push({ key: b.key, items: b.items, label: b.unknown ? '更早' : (b.y === nowY ? '' : b.y + '年') + b.m + '月' });
+    }
+    return out;
+  }
+  // 长文折叠判据只看剥掉配图之后的正文（超行或超字就收进 6 行）——不量 DOM＝渲染期零二次布局
+  function feedLongBody(s) {
+    const str = String(s || '');
+    if (str.length > FEED_CLAMP_CHARS) return true;
+    let lines = 1;
+    for (let i = 0; i < str.length; i++) {
+      if (str.charCodeAt(i) !== 10) continue;
+      lines++;
+      if (lines > FEED_CLAMP_LINES) return true;
+    }
+    return false;
+  }
+  function feedSetRange(key) {
+    if (!key || key === feedRangeKey) return;
+    feedRangeKey = key;
+    render();
+    const sc = document.querySelector('#page-feed .cal-scroll');
+    if (sc) sc.scrollTop = 0; // 换页从本页第一行看起，别留着上一页的滚动深度
+  }
+  // 翻页条由 JS 常驻造出来（不进 template.html＝那是别的会话在途的文件）：插在 #feed-list 之前，
+  // 一个委托监听管到底，胶囊每次随列表重绘。
+  function feedRangeBar() {
+    const listEl = document.getElementById('feed-list');
+    if (!listEl || !listEl.parentNode) return null;
+    let bar = document.getElementById('feed-range-bar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'feed-range-bar';
+      bar.className = 'feed-range-bar glass';
+      listEl.parentNode.insertBefore(bar, listEl);
+      bar.addEventListener('click', (e) => {
+        if (!e.target || !e.target.closest) return;
+        const pill = e.target.closest('[data-range]');
+        if (pill) { feedSetRange(pill.getAttribute('data-range')); return; }
+        const nav = e.target.closest('[data-range-nav]');
+        if (!nav || nav.disabled) return;
+        const step = nav.getAttribute('data-range-nav') === 'older' ? 1 : -1;
+        let idx = -1;
+        for (let i = 0; i < feedRangeBuckets.length; i++) { if (feedRangeBuckets[i].key === feedRangeKey) { idx = i; break; } }
+        if (idx < 0) return;
+        const next = Math.min(feedRangeBuckets.length - 1, Math.max(0, idx + step));
+        if (next !== idx) feedSetRange(feedRangeBuckets[next].key);
+      });
+    }
+    return bar;
+  }
+  function feedRenderRangeBar(buckets) {
+    feedRangeBuckets = buckets;
+    const bar = feedRangeBar();
+    if (!bar) return;
+    // 只剩一页（动态全落在本周）＝没有可翻的对象，连条都不画，不留一条空骨架
+    if (buckets.length <= 1) { bar.hidden = true; bar.innerHTML = ''; return; }
+    let active = 0;
+    for (let i = 0; i < buckets.length; i++) { if (buckets[i].key === feedRangeKey) { active = i; break; } }
+    const nav = (dir) => '<button class="feed-range-nav" type="button" data-range-nav="' + (dir < 0 ? 'newer' : 'older') + '"' +
+      (dir < 0 ? (active <= 0 ? ' disabled' : '') : (active >= buckets.length - 1 ? ' disabled' : '')) +
+      ' title="' + (dir < 0 ? '更新' : '更早') + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="' + (dir < 0 ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6') + '"/></svg></button>';
+    bar.innerHTML = nav(-1) + '<div class="feed-range-pills">' + buckets.map((b, i) =>
+      '<button class="feed-range-pill' + (i === active ? ' on' : '') + '" type="button" data-range="' + esc(b.key) + '">' +
+      esc(b.label) + '<span class="feed-range-n">' + b.items.length + '</span></button>'
+    ).join('') + '</div>' + nav(1);
+    const wrap = bar.querySelector('.feed-range-pills');
+    const on = bar.querySelector('.feed-range-pill.on');
+    // 选中的那颗滚进视野中间（月份一多会被挤到看不见）
+    if (wrap && on) { try { wrap.scrollLeft = on.offsetLeft - (wrap.clientWidth - on.clientWidth) / 2; } catch (e) {} }
+  }
   // 渲染动态列表
   // v3.12.x：列表窗口化渲染——TA 自动发帖每天累积、动态含 dataURL 配图，原实现每次进页把
   // 全部动态一次性 innerHTML 进列表（挂机数月可达数百上千条），整页 <img> 位图解码的内存
@@ -1036,10 +1453,11 @@
   //   反复进出朋友圈不再白付一次解析；数据一变签名就变（点赞换人、来新评论、发新动态、
   //   切联系人、点掉回忆卡都会变），绝不会拿旧 DOM 当新数据。
   let feedRenderSig = '';
-  function feedRenderSignature(posts, shown, name, memId) {
+  function feedRenderSignature(posts, shown, name, memId, rangeKey) {
     // #785：签名并入加载闸门位——回填中/回填完两次的空列表必须算两次不同渲染，
     // 否则 sig 早退会把「还在读取」占位一直留在屏上（真就绪后也不改口）。
-    const parts = [window.activePrefix(), window.mochiDataPending ? (window.mochiDataPending() ? 'L' : 'F') : 'F', shown, name, memId, posts.length];
+    // #1406：再并入「当前翻到的是哪一页」——两页各自恰好都没有动态时也必须算两次不同渲染。
+    const parts = [window.activePrefix(), window.mochiDataPending ? (window.mochiDataPending() ? 'L' : 'F') : 'F', shown, name, memId, rangeKey, posts.length];
     for (let i = 0; i < shown; i++) {
       const p = posts[i];
       if (!p) { parts.push('-'); continue; }
@@ -1058,7 +1476,8 @@
     if (!moreBtn) return;
     moreBtn.addEventListener('click', () => {
       const isAll = listEl.id === 'feed-all-list';
-      let posts = feedSortedAll();
+      // #1406：主列表的「查看更早」在**当前这一页**（本周／某月）内增量；全部朋友圈页仍是全量倒序
+      let posts = isAll ? feedSortedAll() : feedMainPosts;
       if (isAll) posts = posts.filter(p => (p.owner || 'default') === feedAllCid);
       const shown = isAll ? feedShownAll : feedShownMain;
       const end = Math.min(posts.length, shown + FEED_LOAD_STEP);
@@ -1083,27 +1502,40 @@
     });
   }
   function feedSortedAll() { return load().slice().sort((a, b) => b.ts - a.ts); }
-  function render() {
+  function render(keepShown) {
     renderCover();
     const listEl = document.getElementById('feed-list');
     if (!listEl) return;
     const posts = feedSortedAll();
-    feedShownMain = Math.min(posts.length, FEED_RENDER_MAX);
+    // #1406：只画选中的那一页（本周或某个月），其余月份折在翻页条里手动切
+    const buckets = feedBuckets(posts);
+    let bucket = buckets[0];
+    for (let i = 0; i < buckets.length; i++) { if (buckets[i].key === feedRangeKey) { bucket = buckets[i]; break; } }
+    feedRangeKey = bucket.key; // 翻到的那个月被删空了就回第一页（本周），不留悬空选择
+    feedMainPosts = bucket.items;
+    // keepShown＝定位某条动态时把本页窗口临时拉到那条（parseInt 防事件对象混进来）
+    const wantShown = Math.max(FEED_RENDER_MAX, parseInt(keepShown, 10) || 0);
+    feedShownMain = Math.min(feedMainPosts.length, wantShown);
     const name = partnerName();
     // #302：回忆闪回——那年今天的动态以记忆卡形式置顶（今日点 ✕ 后当天不再出现）
+    // #1406：闪回卡只挂最新那一页（本周）——它指的是「N 年前的今天」，跟着每个月重复画没意义
     const memPost = feedMemoryPost();
-    const memShown = !!(memPost && !feedMemDismissed());
+    const memShown = !!(memPost && !feedMemDismissed()) && bucket.key === 'week';
     const memHtml = memShown ? feedMemBannerHtml(memPost) : '';
     // FIX 2026-09-17 #669 内容与上次渲染完全一致时跳过整包重建（见 feedRenderSignature 注释；
     //   反复点桌面图标进朋友圈是主要受益路径，避免每次都重新解析数 MB 标记）
-    const sig = feedRenderSignature(posts, feedShownMain, name, memShown ? memPost.id : '');
+    const sig = feedRenderSignature(feedMainPosts, feedShownMain, name, memShown ? memPost.id : '', bucket.label);
     if (sig === feedRenderSig && listEl.firstChild) return;
-    listEl.innerHTML = memHtml + (posts.length
-      ? posts.slice(0, feedShownMain).map(p => postCardHtml(p, name)).join('') +
-        (posts.length > feedShownMain ? feedMoreBtnHtml(posts.length - feedShownMain) : '')
-      : ((window.mochiDataPending && window.mochiDataPending())
-        ? window.mochiLoadingHtml('朋友圈内容')
-        : '<div class="ta-empty">还没有动态，TA 会不定期分享生活<br><button class="memo-send-btn" id="feed-empty-pub" style="margin-top:8px">我来发第一条</button></div>'));
+    listEl.innerHTML = memHtml + (feedMainPosts.length
+      ? feedMainPosts.slice(0, feedShownMain).map(p => postCardHtml(p, name)).join('') +
+        (feedMainPosts.length > feedShownMain ? feedMoreBtnHtml(feedMainPosts.length - feedShownMain) : '')
+      : (posts.length
+        // 这一页空、别的页有＝说「还没有动态」是谎，报清楚空的是哪一页，并指一条能立刻走通的出路
+        ? '<div class="ta-empty">' + esc(bucket.label) + '还没有动态<br><span style="font-size:12px">点上面那条胶囊翻更早的月份</span></div>'
+        : ((feedSyncCold || (window.mochiDataPending && window.mochiDataPending()))
+          ? window.mochiLoadingHtml('朋友圈内容')
+          : '<div class="ta-empty">还没有动态，TA 会不定期分享生活<br><button class="memo-send-btn" id="feed-empty-pub" style="margin-top:8px">我来发第一条</button></div>')));
+    feedRenderRangeBar(buckets);
     feedRenderSig = sig;
     const clearBtn = document.getElementById('feed-head-clear');
     if (clearBtn) clearBtn.hidden = !posts.length;
@@ -1558,20 +1990,29 @@
     const timer = setInterval(() => { if (!box.isConnected) feedCancelPickSticker(); }, 250);
     feedPickCtx = { box, onPick, hint, timer, blank: made.blank };
   }
-  // 我贴一张：每条动态上限 5 张；贴完 TA 有概率（评论回应概率同源）回贴一张并进通知
+  // 我贴一张：每条动态不限张数（2026-09-30 作者直派拆除旧 5 张帽＝#1479；#1219 后图片贴纸写入接媒体池令牌化，多张不再顶爆权威键）；贴完 TA 有概率（评论回应概率同源）回贴一张并进通知
+  // FIX 2026-09-26 #1219 贴纸载荷与配图同罪同罚：#1257 只给「发布配图」接了媒体池令牌化，
+  //   贴纸这一路一直把整张 dataURL 原样塞进 post.stickers[].src。于是一屏贴纸就把权威键
+  //   feed-posts 顶过 200KB 大键线（LS 副本被剥掉、只剩 IDB），而剥图快照又会把配图那一栏
+  //   清空（见 stripPostImg #1219）——两个方向同时坏：快照兜底时「照片消失、贴纸还在」，
+  //   快照自己也因单条超预算被裁成 "[]"（实测读数 snapLen=2＝LS 侧最后一层兜底当场归零）。
+  //   修法＝复用发布那把尺子（feedTokImgs：池落盘成功才认令牌，失败原样退回 dataURL＝旧行为，
+  //   不更坏），差别只在「点照片落位」这一发要即时可见，所以先按内联上屏、池确认后就地把引
+  //   换成令牌（见 feedStickerTokUpgrade）。
   function addFeedSticker(pid, st) {
     const list = load();
     const p = list.find(x => x.id === pid);
     if (!p) { toast('这条动态不存在了'); return; }
     p.stickers = Array.isArray(p.stickers) ? p.stickers : [];
-    if (p.stickers.length >= 5) { toast('这条动态上贴纸够多啦（最多 5 张）'); return; }
     // v3.36.x：位置自定义——st 带 x/y（点照片选位置的落点）就用它，否则随机
     const pos = (st && Number.isFinite(Number(st.x)) && Number.isFinite(Number(st.y)))
       ? { x: Math.min(92, Math.max(0, Math.round(Number(st.x)))), y: Math.min(92, Math.max(0, Math.round(Number(st.y)))) }
       : feedRandStickerPos();
-    p.stickers.push({ src: st.src || '', emoji: st.emoji || '', x: pos.x, y: pos.y, ts: Date.now(), role: 'me', owner: 'me', authorName: feedUserName() });
+    const rec = { src: (st && st.src) || '', emoji: (st && st.emoji) || '', x: pos.x, y: pos.y, ts: Date.now(), role: 'me', owner: 'me', authorName: feedUserName() };
+    p.stickers.push(rec);
     save(list);
     refreshPostCard(pid);
+    feedStickerTokUpgrade(pid, rec);
     const cid = p.owner || 'default';
     const cfg = feedCfgFor(cid);
     if (Math.random() * 100 < cfg.commentProb) {
@@ -1580,16 +2021,34 @@
         const p2 = l2.find(x => x.id === pid);
         if (!p2) return;
         p2.stickers = Array.isArray(p2.stickers) ? p2.stickers : [];
-        if (p2.stickers.length >= 5) return;
         const taSt = feedTaPickSticker();
         const pos2 = feedRandStickerPos();
         const nm = p2.taName || taFeedNameFor(cid);
-        p2.stickers.push({ src: taSt.src || '', emoji: taSt.emoji || '', x: pos2.x, y: pos2.y, ts: Date.now(), role: 'ta', owner: cid, authorName: nm });
+        const rec2 = { src: taSt.src || '', emoji: taSt.emoji || '', x: pos2.x, y: pos2.y, ts: Date.now(), role: 'ta', owner: cid, authorName: nm };
+        p2.stickers.push(rec2);
         save(l2);
         refreshPostCard(pid);
+        feedStickerTokUpgrade(pid, rec2);
         addNotice('comment', pid, nm + ' 在配图上贴了一张贴纸', cid);
       }, (cfg.commentSpeedMin + Math.random() * Math.max(1, cfg.commentSpeedMax - cfg.commentSpeedMin)) * 1000);
     }
+  }
+  // #1219 「先上屏、后换令牌」：feedMem 持有同一批对象，池确认落盘后就地改 src，下一次
+  //   stringify（#496 的 ≥2.5s 合并写窗口）自然带上令牌；这一格若在此期间被撤回／改贴
+  //   （rec.src 已不是当初那份内联载荷）就什么都不做，绝不拿旧回执动新数据。
+  function feedStickerTokUpgrade(pid, rec) {
+    if (!rec || !isSnapPayload(rec.src)) return;
+    const inline = rec.src;
+    feedTokImgs([inline]).then(function (tk) {
+      const t = tk && tk[0];
+      if (!t || t === inline || rec.src !== inline) return;
+      rec.src = t;
+      try {
+        const l = load();
+        const p = l.find(function (x) { return x.id === pid; });
+        if (p) { save(l); refreshPostCard(pid); }
+      } catch (e) {}
+    }).catch(function () {});
   }
   function feedTaPickSticker() {
     const saved = comStickerTab;
@@ -1641,14 +2100,17 @@
   }
   // 点击回忆卡：定位到那条动态并高亮；「查看更早」窗口没渲染到就扩窗重渲染后再定位
   function revealFeedPost(pid) {
-    const posts = feedSortedAll();
+    const all = feedSortedAll();
+    const hit = all.find(p => p.id === pid);
+    if (!hit) return;
+    // #1406：闪回的那条必然往回翻年份＝折在某个月份页里，先切到那一页节点才存在
+    feedRangeKey = feedBucketKeyFor(hit.ts);
+    render();
+    const posts = feedMainPosts;
     const idx = posts.findIndex(p => p.id === pid);
     if (idx < 0) return;
-    if (idx >= feedShownMain) {
-      feedShownMain = Math.min(posts.length, idx + 20);
-      render();
-    }
-    const el = document.getElementById('feed-post-' + pid);
+    if (idx >= feedShownMain) render(idx + 20);
+    const el = feedMainPostEl(pid); // #1406：只在主列表里找，别命中隐藏的同名卡片
     if (!el) return;
     try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { try { el.scrollIntoView(); } catch (e2) {} }
     el.classList.add('feed-hl');
@@ -1697,6 +2159,15 @@
     listEl.querySelectorAll('.feed-del').forEach(b => b.addEventListener('click', (e) => {
       e.stopPropagation();
       deletePostConfirm(b.dataset.id);
+    }));
+    // #1406：长文「展开全文／收起」——就地改类名与按钮文字，不重建卡片、不碰数据
+    listEl.querySelectorAll('.feed-expand').forEach(b => b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const body = b.parentNode ? b.parentNode.querySelector('.feed-body') : null;
+      if (!body) return;
+      const clamped = body.classList.toggle('feed-clamp');
+      body.classList.toggle('feed-open', !clamped);
+      b.textContent = clamped ? '展开全文' : '收起';
     }));
     // 点赞：我点赞后 TA 有概率回赞
     listEl.querySelectorAll('.feed-act[data-like]').forEach(b => b.addEventListener('click', () => {
@@ -1898,23 +2369,12 @@ function hideCommentBar() {
   if (panel) panel.hidden = true;
 }
 // v3.5.56：评论内容支持 dataURL 图片（压缩 240px，同字卡库表情包规格）
-function compressCommentImg(dataUrl, maxSide) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
-        const c = document.createElement('canvas');
-        c.width = w; c.height = h;
-        c.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(c.toDataURL('image/png'));
-      } catch (e) { resolve(dataUrl); }
-    };
-    img.onerror = () => resolve(dataUrl);
-    img.src = dataUrl;
-  });
+// #1270：评论配图走同一道闸（PNG 口径未动）。旧实现在解码失败/画布异常时 `resolve(dataUrl)`
+// ＝把用户相册里的原图整张存进评论——48MP 原图进库后每次渲染再整幅解码，就是「发完图之后
+// 越用越卡」的那份存量。现在失败一律给 null 由调用方提示，绝不回退存原图。
+function compressCommentImg(src, maxSide) {
+  if (!window.mochiImgCompressTo) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return Promise.resolve(null); }
+  return window.mochiImgCompressTo(src, { maxSide: maxSide, mime: 'image/png', tag: 'feed-cmt' });
 }
 // 表情包选择半框（v3.5.70 完全复刻聊天表情面板：双 tab「TA 的表情包/我的表情包」+ 顶部分组栏 + 4 列网格）
 let comStickerPanel = null;
@@ -2159,6 +2619,8 @@ function submitComment() {
     if (Math.random() * 100 < tcfg.replyProb) {
       const cfg = tcfg;
       setTimeout(() => {
+        // #1485a：tcOwner 非当前桌面时先等该桌面字卡大键取回落定再生成（详见 poolReadyFor 注释）
+        poolReadyFor(tcOwner, function () { try {
         const list2 = load();
         const p2 = list2.find(x => x.id === pid);
         if (!p2 || !p2.comments || !p2.comments[replyCi]) return;
@@ -2177,6 +2639,7 @@ function submitComment() {
         refreshPostCard(pid);
         // v3.11.x：通知带评论/回复定位（点击直接闪到这条回复）
         addNotice('comment', p2.id, taFeedNameFor(tcOwner) + ' 回复了你：' + noticeTextClean(replyText), tcOwner, { ci: replyCi, ri: replies.length - 1 });
+        } catch (eR) {} });
       }, (cfg.replySpeedMin + Math.random() * Math.max(1, cfg.replySpeedMax - cfg.replySpeedMin)) * 1000);
     }
     return;
@@ -2194,22 +2657,25 @@ function submitComment() {
   if (Math.random() * 100 < pcfg.commentProb) {
     const cfg = pcfg;
     setTimeout(() => {
+      // #1485a：动态所属桌面非当前桌面时先等该桌面字卡大键取回落定再生成（详见 poolReadyFor 注释）
+      poolReadyFor(p.owner || 'default', function () { try {
       const list2 = load();
-      const p2 = list2.find(x => x.id === pid);
-      if (!p2) return;
-      p2.comments = p2.comments || [];
-      const taText = pickReplyContent(cfg, p2.owner || 'default');
-      p2.comments.push(stampAuthor({ content: taText, ts: Date.now(), replies: [] }, taAuthorOf(p2)));
+      const p2b = list2.find(x => x.id === pid);
+      if (!p2b) return;
+      p2b.comments = p2b.comments || [];
+      const taText = pickReplyContent(cfg, p2b.owner || 'default');
+      p2b.comments.push(stampAuthor({ content: taText, ts: Date.now(), replies: [] }, taAuthorOf(p2b)));
       save(list2);
       refreshPostCard(pid);
       // v3.11.x：修复「评论联系人的朋友圈，联系人回复没有提醒」——原实现只在
       // 动态是自己的（role==='me'）时才发通知，评论 TA 的动态后 TA 回你评论完全无感知。
       // 改为两种情况都通知：我的动态→「评论了你的动态」；TA 的动态→「回复了你的评论」，
       // 并带上内容预览与定位（点击通知直接闪到那条评论）。
-      const taName2 = p2.taName || taFeedNameFor(p2.owner || 'default');
-      const loc = { ci: p2.comments.length - 1 };
-      if ((p2.role || p2.by) === 'me') addNotice('comment', p2.id, taName2 + ' 评论了你的动态：' + noticeTextClean(taText), p2.owner || 'default', loc);
-      else addNotice('comment', p2.id, taName2 + ' 回复了你的评论：' + noticeTextClean(taText), p2.owner || 'default', loc);
+      const taName2 = p2b.taName || taFeedNameFor(p2b.owner || 'default');
+      const loc = { ci: p2b.comments.length - 1 };
+      if ((p2b.role || p2.by) === 'me') addNotice('comment', p2b.id, taName2 + ' 评论了你的动态：' + noticeTextClean(taText), p2b.owner || 'default', loc);
+      else addNotice('comment', p2b.id, taName2 + ' 回复了你的评论：' + noticeTextClean(taText), p2b.owner || 'default', loc);
+      } catch (eC) {} });
     }, (cfg.commentSpeedMin + Math.random() * Math.max(1, cfg.commentSpeedMax - cfg.commentSpeedMin)) * 1000);
   }
 }
@@ -2233,6 +2699,7 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
   // 打开朋友圈页（渲染 + 清桌面未读角标），供朋友圈图标点击与弹窗点击共用
   function openFeedPage() {
     clearFeedAppUnread();
+    feedRangeKey = 'week'; // #1406：从桌面进朋友圈先落回「本周」那一页（翻去几个月前是临时的）
     render();
     renderNoticeBadge();
     document.querySelectorAll('.page').forEach(p => p.hidden = true);
@@ -2260,7 +2727,7 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
       // v3.27.x：avFixed 防误回退——发布者头像为空时不回退当前桌面头像（bgNotifyCheck
       // 无 avFixed 时 av 为空会兜底成当前桌面的 cs-avatar-partner，导致跨桌面显示错头像）
       const av = owner ? taAvFor(owner) : '';
-      window.showDeskPopup({ name: '朋友圈', text: (window.taFit ? window.taFit(noticeTextClean(text), owner) : noticeTextClean(text)), av: av, avFixed: true, onClick: openFeedPage, isHidden: document.visibilityState === 'hidden' });
+      window.showDeskPopup({ name: '朋友圈', notifyKind: 'feed', text: (window.taFit ? window.taFit(noticeTextClean(text), owner) : noticeTextClean(text)), av: av, avFixed: true, onClick: openFeedPage, isHidden: document.visibilityState === 'hidden' });
     } else if (feedPageVisible() && document.visibilityState !== 'hidden') {
       // v3.13.x：人在朋友圈页内时顶部横幅按设计不弹（v3.5.107，防遮挡）——但 TA
       // 评论/回复/点赞到达毫无感知（用户反馈：联系人回复我朋友圈评论没有提示，
@@ -2296,7 +2763,12 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
     }
   }
   function jumpToPost(pid, ci, ri) {
-    const el = feedPostEl(pid);
+    let el = feedMainPostEl(pid);
+    if (!el) {
+      // #1406：那条动态折在别的月份页里＝先切到它那一页再找（点旧动态的通知不能啥也不发生）
+      const hit = feedSortedAll().find(p => p.id === pid);
+      if (hit) { feedRangeKey = feedBucketKeyFor(hit.ts); render(); el = feedMainPostEl(pid); }
+    }
     if (!el) return;
     // v3.11.x：带评论/回复定位——优先滚动闪烁到具体那条评论/回复（找不到回退整条动态）
     let target = el;
@@ -2448,6 +2920,37 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
       }
     });
   }
+  // FIX 2026-09-26 #1311（iPhone 17 Pro Max / iOS 26.6.1「添加到桌面」实报「朋友圈壁纸无法添加」；
+  // 本张诊断单的文件选择取证只有两笔——dev-feed-cover-bg/leg:fire ＋ dev-feed-cover-bg/fb:onscreen，
+  // 一条 files=N 都没有＝选择器根本没回来过）：本文件其余图片入口（封面头像 feed-myav-tap、评论图
+  // feed-com-tap、发布配图 feed-pick-tap、各桌面头像 feed-allav-tap…）都在绑定/渲染处铺了
+  // #991/#1002 的「真·可点 input 层」，唯独封面背景这一路没有＝它只剩「JS 合成激活」一条腿。
+  // 而本族七波（#677→#717→#738→#755→#920→#1002→#1230）在真机上量到的事实是：合成腿
+  // （showPicker / click()）会被内核静默拒绝（不抛异常＝JS 探不到失败），拿到过 files=1 回执的只有
+  // 「手指物理落在真层上、由浏览器原生默认动作弹出」这一条。所以这不是机型问题，是这个入口从没接进
+  // 本族唯一被真机验证过的那条路——逐入口手抄必漏，同族因此反复复发。
+  // 铺层要解决三件事，缺一件就把别的动作吞掉（旧台账据此判「封面容器不铺层」，见下收窄）：
+  //   ① 画序：这层是 position:absolute + z-index:0，而同级的头像/昵称是静态流内元素 ⇒ 绝对定位层
+  //      压在它们之上（#821 同形），点头像会变成换背景。故 a) 把层挪成第一个子节点（头像那层自身被
+  //      mochiFilePickSurface 补过 position:relative，同为定位层时后画者在上＝头像仍命中自己），
+  //      b) 昵称与封面右上角的装饰圆环在 chat-pages.css 里抬层/让路。
+  //   ② 已有背景时那一下点按要开的是「更换背景／恢复默认」面板，原生层若常驻会把面板抢掉＝产品功能
+  //      丢一半 ⇒ pointer-events 按「有没有背景」开关，且挂在渲染处（renderCover / renderFeedAllCover）
+  //      随每次刷新复核，恢复默认后自动回到「直接添加」。
+  //   ③ 双开：手指落在层上时 click 仍冒泡到封面容器 ⇒ 入口自己的 mochiFilePick 会再激活一次。
+  //      #1002 的「同一手势时间戳」判定（mochiFilePickSurfaceTap 一次性消费）本就把它让掉了，
+  //      而这一步同时把 onFiles 管线补给层指向的宿主（#1230），选完文件才有地方交。
+  // owner 写统一入口那个常驻 input 的 id：铺层这一拍 mochiFilePickBindHost 会把它预建出来并回头解析
+  // 成元素 ⇒ 入口原有的 compressImage→set→render 管线一字不用改。层自带 surf:hit / surf:files=N 取证，
+  // 下一张诊断单能直接分辨「没点到 / 点了没弹 / 选完没回来」。
+  function armCoverLayer(el, layerId, ownerId, hasBg) {
+    if (!el || !window.mochiFilePickSurface) return;
+    var layer = null;
+    try { layer = window.mochiFilePickSurface(el, { id: layerId, accept: 'image/*', owner: ownerId }); } catch (e) {}
+    if (!layer) return;
+    try { if (layer.parentNode === el && el.firstChild !== layer) el.insertBefore(layer, el.firstChild); } catch (e) {}
+    try { layer.style.pointerEvents = hasBg ? 'none' : 'auto'; } catch (e) {}
+  }
   // 点封面背景 → 更换/恢复
   if (coverEl) {
     coverEl.addEventListener('click', (e) => {
@@ -2480,27 +2983,16 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
     const f = feedAvPickInput.files && feedAvPickInput.files[0];
     feedAvPickInput.value = ''; // 允许重选同一文件
     if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-          const c = document.createElement('canvas');
-          c.width = Math.max(1, Math.round(img.width * scale));
-          c.height = Math.max(1, Math.round(img.height * scale));
-          c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-          window.activeStore().set('feed-user-avatar', c.toDataURL('image/jpeg', 0.85));
-          renderCover();
-          toast('朋友圈头像已更新');
-        } catch (err) { toast('图片处理失败'); }
-      };
-      img.onerror = () => toast('图片读取失败');
-      img.src = reader.result;
-    };
-    // FIX 2026-09-22 #1036：补 reader.onerror（原缺＝读取失败静默无反馈）
-    reader.onerror = () => toast('图片读取失败');
-    reader.readAsDataURL(f);
+    // #1270：压成 256px 头像这件事本来不需要先把相册原图整幅解出来（旧链一张 48MP 照片
+    // ＝≈192MB 位图＋≈10MB base64 字符串，产物只有 256px）。口径（256px／JPEG 0.85／
+    // 落 feed-user-avatar／提示文案）一字未动，只换「怎么解出来」。
+    if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+    window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'feed-av' }).then((r) => {
+      if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '头像')); return; }
+      window.activeStore().set('feed-user-avatar', r.data);
+      renderCover();
+      toast('朋友圈头像已更新');
+    });
   };
   if (coverAvEl) {
     // FIX 2026-09-18 #738：原生 label 激活兜底（小米浏览器对 JS 合成 click 静默不弹选择器）
@@ -2539,10 +3031,44 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
     });
   }
   // 发布
-  function publish() {
+  // FIX 2026-09-25 #1257 发布配图「一发图就消失」（OPPO Reno16 Chrome 实报，多机型同形；零机型分支）：
+  //   旧写法把原图 dataURL 直接存进 post.imgs——单图几 MB 就把主键 feed-posts 顶过 200KB 大键线
+  //   （idb.js xyStore.set：大键只进 IDB+内存、不进 localStorage），而剥图快照 stripPostImg 把
+  //   imgs 恒置空，本机诊断记录该页被系统回收 83 次＝未提交的 IDB 值事务随进程一起没了；
+  //   刷新/回收后 load() 读 LS 主键落空 → 只剩无图快照兜底 → 「动态还在、图没了」。
+  //   改法＝聊天半框同款纪律（chat.js mediaNormalizePass / #186）：图体进媒体池（内容寻址
+  //   media:<hash> 单键小事务、GC 引用面本就含 feed-posts），动态里只留 @@m: 令牌——主键恒为
+  //   小键走 LS+IDB 双写；先等池落盘成功再让引用落库，写池失败则整批发回原 dataURL（＝旧行为，不更坏）。
+  async function feedTokImgs(arr) {
+    const raw = (arr || []).slice();
+    if (!raw.length || !window.mochiMediaTokenize) return raw;
+    const out = [];
+    let tok = 0;
+    for (let i = 0; i < raw.length; i++) {
+      const u = typeof raw[i] === 'string' ? raw[i].trim() : '';
+      let t = null;
+      if (u.indexOf('data:') === 0) { try { t = await window.mochiMediaTokenize(u); } catch (e) {} }
+      if (t) { tok++; out.push(t); } else out.push(raw[i]);
+    }
+    if (!tok) return raw;
+    let ok = false;
+    try { ok = await window.mochiMediaFlush(); } catch (e) {}
+    return ok ? out : raw; // 池未持久＝引用绝不先落库，退回内联原件
+  }
+  let _feedPubBusy = false;
+  async function publish() {
     const input = document.getElementById('feed-input');
     const content = input ? input.value.trim() : '';
     if (!content && !pickedImgs.length) { toast('写点什么再发布吧'); return; }
+    if (_feedPubBusy) return;
+    _feedPubBusy = true;
+    const rawImgs = pickedImgs.slice();
+    pickedImgs = [];
+    renderPreview();
+    if (input) input.value = '';
+    let imgsArr = rawImgs;
+    try { imgsArr = await feedTokImgs(rawImgs); } catch (e) {}
+    _feedPubBusy = false;
     // v3.5.95：图片独立存 imgs 数组（九宫格展示，与 TA 动态一致），不再混排进文字
     const list = load();
     const id = 'f_' + Date.now();
@@ -2554,12 +3080,9 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
     //   实时读当前头像即可。原实现把头像 base64 塞进每条动态，哪怕正文纯文字，
     //   头像稍大就把主键撑到 >200KB → 只进 IndexedDB 不进 localStorage → Edge 丢 IDB
     //   后纯文字动态也丢（OPPO Reno6 Edge 实现）。去掉后纯文字主键真的 <200KB 能写 LS。
-    const post = { id: id, role: 'me', owner: me.owner, authorName: me.authorName, authorAv: '', taName: taName, taAv: '', content: content, imgs: pickedImgs.slice(), ts: Date.now(), likes: [], comments: [] };
+    const post = { id: id, role: 'me', owner: me.owner, authorName: me.authorName, authorAv: '', taName: taName, taAv: '', content: content, imgs: imgsArr, ts: Date.now(), likes: [], comments: [] };
     list.unshift(post);
     save(list);
-    pickedImgs = [];
-    renderPreview();
-    if (input) input.value = '';
     renderVisible();
     // v3.7.x 兜底：render 后若列表没出现刚发布的动态（Edge 上 IDB 慢/门槛暂存时序异常），
     //   强制把 list 直接落盘 + 重渲染，确保发布后立刻可见。用户主动发布应立即持久化，
@@ -2596,6 +3119,8 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
       // 该桌面的 TA 有概率首次评论我的动态
       if (Math.random() * 100 < ccfg.commentProb) {
         setTimeout(() => {
+          // #1485a：该桌面非当前桌面时先等字卡大键取回落定再生成（详见 poolReadyFor 注释）
+          poolReadyFor(cid, function () { try {
           const list2 = load();
           const p2 = list2.find(x => x.id === id);
           if (!p2) return;
@@ -2604,6 +3129,7 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
           save(list2);
           refreshPostCard(id);
           addNotice('comment', p2.id, taFeedNameFor(cid) + ' 评论了你的动态', cid);
+          } catch (eF) {} });
         }, (ccfg.commentSpeedMin + Math.random() * Math.max(1, ccfg.commentSpeedMax - ccfg.commentSpeedMin)) * 1000);
       }
     });
@@ -2622,6 +3148,12 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
           const pick = mine[Math.floor(Math.random() * mine.length)];
           const f = { kind: 'feed', text: pick.content || '', imgs: (pick.imgs || []).slice(), ts: pick.ts || Date.now() };
           const s = window.storeFor(cid);
+          // FIX 2026-09-28 #1361f：这一发不经过 chat.js 的 favAuth 闸（跨模块直接 s.set 整包），
+          // 而它恰恰是**没有任何用户动作**的那一发——发完动态各桌面 TA 各自掷概率，命中就自动收藏。
+          // 读数不可信时这一写＝把该桌面库里那一本整包顶成「只有 TA 刚收藏的这一条」＝用户看到的
+          // 「收藏莫名其妙被清空」。自动通路没有「再点一次」可说 ⇒ 静默让路＋请一次库，下一发动态
+          // 或下一次自动收藏照样走得通。判据＝数据层那一句，零机型／零 UA 分支。
+          if (window.xyBigWriteHold(s, 'fav-msgs')) return;
           let fav = [];
           try { fav = JSON.parse(s.get('fav-msgs') || '[]'); } catch (e) { fav = []; }
           if (!Array.isArray(fav)) fav = [];
@@ -2746,19 +3278,24 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
         return;
       }
       // 内容取该联系人桌面的字卡库
-      const g = genPostContent(cfg, cid);
-      const taName = cs.get('lbl-partner') || 'TA';
-      const taAv = cs.get('avatar-partner') || '';
-      const list = load();
-      const post = { id: 'f_' + Date.now() + '_' + cid, role: 'ta', owner: cid, authorName: taName, authorAv: '', taName: taName, taAv: '', content: g.content, imgs: g.imgs, ts: Date.now(), likes: [], comments: [] };
-      list.unshift(post);
-      save(list);
-      cs.set('feed-last', String(now));
-      cs.set('feed-next', String(cfg.minInterval + Math.random() * Math.max(1, cfg.maxInterval - cfg.minInterval)));
-      cs.set('feed-day-count', JSON.stringify({ t: today, n: dayCount.n + 1 }));
-      notifyFeedPostToChat(cid, taName);
-      addNotice('post', post.id, taName + ' 发布了一条新动态', cid);
-      renderVisible();
+      // #1485a：非当前桌面先等字卡大键取回落定再生成——同步读池的空窗会把「没读到」
+      //   当成「没字卡」，TA 动态只剩默认卡/兜底句（详见 poolReadyFor 注释）。
+      const buildPost = function () {
+        const g = genPostContent(cfg, cid);
+        const taName = cs.get('lbl-partner') || 'TA';
+        const taAv = cs.get('avatar-partner') || '';
+        const list = load();
+        const post = { id: 'f_' + Date.now() + '_' + cid, role: 'ta', owner: cid, authorName: taName, authorAv: '', taName: taName, taAv: '', content: g.content, imgs: g.imgs, ts: Date.now(), likes: [], comments: [] };
+        list.unshift(post);
+        save(list);
+        cs.set('feed-last', String(now));
+        cs.set('feed-next', String(cfg.minInterval + Math.random() * Math.max(1, cfg.maxInterval - cfg.minInterval)));
+        cs.set('feed-day-count', JSON.stringify({ t: today, n: dayCount.n + 1 }));
+        notifyFeedPostToChat(cid, taName);
+        addNotice('post', post.id, taName + ' 发布了一条新动态', cid);
+        renderVisible();
+      };
+      poolReadyFor(cid, function () { try { buildPost(); } catch (eB) {} });
     } catch (e) {}
   }
   // 遍历所有联系人：每个联系人的 TA 都可能自动发动态（朋友圈共享）
@@ -2810,6 +3347,8 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
     const bg = feedAllBg();
     if (bg) { cover.style.backgroundImage = 'url("' + bg + '")'; cover.classList.add('has-bg'); }
     else { cover.style.backgroundImage = ''; cover.classList.remove('has-bg'); }
+    // #1311：这一页的封面也补同一层（幂等＋按背景开关可命中性，理由见主封面处的 armCoverLayer 批注）
+    armCoverLayer(cover, 'dev-feed-all-cover-tap', 'mochi-feed-cover-pick', !!bg);
     // #811 我的个人页：封面即主朋友圈「我」的身份（当前桌面 feed-user-*，回退聊天身份）
     if (feedAllWho === 'me') {
       if (avEl) { const mav = feedUserAv(); avEl.innerHTML = mav ? '<img src="' + attrEsc(mav) + '" alt="">' : ''; }
@@ -2881,10 +3420,12 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
     const posts = load().filter(inPage).sort((a, b) => b.ts - a.ts);
     // v3.12.x：与主列表同口径窗口化（FEED_RENDER_MAX + 查看更早），防整页全量位图解码
     feedShownAll = Math.min(posts.length, FEED_RENDER_MAX);
+    // FIX 2026-09-27 #1336：本页是「联系人发的朋友圈」的直接落点，残缺期同样不许说「还没有动态」
+    const allCold = feedSyncCold || !!(window.mochiDataPending && window.mochiDataPending());
     listEl.innerHTML = posts.length
       ? posts.slice(0, feedShownAll).map(p => postCardHtmlAll(p)).join('') +
         (posts.length > feedShownAll ? feedMoreBtnHtml(posts.length - feedShownAll) : '')
-      : ((window.mochiDataPending && window.mochiDataPending())
+      : (allCold
         ? window.mochiLoadingHtml(isMePage ? '我的动态' : '该联系人的动态')
         : '<div class="ta-empty">还没有动态</div>');
     // v3.7.x：全部朋友圈页与主列表共用事件绑定——点赞/评论/回复/删除/图片放大全可用
@@ -2918,8 +3459,9 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
   const feedAllAv = document.getElementById('feed-all-av');
   const feedAllName = document.getElementById('feed-all-name');
   // FIX 2026-09-21 #1002：全部朋友圈页头像铺真·可点 input 层（owner＝统一入口那个 input id；
-  // 该 input 点按时才建，这里只登记 id）。注意封面容器 #feed-all-cover 内还有头像与昵称两个可点元素，
-  // 不给它铺层（铺了会吞掉头像/昵称的点击）——只铺头像本身。
+  // 该 input 点按时才建，这里只登记 id）。
+  // FIX 2026-09-26 #1311：这一页的封面容器同样补上那层（旧结论「容器里还有头像/昵称就不铺」已收窄，
+  // 理由与三件事见主封面处的 armCoverLayer 批注）——铺层＋挪画序在 renderFeedAllCover 里随每次进页复核。
   if (feedAllAv && window.mochiFilePickSurface) window.mochiFilePickSurface(feedAllAv, { id: 'feed-allav-tap', accept: 'image/*', owner: 'mochi-feed-allav-pick' });
   if (feedAllCover) {
     feedAllCover.addEventListener('click', (e) => {
@@ -2966,26 +3508,14 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
         onFiles: (files) => {
           const f = files && files[0];
           if (!f) { toast('没有取到图片，请再选一次'); return; }
-          const reader = new FileReader();
-          reader.onload = () => {
-            const img = new Image();
-            img.onload = () => {
-              try {
-                const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-                const c = document.createElement('canvas');
-                c.width = Math.max(1, Math.round(img.width * scale));
-                c.height = Math.max(1, Math.round(img.height * scale));
-                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-                feedAllStore().set(key, c.toDataURL('image/jpeg', 0.85));
-                renderFeedAllCover();
-                toast('头像已更新');
-              } catch (err) { toast('图片处理失败'); }
-            };
-            img.onerror = () => toast('图片读取失败');
-            img.src = reader.result;
-          };
-          reader.onerror = () => toast('图片读取失败');
-          reader.readAsDataURL(f);
+          // #1270：同上，走统一解码闸（256px／JPEG 0.85 口径不变）
+          if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+          window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'feed-all-av' }).then((r) => {
+            if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '头像')); return; }
+            feedAllStore().set(key, r.data);
+            renderFeedAllCover();
+            toast('头像已更新');
+          });
         }
       });
     });
@@ -3027,26 +3557,14 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
       onFiles: (files) => {
         const f = files && files[0];
         if (!f) { toast('没有取到图片，请再选一次'); return; }
-        const reader = new FileReader();
-        reader.onload = () => {
-          const img = new Image();
-          img.onload = () => {
-            try {
-              const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-              const c = document.createElement('canvas');
-              c.width = Math.max(1, Math.round(img.width * scale));
-              c.height = Math.max(1, Math.round(img.height * scale));
-              c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-              st.set(key, c.toDataURL('image/jpeg', 0.85));
-              renderFeedFriends();
-              toast('朋友圈头像已更新');
-            } catch (err) { toast('图片处理失败'); }
-          };
-          img.onerror = () => toast('图片读取失败');
-          img.src = reader.result;
-        };
-        reader.onerror = () => toast('图片读取失败');
-        reader.readAsDataURL(f);
+        // #1270：同上，走统一解码闸（256px／JPEG 0.85 口径不变）
+        if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+        window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'feed-friend-av' }).then((r) => {
+          if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '头像')); return; }
+          st.set(key, r.data);
+          renderFeedFriends();
+          toast('朋友圈头像已更新');
+        });
       }
     });
   }
@@ -3288,6 +3806,16 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
       //   可读（idbRestore 回填 / LS 恢复）下一次 load() 就恢复完整内容，与守卫同源。
       const degraded = !authOk && curFromSnap;
       if (!degraded) feedMem = merged;
+      // FIX 2026-10-01 #1522c：内存真相被合并结果顶掉的同一拍，刷新待写槽——否则已排程的
+      //   runFeedWrite/flushFeedWrite 照写 save() 当时按值捕获的陈旧 arr：冷读窗口里「先 save
+      //   单帖增量、后合并落定」的时序下，那发陈旧写排在合并之后＝把刚合并好的权威整本又顶回
+      //   残缺形态（#1336 注释点名的同族「排在后面的那发根本不知道」，当时只收了 feedPending
+      //   一侧、槽这一侧漏了；花园年报分享 feedAddPost 冷窗实测：合并落定 308k 并集落库后，
+      //   陈旧槽一发 276 字符单帖把权威顶回残缺＝端态丢历史）。降级兜底那份不写（同下行口径）。
+      if (!degraded && feedWritePending) feedWritePending = merged;
+      // #1363：启动这一发也要过同一道闸——存量用户主键里那些原样存着的 dataURL 靠这一次自愈搬进池，
+      //   主键从此回到小键档（有 localStorage 副本、快照与权威同形）；降级兜底那一份不去动它。
+      if (!degraded) scheduleFeedTokPass(2500);
       // #187：写回走守卫——权威读失败且手上可能是剥图快照时，探测确认权威键仍在就绝不写回
       feedGuardWrite(JSON.stringify(merged)).then(written => {
         if (written) {
@@ -3386,14 +3914,15 @@ if (comInput) comInput.addEventListener('keydown', (e) => { if (e.key === 'Enter
       return { text: p.text.indexOf(s) >= 0, kaomoji: p.kaomoji.indexOf(s) >= 0, emoji: p.emoji.indexOf(s) >= 0 };
     } catch (e) { return null; }
   };
-  // v3.26.x(#122)：注册朋友圈内置互动回应池跨分类搜索（字卡库列表页搜索同源可查，不再搜不到）
-  window.__cardSearchFns = window.__cardSearchFns || [];
-  window.__cardSearchFns.push({ name: '朋友圈互动', fn: function (kw) {
-    const out = [];
+  // FIX 2026-09-28 #1356：只读探针——按「TA 真发一条动态」的同一条管线现生成一次内容并回读，
+  //   供回归测试量「同一条动态里有没有把同一张卡原样重复」；不写库、不改调度状态。
+  window.feedGenProbe = function (cid) {
     try {
-      TA_COMMENT_POOL.forEach(c => { if (String(c).toLowerCase().indexOf(kw) >= 0) out.push({ t: String(c), cat: 'TA评论' }); });
-      TA_REPLY_POOL.forEach(c => { if (String(c).toLowerCase().indexOf(kw) >= 0) out.push({ t: String(c), cat: 'TA回应回复' }); });
-    } catch (e) {}
-    return out;
-  } });
+      const g = genPostContent(feedCfgFor(cid), cid);
+      return { content: String(g.content || ''), imgN: (g.imgs || []).length };
+    } catch (e) { return null; }
+  };
+  // v3.26.x(#122) 曾在此登记「朋友圈互动」跨分类搜索；#1422 两池已进系统预设（DEFAULT_CARD_DATA.interact），
+  //   chatcard.js 的「默认聊天字卡」登记项会遍历全部分类自动收录（标成「[互动回应] 分组名」），
+  //   再列一遍＝同一句搜出两行，故整块撤掉。兜底池的读取见上面 feedFallbackPool()。
 })();

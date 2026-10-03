@@ -22,6 +22,9 @@
   // 就把最后可见页显回来（兜底 page-phone），并留一笔现场（window.__mochiBlankHeal ＋
   // __jsErrors，下份诊断报告能直接点出是谁把页关没了）。空白由「永久卡死」变成用户看不见的一帧。
   let _lastVisId = '', _healAt = 0, _healRaf = 0;
+  // #1445：桌面模糊载体（.phone）的静态锚缓存——与 #338 的 _scPhone 同款假设（.phone 是
+  // template.html 静态锚点），只在第一次真正要用时查一次
+  let _blurPh = null;
   try { window.__mochiBlankHeal = window.__mochiBlankHeal || { n: 0, at: 0, last: '' }; } catch (e0) {}
   function liveVisiblePage() {
     const live = document.querySelectorAll('.page');
@@ -73,10 +76,19 @@
       target.hidden = false;
       // #976：切页瞬间暂停壁纸全屏模糊（真机实测「切页后」单帧 2787ms），400ms 后自动恢复；
       // 与桌面滑页（desktop-slider #976）共用同一类名与同一个收尾计时，重叠时后者说了算，无副作用
+      // #1445：只在桌面真的开着背景模糊时才切这个类。该类全站唯一消费者是 home.css 的
+      // `html.desk-swiping .phone.desk-blur-on #phone-bg-layer{filter:none}`——而 .desk-blur-on 只在
+      // 「模糊>0 且走 CSS filter 那条载体」时挂（personalize.js applyBgBlur／deskBlurRender 兜底）。
+      // 未开模糊（出厂默认，本次报告现场也是「模糊=关」）时那条规则永不匹配＝零收益；而对 <html>
+      // 增删类名会让整棵文档的样式失效重算（本报告现场 20020 节点 × 5664 条规则），一次切页白付两遍。
+      // 判据只问「模糊载体在不在」这一个内核无关事实，零机型／零 UA 分支。
       try {
-        document.documentElement.classList.add('desk-swiping');
-        clearTimeout(window.__mochiBlurT);
-        window.__mochiBlurT = setTimeout(function () { document.documentElement.classList.remove('desk-swiping'); }, 400);
+        const ph = _blurPh || (_blurPh = document.querySelector('.phone'));
+        if (ph && ph.classList.contains('desk-blur-on')) {
+          document.documentElement.classList.add('desk-swiping');
+          clearTimeout(window.__mochiBlurT);
+          window.__mochiBlurT = setTimeout(function () { document.documentElement.classList.remove('desk-swiping'); }, 400);
+        }
       } catch (e0) {}
     });
   });

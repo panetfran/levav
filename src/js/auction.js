@@ -482,9 +482,9 @@
     try {
       const fb = ['这件归我啦。', '嘿嘿，到手。', '眼光不错吧。'];
       const pool = window.getInteractPool ? window.getInteractPool('游戏胜利·回应', fb) : fb;
-      const say = pool[Math.floor(Math.random() * pool.length)] || fb[0];
+      const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : ''; // #1515 整组停用＝静默（TA 抱走）
       const cid1 = prefix();
-      setTimeout(() => {
+      if (say) setTimeout(() => {
         if (prefix() !== cid1) return;
         try { if (window.chatAddIn) window.chatAddIn(say, { silent: true }); } catch (e) {}
       }, 800);
@@ -505,9 +505,9 @@
     try {
       const fb = ['这玩意没人要啊。', '亏本了亏本了。'];
       const pool = window.getInteractPool ? window.getInteractPool('游戏平局·回应', fb) : fb;
-      const say = pool[Math.floor(Math.random() * pool.length)] || fb[0];
+      const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : ''; // #1515 整组停用＝静默（流拍）
       const cid2 = prefix();
-      setTimeout(() => {
+      if (say) setTimeout(() => {
         if (prefix() !== cid2) return;
         try { if (window.chatAddIn) window.chatAddIn(say, { silent: true }); } catch (e) {}
       }, 800);
@@ -558,10 +558,10 @@
     try {
       const fb = ['被你拍走了…', '亏了亏了。', '那件本来我想要来着。'];
       const pool = window.getInteractPool ? window.getInteractPool('游戏失败·回应', fb) : fb;
-      const say = pool[Math.floor(Math.random() * pool.length)] || fb[0];
+      const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : ''; // #1515 整组停用＝静默（被拍走）
       // FIX 2026-09-16：800ms 内切联系人桌面，回应会发进新桌面——回调前校验命名空间未变
       const cid0 = prefix();
-      setTimeout(() => {
+      if (say) setTimeout(() => {
         if (prefix() !== cid0) return;
         try { if (window.chatAddIn) window.chatAddIn(say, { silent: true }); } catch (e) {}
       }, 800);
@@ -714,27 +714,12 @@
   function auSafeImg(s) {
     return typeof s === 'string' && s.length <= 1200000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(s) ? s : '';
   }
-  function compressAuImg(dataUrl) {
-    return new Promise(function (resolve) {
-      if (typeof dataUrl !== 'string' || dataUrl.length > 8 * 1024 * 1024) { resolve(null); return; }
-      const img = new Image();
-      img.onload = function () {
-        try {
-          if (img.width * img.height > 26000000) { resolve(null); return; }
-          const scale = Math.min(1, 480 / Math.max(img.width, img.height));
-          const w = Math.max(1, Math.round(img.width * scale));
-          const h = Math.max(1, Math.round(img.height * scale));
-          const c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          const ctx = c.getContext('2d');
-          ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
-          ctx.drawImage(img, 0, 0, w, h);
-          resolve(c.toDataURL('image/jpeg', 0.85));
-        } catch (e) { resolve(null); }
-      };
-      img.onerror = function () { resolve(null); };
-      img.src = dataUrl;
-    });
+  // 图片入口压缩（480px JPEG 白底；同 gift-shop 口径）
+  // FIX 2026-09-25 #1270：原「base64 超 8MB 先拒 ＋ 解码后超 2600 万像素再拒」＝手机拍的照片
+  // 一律「图片处理失败，换一张试试」，而放行时那次整幅解码（48MP＝192MB 位图）又是白屏大退来源。
+  function compressAuImg(src) {
+    if (!window.mochiImgCompressTo) return Promise.resolve(null);
+    return window.mochiImgCompressTo(src, { maxSide: 480, quality: 0.85, mime: 'image/jpeg', opaque: true, tag: 'au-img' });
   }
   function edHint(msg) {
     if (!edHintEl) return;
@@ -860,17 +845,14 @@
       onFiles: function (files) {
         const f = files && files[0];
         if (!f || !/^image\//i.test(f.type || '')) return;
-        const reader = new FileReader();
-        reader.onload = function () {
-          compressAuImg(String(reader.result || '')).then(function (data) {
-            if (!data) { edHint('图片处理失败，换一张试试'); return; }
-            if (!ed) return;
-            ed.img = data;
-            renderEdImg(); renderEdGrid(); renderEdPreview();
-          });
-        };
-        reader.onerror = function () { edHint('图片读取失败'); };
-        reader.readAsDataURL(f);
+        if (!window.mochiImgCompressTo) { edHint('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+        // FIX 2026-09-25 #1270：File 直接进闸，不再 readAsDataURL 造多 MB base64 字符串
+        compressAuImg(f).then(function (data) {
+          if (!data) { edHint('这张图本机浏览器处理不了，换一张小图试试'); return; }
+          if (!ed) return;
+          ed.img = data;
+          renderEdImg(); renderEdGrid(); renderEdPreview();
+        });
       }
     });
   } else if (edImgBtn) {

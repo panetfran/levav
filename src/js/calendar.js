@@ -482,8 +482,15 @@
     const nm = store.get('lbl-partner') || 'TA';
     if (taLabel) taLabel.textContent = nm + '（心情日记）';
     if (mineEl) mineEl.textContent = (md && md.mine) ? (md.mine.e + ' ' + md.mine.n) : calEmptyTxt('今天还没记心情');
-    if (taEl) taEl.textContent = (md && md.ta) ? (md.ta.e + ' ' + md.ta.n) : calEmptyTxt('今天还没有互动');
+    // FIX 2026-09-28 #1353h~i：用户实报「日历上也不显示TA的心情」——开页那一刻本机那份聊天还没读回来
+    //   （大历史只带尾部窗口／LS 快照失效／刚被系统回收），旧写法把「这一发什么也没读到」当成「今天没互动」
+    //   直接宣布终态，而聊天读回来后这一行不会重画＝整场挂着那句谎话。改：不知道就说「正在读取」，
+    //   并记下日子那一刻（mood-interact-recorded，mood-diary 里唯一一处广播）补渲一次。判据零机型／零 UA。
+    if (taEl) taEl.textContent = (md && md.ta) ? (md.ta.e + ' ' + md.ta.n)
+      : ((md && md.taUnknown) ? (window.mochiLoadingText ? window.mochiLoadingText() : calEmptyTxt('今天还没有互动')) : calEmptyTxt('今天还没有互动'));
   }
+  // 记下「哪天有过互动」的那一刻补渲入口卡（同一句判据的落地端；日历页不在屏上时下一次进入照样现读现画）
+  document.addEventListener('mood-interact-recorded', function () { try { renderMoodEntry(); } catch (e) {} });
 
   function render() {
     try { ensureFishHeat(); } catch (e) {} // 摸鱼/工作「当日统计」随 selDate 切换刷新

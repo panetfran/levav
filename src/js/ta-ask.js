@@ -23,6 +23,15 @@
     t._timer = setTimeout(() => { t.className = 'cc-toast'; }, 2000);
   }
   function escG(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  // #1415：题库条目上的题型徽标——单选题一直写的是「单选·N选项」，多选题进来必须换个词，
+  // 否则列表里两种题长得一模一样，出题的人分不清自己哪道会让 TA 多挑几个。
+  function askTypeBadge(q) {
+    const n = q && Array.isArray(q.options) ? q.options.length : 0;
+    if (q && q.type === 'single') return ' <span class="tc-known">单选·' + n + '选项</span>';
+    // #1480：题上写死了「最多N」的，徽标跟着亮出来（多选·限2·5选项），列表里一眼分清哪道限几道不限
+    if (q && q.type === 'multi') return ' <span class="tc-known">多选' + (q.multiMax >= 2 ? '·限' + q.multiMax : '') + '·' + n + '选项</span>';
+    return '';
+  }
   // FIX 2026-09-17 #648 问答/收藏记录页「TA回应」列——存量落库的媒体卡回应（@@m: 令牌/
   // 「名称|||data:」/图链）先清洗为 [图片]/名称再转义；此前这些列表直拼 f.reply/x.reply
   //（连转义都没有），既直出令牌串又可能把导入数据里的 HTML 当标签执行
@@ -37,6 +46,12 @@
     if (!arr.length) return '';
     return '<div class="tc-qopts">TA 回应：<span class="tc-known">系统</span> ' + arr.map(escG).join(' / ') + '</div>';
   }
+  // #1315：系统预设字卡「整类停用」（共用件＝default-cards.js 的 window.presetGroup，键 pg-groups-off）。
+  //   本文件四类（询问/小问题/好奇/吐槽）的分类就是它们的「分组」，页顶分类条上挂整类开关；
+  //   判据只认「这条是不是系统预设 + 它所属分类有没有被停用」——用户在「我的添加」里自建的同类
+  //   条目不受这把闸影响（那部分有自己的逐条启停）。
+  function pgCatOff(ns, cat) { return !!(window.presetGroup && window.presetGroup.isOff(ns, cat || 'daily')); }
+  function presetCatOpen(ns, q) { return !(q && q.isPreset === true && pgCatOff(ns, q.cat)); }
   window.cardGroups = {
     genId: function () { return 'g' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36); },
     toast: grpToast,
@@ -672,6 +687,10 @@
   function taAskLoad() {
     let d = null;
     try { d = JSON.parse(store.get(KEY) || 'null'); } catch (e) { d = null; }
+    // #1519：读空但库里本该有＝大键没读全（IDB-only 题库切后台/回填未到），当场请库取回一次
+    // （#1349a 单次飞行闸）。这一拍仍按旧形状走（播种纯预设题库只在内存里，isNew 守卫不写盘），
+    // 下一拍自然读到权威值——写侧由 taAskSave 的闸兜住，这一发错拍不会落进库里。
+    if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY)) store.requestBigKey(KEY); } catch (e0) {} }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     // v3.5.33：设置（启用/概率/自动弹窗）
     // v3.13.x：默认触发概率 10 → 5（互动卡整体降频第二轮，配合全局闸门）
@@ -692,10 +711,11 @@
       d.mergedIds = DEFAULT_QUESTIONS.map(q => q.id);
       // 全新用户不立即写盘——防「localStorage 配额写失败/大键被移除 → 本地为空」的时序下，
       // 用纯默认题库覆盖 IndexedDB 里含用户自定义的权威数据；已有数据（如用户删空后）则写回
-      if (!isNew) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      // #1520：加载期这三发都是**自动**写（播种默认/合并默认/旧数据迁移），按站内铁律走静默闸 xyBigWriteHold（不许凭空弹 toast）；读数没确认时宁可不落笔，也不许把半份表写回去
+      if (!isNew && !ckHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
     } else {
       // 已有题库：增量合并默认题库新增的题，合并结果持久化（用户自定义永远保留）
-      if (taAskMerge(d)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      if (taAskMerge(d) && !ckHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
     }
     if (!Array.isArray(d.history)) d.history = [];
     // v3.7.x：我的添加自定义分组
@@ -703,7 +723,14 @@
     return d;
   }
   function taAskSave(d) {
+    // #1519：题库整包写（管理页任何开关/增删都经这里）＝读-改-写。题库被批量导入撑过 200KB
+    // ＝IDB-only 大键，切一次后台或回填未到时 taAskLoad() 读空会临时播种纯预设题库；此刻把
+    // 「纯预设＋本次改动」整包写回＝库里自定义题被清空（作者报障同型：保存后自己的题没了）。
+    // 判据用数据层那把唯一的尺 xyBigWriteBlocked（#1342d awaitingBigKey 五格证据，含回填未落定），
+    // 拦下时照实 toast、绝不落笔；等库回填后再点一次即可（#1342「不把闸变成新的存不进去」）。
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY, 'TA 的提问题库')) return false;
     try { store.set(KEY, JSON.stringify(d)); } catch (e) {}
+    return true;
   }
 
   // v3.26.x #291：问卷答题结束时间——settings.deadline 存毫秒时间戳（0=未设置）。
@@ -806,7 +833,7 @@
   function taAskPick(d) {
     const s = d.settings || {};
     const useDefault = s.useDefault !== false;
-    const qs = d.questions.filter(q => q.enabled !== false && q.text && (useDefault || !q.isPreset));
+    const qs = d.questions.filter(q => q.enabled !== false && q.text && (useDefault || !q.isPreset) && presetCatOpen('ta-ask', q));
     if (!qs.length) return null;
     return qs[Math.floor(Math.random() * qs.length)];
   }
@@ -889,9 +916,10 @@
   function pushAsk(q, opts) {
     if (!window.chatAddSystem) return;
     // v3.6.x：单选题不弹窗（弹窗是纯文字输入界面）——只进聊天卡片，点卡片就地点选
-    const isSingle = q && q.type === 'single' && Array.isArray(q.options) && q.options.length;
+    // #1415：多选题同理，而且弹窗根本挂不出勾选态，也必须走点卡两拍
+    const isPick = q && (q.type === 'single' || q.type === 'multi') && Array.isArray(q.options) && q.options.length;
     let popup = false;
-    if (!isSingle) {
+    if (!isPick) {
       if (opts && typeof opts.popupProb === 'number') popup = Math.random() * 100 < opts.popupProb;
       else if (opts && opts.popup === false) popup = false;
     }
@@ -900,7 +928,8 @@
     window.chatAddSystem('TA想问你一个问题。', { special: 'ask-msg' });
     // v3.26.x：askTs 作为提问记录的稳定关联键（透传进 chat-msgs 记录，回答时据此更新 history）
     const askTs = Date.now();
-    const el = window.chatAddSystem(q.text, { special: 'ask-card', askQuestion: q.text, askOptions: isSingle ? q.options : null, askType: isSingle ? 'single' : 'text', askTs: askTs });
+    // #1480：题自带「最多N」（multiMax）随卡透传——手动作答那侧同受这道闸；没带＝0＝不限
+    const el = window.chatAddSystem(q.text, { special: 'ask-card', askQuestion: q.text, askOptions: isPick ? q.options : null, askType: isPick ? q.type : 'text', askTs: askTs, askMultiMax: (isPick && q.type === 'multi' && q.multiMax >= 2) ? q.multiMax : 0 });
     // v3.26.x：提问即进记录——发卡同步写一条 pending，回答后由 chatAskReply 包装层更新
     // （此前只有回答才写 history，且单选题点选项直接调 chatAskReply 不经 openAskReply，history 永远空）
     try {
@@ -912,7 +941,7 @@
     const idx = el ? Number(el.dataset.idx) : -1;
     // v3.5.141：后台收到互动卡片 → 系统通知提示
     // v3.5.146：通知文本合并提示语 + 具体问题（一条通知显示完整内容，不再两条）
-    if (window.bgNotifyCheck) window.bgNotifyCheck('TA想问你一个问题：' + q.text, Date.now(), { name: 'TA的询问', late: _lateNotify() });
+    if (window.bgNotifyCheck) window.bgNotifyCheck('TA想问你一个问题：' + q.text, Date.now(), { name: 'TA的询问', late: _lateNotify(), kind: 'ask' });
     // v3.5.141：页面弹窗在后台不弹（不可见弹了也没用），只发系统通知
     // v3.6.x：用户正在聊天输入栏打字时不弹（弹窗会抢焦点打断输入法，见 chatInputFocused）
     // v3.12.x：冻结定时器回前台补跑（autoPopupStale 迟到）时同样不弹旧卡
@@ -1192,20 +1221,26 @@
       if (!lines.length) { toast('请先输入问题，每行一个；单选题第一行用【问题】，下面每行一个选项'); return; }
       // v3.26.x #291：批量导入支持单选题——【问题】开头的行开一道单选题，其后到下一个【】之间每行一个选项；
       // 普通行仍按「一行一个问题」导入（选项不足 2 个时按普通文字题导入）
+      // #1415：题干里带「多选」标记的走多选题，判据与批量问卷同一条（askMultiMarkOf）
       const d2 = taAskLoad();
       let cur = null, imported = 0, singles = 0;
       const flush = () => {
         if (!cur) return;
         const q = { id: 'q_' + Date.now() + '_' + Math.floor(Math.random() * 9999), text: cur.text, cat: parsed.cat || 'daily', enabled: true, isPreset: false };
         if (parsed.grp) q.grp = parsed.grp;
-        if (cur.opts.length >= 2) { q.type = 'single'; q.options = cur.opts.slice(); singles++; }
+        if (cur.opts.length >= 2) { q.type = cur.multi ? 'multi' : 'single'; q.options = cur.opts.slice(); if (cur.multi && cur.max >= 2) q.multiMax = cur.max; singles++; }
         d2.questions.push(q);
         imported++;
         cur = null;
       };
       lines.forEach(t => {
         const m = t.match(/^【(.+?)】$/);
-        if (m) { flush(); if (m[1].trim()) cur = { text: m[1].trim(), opts: [] }; return; }
+        if (m) {
+          flush();
+          const mk = askMultiMarkOf(m[1]);
+          if (mk.text) cur = { text: mk.text, opts: [], multi: mk.multi, max: mk.max || 0 };
+          return;
+        }
         if (cur) { cur.opts.push(t); return; }
         cur = { text: t, opts: [] };
         flush();
@@ -1256,16 +1291,20 @@
         html += '<button class="cc-tab' + (k === askSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + escG(label) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
       });
       html += '</div>';
+      // #1315：整类停用条——本页的一个分类就是一个「分组」，旧版只能逐张点掉
+      const sysCatLabel = escG((CATS.find(c => c[0] === askSysCat) || [])[1] || askSysCat);
+      html += window.presetGroup ? window.presetGroup.catBar('ta-ask', askSysCat, String(sysCatLabel)) : '';
       const arr = d.questions.filter(q => q.cat === askSysCat && q.isPreset === true && (search === '' || q.text.indexOf(search) >= 0));
       arr.forEach(q => {
         const idx = d.questions.indexOf(q);
         html += '<div class="ta-row' + (!useDefault ? ' off' : '') + '">' +
           '<label class="toggle"><input type="checkbox"' + (q.enabled !== false ? ' checked' : '') + ' data-idx="' + idx + '"><span class="tk"></span></label>' +
-          '<span class="ta-txt">' + q.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + (q.type === 'single' ? ' <span class="tc-known">单选·' + (q.options ? q.options.length : 0) + '选项</span>' : '') + ' <span class="tc-known">系统</span></span>' +
+          '<span class="ta-txt">' + q.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + askTypeBadge(q) + ' <span class="tc-known">系统</span></span>' +
           '</div>';
         html += interactPoolInlineHtml('询问·回应');
       });
       container.innerHTML = html;
+      if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-ask', askSysCat, function () { renderAskCatsInto(container, true, search); });
       container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
         t.addEventListener('click', () => { askSysCat = t.dataset.cat; renderAskCatsInto(container, true, search); });
       });
@@ -1290,7 +1329,7 @@
         const delBtn = preset ? '' : '<button class="ta-del" data-idx="' + idx + '">✕</button>';
         html += '<div class="ta-row' + (preset && !useDefault ? ' off' : '') + '">' +
           '<label class="toggle"><input type="checkbox"' + (q.enabled !== false ? ' checked' : '') + ' data-idx="' + idx + '"><span class="tk"></span></label>' +
-          '<span class="ta-txt">' + q.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + (q.type === 'single' ? ' <span class="tc-known">单选·' + (q.options ? q.options.length : 0) + '选项</span>' : '') + (preset ? ' <span class="tc-known">系统</span>' : '') + '</span>' +
+          '<span class="ta-txt">' + q.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + askTypeBadge(q) + (preset ? ' <span class="tc-known">系统</span>' : '') + '</span>' +
           delBtn +
           '</div>';
         if (presetOnly) html += interactPoolInlineHtml('询问·回应');
@@ -1325,7 +1364,7 @@
   function askItemHtml(q, idx) {
     return '<div class="ta-row">' +
       '<label class="toggle"><input type="checkbox"' + (q.enabled !== false ? ' checked' : '') + ' data-idx="' + idx + '"><span class="tk"></span></label>' +
-      '<span class="ta-txt">' + escG(q.text) + (q.type === 'single' ? ' <span class="tc-known">单选·' + (q.options ? q.options.length : 0) + '选项</span>' : '') + '</span>' +
+      '<span class="ta-txt">' + escG(q.text) + askTypeBadge(q) + '</span>' +
       '<button class="ta-del" data-idx="' + idx + '">✕</button>' +
       '</div>';
   }
@@ -1351,6 +1390,7 @@
       '<select class="ta-type tc-input" data-key="' + blockKey + '">' +
       '<option value="text">文字回复</option>' +
       '<option value="single">单选题</option>' +
+      '<option value="multi">多选题</option>' +
       '</select>' +
       '<div class="dec-inp-wrap ta-inp-flex"><input id="ta-new-' + blockKey + '" type="text" placeholder="添加问题…"><button type="button" class="dec-inp-clear" data-clear="ta-new-' + blockKey + '" aria-label="清空" title="清空">✕</button></div>' +
       '<button class="ta-add-btn" data-key="' + blockKey + '" data-cat="' + (cat || 'daily') + '" data-grp="' + (grp || '') + '">添加</button>' +
@@ -1418,7 +1458,7 @@
       const toggleOpts = () => {
         const o = document.getElementById('ta-opts-' + sel.dataset.key);
         if (!o) return;
-        o.hidden = sel.value !== 'single';
+        o.hidden = sel.value !== 'single' && sel.value !== 'multi';
         if (o.__ceBox) o.__ceBox.hidden = o.hidden;
         // #292：textarea 已包进 .dec-inp-wrap（旁边是清空按钮），ce-box 兜底改为按父容器扫
         else if (o.parentElement) o.parentElement.querySelectorAll('.ce-box').forEach(b => { b.hidden = o.hidden; });
@@ -1437,7 +1477,7 @@
         const d2 = taAskLoad();
         const q = { id: 'q_' + Date.now() + '_' + Math.floor(Math.random() * 999), text: v, cat: b.dataset.cat || 'daily', enabled: true, isPreset: false };
         if (b.dataset.grp) q.grp = b.dataset.grp;
-        if (type === 'single') {
+        if (type === 'single' || type === 'multi') {
           const optsEl = document.getElementById('ta-opts-' + key);
           const opts = (optsEl ? optsEl.value : '').split(/\r?\n/).map(s => s.trim()).filter(Boolean).map(line => {
             const i = line.indexOf('~');
@@ -1446,8 +1486,10 @@
             const replies = line.slice(i + 1).split(';').map(s => s.trim()).filter(Boolean);
             return { t: t, reply: replies.length > 1 ? replies : (replies[0] || '') };
           });
-          if (!opts.length) { toast('单选题请填写选项，每行一个'); return; }
-          q.type = 'single';
+          if (!opts.length) { toast((type === 'multi' ? '多选题' : '单选题') + '请填写选项，每行一个'); return; }
+          // #1415：多选题只 1 个选项就没得「多」——按题型实际含义当场拦（单选题沿用原口径不拦）
+          if (type === 'multi' && opts.length < 2) { toast('多选题至少填 2 个选项'); return; }
+          q.type = type;
           q.options = opts;
         }
         d2.questions.push(q);
@@ -1568,6 +1610,8 @@
 
   // ================= TA的小问题（复刻星言 ta的小问题 完整版） =================
   // 定位：TA 偶尔递一道选择题，你选完，TA 再回应（选项有 TA 的心仪答案 + 回应）
+  // #1520：加载期自动写的静默读数闸（数据层那把尺 xyBigWriteHold，自动路径不许弹 toast）
+  function ckHold(k) { try { return !!(window.xyBigWriteHold && window.xyBigWriteHold(store, k)); } catch (e) { return false; } }
   const KEY2 = 'ta-choose';
   const TC_CAT_LABEL = { daily: '日常', like: '喜好', fun: '趣味', rel: '关系', hypo: '假设', star: '摸鱼', world: '两个世界' };
 const TC_DEFAULT = [
@@ -1830,6 +1874,8 @@ const TC_DEFAULT = [
   function tcLoad() {
     let d = null;
     try { d = JSON.parse(store.get(KEY2) || 'null'); } catch (e) { d = null; }
+    // #1520：读空但库里本该有＝大键没读全，当场请库取回一次（#1349a 单次飞行闸；同 taAskLoad）
+    if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY2)) store.requestBigKey(KEY2); } catch (e0) {} }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     // v3.13.x：默认触发概率 8 → 5 + 存量旧默认值迁移（互动卡整体降频第二轮）
     if (!d.settings || typeof d.settings !== 'object') d.settings = { enabled: true, prob: 5 };
@@ -1845,10 +1891,10 @@ const TC_DEFAULT = [
         return nq;
       });
       d.mergedIds = TC_DEFAULT.map(q => q.id);
-      if (!isNew) { try { store.set(KEY2, JSON.stringify(d)); } catch (e) {} }
+      if (!isNew && !ckHold(KEY2)) { try { store.set(KEY2, JSON.stringify(d)); } catch (e) {} }
     } else {
       // 增量合并默认题库新增的题并持久化（用户自定义永远保留）
-      if (tcMerge(d)) { try { store.set(KEY2, JSON.stringify(d)); } catch (e) {} }
+      if (tcMerge(d) && !ckHold(KEY2)) { try { store.set(KEY2, JSON.stringify(d)); } catch (e) {} }
     }
     if (!Array.isArray(d.history)) d.history = [];
     if (!Array.isArray(d.favs)) d.favs = [];
@@ -1856,12 +1902,22 @@ const TC_DEFAULT = [
     if (!Array.isArray(d.groups)) d.groups = [];
     return d;
   }
-  function tcSave(d) { try { store.set(KEY2, JSON.stringify(d)); } catch (e) {} }
+  // #1520：与 ta-ask 同款的整包写闸（#1519 只覆盖了同一文件里的 ta-ask 键，这三本当时漏了）：
+  //   大键盲窗里读空播种纯预设 → 这一发整包写回＝自定义内容被清空。拦下照实 toast、绝不落笔。
+  function tcSave(d) {
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY2, 'TA 的小问题库')) return false;
+    try { store.set(KEY2, JSON.stringify(d)); } catch (e) {}
+    return true;
+  }
   // v3.6.x：useDefault=false 时不抽取系统预设（isPreset）题
   function tcPick(d) {
     const useDefault = (d.settings || {}).useDefault !== false;
-    const qs = d.questions.filter(q => q.enabled !== false && q.text && q.options && q.options.length >= 2 && (useDefault || !q.isPreset));
-    const fallback = qs.length ? qs : TC_DEFAULT;
+    const ready = function (q) { return q.text && q.options && q.options.length >= 2; };
+    const qs = d.questions.filter(q => q.enabled !== false && ready(q) && (useDefault || !q.isPreset) && presetCatOpen('ta-choose', q));
+    // #1315：内置兜底只补「库里连预设题都还没合并进来」这一种空。旧写法在用户把题逐张关掉、
+    //   或整类停用之后拿【没过任何闸】的 TC_DEFAULT 把池子填回来＝页面上的开关是装饰（本次报障本体）。
+    const presetInStore = d.questions.some(q => q.isPreset === true && ready(q));
+    const fallback = (qs.length || presetInStore) ? qs : TC_DEFAULT.filter(q => !pgCatOff('ta-choose', q.cat));
     const pool = fallback.filter(q => _tcAskedIds.indexOf(q.id) === -1);
     const src = pool.length ? pool : fallback;
     return src[Math.floor(Math.random() * src.length)];
@@ -1885,7 +1941,7 @@ const TC_DEFAULT = [
     const idx = el ? Number(el.dataset.idx) : -1;
     // v3.5.141：后台收到互动卡片 → 系统通知提示
     // v3.5.146：通知文本合并提示语 + 具体问题
-    if (window.bgNotifyCheck) window.bgNotifyCheck('TA想让你选一个答案：' + q.text, Date.now(), { name: 'TA的小问题', late: _lateNotify() });
+    if (window.bgNotifyCheck) window.bgNotifyCheck('TA想让你选一个答案：' + q.text, Date.now(), { name: 'TA的小问题', late: _lateNotify(), kind: 'ask' });
     // v3.12.x：迟到弹窗守卫（冻结定时器回前台补跑不再弹旧卡，见 autoPopupStale）
     if (popup) {
       if (document.hidden) { _enqueuePop(idx, 'openTC'); }
@@ -1929,6 +1985,14 @@ function openTCPanel(title, html) {
   if (!mask || !body) return;
   if (titleEl) titleEl.textContent = title;
   body.innerHTML = html;
+  // FIX 2026-09-27 #1348a：门要赶在手指落下之前就铺好。上面这行整块重画会带走旧按钮上那张
+  // #1323 自学层，而 #1323 的补装时机是「下一次点按的 pointerdown」——同一发的 click 事件按
+  // mousedown 靶与 mouseup 靶的**最近共同祖先**重新定靶，层是 mousedown 之后才出现的，于是靶
+  // 回到按钮本身（无头实测这一族的取证环：leg:fire ＋ srf:1 ＋ fb:onscreen，一次 surf:hit 都没有）。
+  // ⇒ 「面板里现学现画的上传按钮」这一族在拒绝合成激活的内核上每一发都是死的（本地音乐导入＝
+  // iPhone 16／iOS 26 实报「点击上传后软件没有反应」；同一格在安卓 Chromium 上被 #1230 搬层腿
+  // 兜住，所以只有 iOS 用户在报）。补装时机从「点按起手」提前到「换届这一刻」，层先于手指存在。
+  if (window.mochiPickDoorSweep) { try { window.mochiPickDoorSweep(true); } catch (eS) {} }
   // v3.5.130：滚动位置复位——复用同一容器，上次滚到底会从旧偏移开始显示
   body.scrollTop = 0;
   mask.hidden = false;
@@ -1991,7 +2055,14 @@ window.openTCPanel = openTCPanel;
     d.history.unshift({ q: rec.choiceQuestion, my: rec.choiceAnswer, reply: rec.choiceReply, match: matchTxt, cat: rec.choiceCat || '', ts: Date.now() });
     tcSave(d);
     refreshAskRecordsIfOpen();
-    renderTCResult(msgIdx);
+    // #1508：答完即收——小问题弹窗作答后不再停在「结果页」等手动「收起来」（作者实报
+    // 「我已经选了答案，没有自动关闭收起来」，明说其他设备型号也有＝纯行为口径，零机型分支）。
+    // 与好奇/吐槽同口径：你的选择与 TA 的回应已由 chatChooseReply 写进聊天卡片与消息流
+    // （气泡翻「✓ 你选择了：…」＋TA 回应一条），默契结果仍在「TA的提问」记录里可查。
+    // renderTCResult 保留不删：结果页暂无入口（locateCardIdx 只认未答卡），后续要
+    // 「查看结果」入口时从这里接回。
+    const tcMaskEl = document.getElementById('tc-mask');
+    if (tcMaskEl) tcMaskEl.hidden = true;
   }
   // 结果视图：你的选择 / TA心里的答案 / TA回应 / 默契标签 / 继续问 / 收藏
   function renderTCResult(msgIdx) {
@@ -2097,6 +2168,9 @@ window.openTCPanel = openTCPanel;
         html += '<button class="cc-tab' + (k === tcSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + escT(TC_CAT_LABEL[k] || k) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
       });
       html += '</div>';
+      // #1315：整类停用条——本页的一个分类就是一个「分组」，旧版只能逐张点掉
+      const sysCatLabel = escT(TC_CAT_LABEL[tcSysCat] || tcSysCat);
+      html += window.presetGroup ? window.presetGroup.catBar('ta-choose', tcSysCat, String(sysCatLabel)) : '';
       const arr = d.questions.filter(q => q.cat === tcSysCat && q.isPreset === true && (search === '' || q.text.indexOf(search) >= 0));
       arr.forEach(q => {
         const idx = d.questions.indexOf(q);
@@ -2107,6 +2181,7 @@ window.openTCPanel = openTCPanel;
           '</div>';
       });
       container.innerHTML = html;
+      if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-choose', tcSysCat, function () { renderTCCatsInto(container, true, search); });
       container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
         t.addEventListener('click', () => { tcSysCat = t.dataset.cat; renderTCCatsInto(container, true, search); });
       });
@@ -2611,6 +2686,8 @@ window.openTCPanel = openTCPanel;
   function tcuLoad() {
     let d = null;
     try { d = JSON.parse(store.get(KEY3) || 'null'); } catch (e) { d = null; }
+    // #1520：读空但库里本该有＝大键没读全，当场请库取回一次（#1349a 单次飞行闸；同 taAskLoad）
+    if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY3)) store.requestBigKey(KEY3); } catch (e0) {} }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     // 迁移：快捷项人称修正（已存数据与历史答案同步修正）——
     // cw4「你身边」→「我身边」；cw6「跟着你走」→「跟着我走」；cp6「再等等，会遇到我」→「再等等，会遇到你」；
@@ -2626,11 +2703,18 @@ window.openTCPanel = openTCPanel;
       d.questions.forEach(q => {
         const fix = q && q.id ? CURIOUS_QUICK_FIX[q.id] : null;
         if (fix && Array.isArray(q.quick)) {
-          q.quick = q.quick.map(o => fix[o] || o);
-          migrated = true;
+          const prevQuick = q.quick;
+          const nextQuick = prevQuick.map(o => fix[o] || o);
+          // FIX 2026-09-27 #1324：「迁移过了」只能是「这一次真的改到了字」，不能是「这条 id 在修复表里」。
+          //   旧写法只要题目带 id 且挂着 quick 数组就无条件置 migrated ⇒ 整包回写，而这份数据第一次就
+          //   已经改对了，之后每次读都「再迁一遍＋再写一遍」＝永久空转。纯 HEAD 副本实测：一次回前台
+          //   经 mochi-fg-resume 走到 tcuLoad 两次，每次 stringify＋同步写回 22KB（四次后台往返合计
+          //   158KB），而库里的内容一个字都没变；它同时把 #1324 那条写日志（__wr-journal）顶脏，
+          //   于是每次回前台都要重写整本日志。迁移语义一字未动：第一次照旧改字＋落库。
+          if (nextQuick.some((o, i) => o !== prevQuick[i])) { q.quick = nextQuick; migrated = true; }
         }
       });
-      if (migrated) { try { store.set(KEY3, JSON.stringify(d)); } catch (e) {} }
+      if (migrated && !ckHold(KEY3)) { try { store.set(KEY3, JSON.stringify(d)); } catch (e) {} }
     }
     if (Array.isArray(d.history)) {
       d.history.forEach(h => {
@@ -2653,10 +2737,10 @@ window.openTCPanel = openTCPanel;
         return nq;
       });
       d.mergedIds = TCU_DEFAULT.map(q => q.id);
-      if (!isNew) { try { store.set(KEY3, JSON.stringify(d)); } catch (e) {} }
+      if (!isNew && !ckHold(KEY3)) { try { store.set(KEY3, JSON.stringify(d)); } catch (e) {} }
     } else {
       // 增量合并默认题库新增的题并持久化（用户自定义永远保留）
-      if (tcuMerge(d)) { try { store.set(KEY3, JSON.stringify(d)); } catch (e) {} }
+      if (tcuMerge(d) && !ckHold(KEY3)) { try { store.set(KEY3, JSON.stringify(d)); } catch (e) {} }
     }
     if (!Array.isArray(d.history)) d.history = [];
     if (!d.known || typeof d.known !== 'object') d.known = {};
@@ -2664,14 +2748,29 @@ window.openTCPanel = openTCPanel;
     if (!Array.isArray(d.groups)) d.groups = [];
     return d;
   }
-  function tcuSave(d) { try { store.set(KEY3, JSON.stringify(d)); } catch (e) {} }
+  // #1520：与 ta-ask 同款的整包写闸（#1519 只覆盖了同一文件里的 ta-ask 键，这三本当时漏了）：
+  //   大键盲窗里读空播种纯预设 → 这一发整包写回＝自定义内容被清空。拦下照实 toast、绝不落笔。
+  function tcuSave(d) {
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY3, 'TA 的好奇题库')) return false;
+    try { store.set(KEY3, JSON.stringify(d)); } catch (e) {}
+    return true;
+  }
   // v3.6.x：useDefault=false 时不抽取系统预设（isPreset）题
   function tcuPick(d) {
     const useDefault = (d.settings || {}).useDefault !== false;
-    const pool = (d.questions && d.questions.length) ? d.questions : TCU_DEFAULT;
-    let qs = pool.filter(q => q.enabled !== false && q.text && !(q.id && d.known[q.id]) && (useDefault || !q.isPreset));
-    if (!qs.length) qs = TCU_DEFAULT.filter(q => !d.known[q.id]);
-    if (!qs.length) qs = TCU_DEFAULT.slice();
+    // #1315：整类停用先作用于内置兜底表（这一路 pool 就是 TCU_DEFAULT，条目没有 isPreset 字段）
+    const pool = (d.questions && d.questions.length) ? d.questions : TCU_DEFAULT.filter(q => !pgCatOff('ta-curious', q.cat));
+    let qs = pool.filter(q => q.enabled !== false && q.text && !(q.id && d.known[q.id]) && (useDefault || !q.isPreset) && presetCatOpen('ta-curious', q));
+    if (!qs.length) {
+      // #1315：两道旧兜底都拿【没过闸】的 TCU_DEFAULT 填空池＝用户逐张关掉/整类停用后照样出题，
+      //   页面上的开关是装饰（本次报障本体）。现在库里已有预设题时不再回灌内置表（该类就此不出题，
+      //   调用方判空返回）；只有「库里连预设都还没合并」时才按类闸放行内置表。
+      const presetInStore = (d.questions || []).some(q => q.isPreset === true);
+      if (!presetInStore) {
+        qs = TCU_DEFAULT.filter(q => !d.known[q.id] && !pgCatOff('ta-curious', q.cat));
+        if (!qs.length) qs = TCU_DEFAULT.filter(q => !pgCatOff('ta-curious', q.cat));
+      }
+    }
     return qs[Math.floor(Math.random() * qs.length)];
   }
   function tcuPush(q, opts) {
@@ -2692,7 +2791,7 @@ window.openTCPanel = openTCPanel;
     const idx = el ? Number(el.dataset.idx) : -1;
     // v3.5.141：后台收到互动卡片 → 系统通知提示
     // v3.5.146：通知文本合并提示语 + 具体问题
-    if (window.bgNotifyCheck) window.bgNotifyCheck('TA对你有点好奇：' + q.text, Date.now(), { name: 'TA的好奇', late: _lateNotify() });
+    if (window.bgNotifyCheck) window.bgNotifyCheck('TA对你有点好奇：' + q.text, Date.now(), { name: 'TA的好奇', late: _lateNotify(), kind: 'ask' });
     // v3.6.x：用户正在聊天输入栏打字时不弹（弹窗会抢焦点打断输入法，见 chatInputFocused）
     // v3.12.x：迟到弹窗守卫（冻结定时器回前台补跑不再弹旧卡，见 autoPopupStale）
     if (popup) {
@@ -2859,6 +2958,9 @@ window.openTCPanel = openTCPanel;
         html += '<button class="cc-tab' + (k === tcuSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + escT(TCU_CAT_LABEL[k] || k) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
       });
       html += '</div>';
+      // #1315：整类停用条——本页的一个分类就是一个「分组」，旧版只能逐张点掉
+      const sysCatLabel = escT(TCU_CAT_LABEL[tcuSysCat] || tcuSysCat);
+      html += window.presetGroup ? window.presetGroup.catBar('ta-curious', tcuSysCat, String(sysCatLabel)) : '';
       const arr = d.questions.filter(q => q.cat === tcuSysCat && q.isPreset === true && (search === '' || q.text.indexOf(search) >= 0));
       arr.forEach(q => {
         const idx = d.questions.indexOf(q);
@@ -2871,6 +2973,7 @@ window.openTCPanel = openTCPanel;
           '</div></div>';
       });
       container.innerHTML = html;
+      if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-curious', tcuSysCat, function () { renderTCUCatsInto(container, true, search); });
       container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
         t.addEventListener('click', () => { tcuSysCat = t.dataset.cat; renderTCUCatsInto(container, true, search); });
       });
@@ -3227,6 +3330,8 @@ window.openTCPanel = openTCPanel;
   function trLoad() {
     let d = null;
     try { d = JSON.parse(store.get(KEY4) || 'null'); } catch (e) { d = null; }
+    // #1520：读空但库里本该有＝大键没读全，当场请库取回一次（#1349a 单次飞行闸；同 taAskLoad）
+    if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY4)) store.requestBigKey(KEY4); } catch (e0) {} }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     // v3.13.x：默认触发概率 15 → 5（v3.12.x 降频漏改了吐槽，这次补上）+ 存量旧默认值迁移
     if (!d.settings || typeof d.settings !== 'object') d.settings = { enabled: true, prob: 5 };
@@ -3241,27 +3346,36 @@ window.openTCPanel = openTCPanel;
         return nq;
       });
       d.mergedIds = TR_DEFAULT.map(q => q.id);
-      if (!isNew) { try { store.set(KEY4, JSON.stringify(d)); } catch (e) {} }
+      if (!isNew && !ckHold(KEY4)) { try { store.set(KEY4, JSON.stringify(d)); } catch (e) {} }
     } else {
       // 增量合并默认题库新增的字卡并持久化（用户自定义永远保留）
-      if (trMerge(d)) { try { store.set(KEY4, JSON.stringify(d)); } catch (e) {} }
+      if (trMerge(d) && !ckHold(KEY4)) { try { store.set(KEY4, JSON.stringify(d)); } catch (e) {} }
     }
     if (!Array.isArray(d.history)) d.history = [];
     // v3.7.x：我的添加自定义分组
     if (!Array.isArray(d.groups)) d.groups = [];
     return d;
   }
-  function trSave(d) { try { store.set(KEY4, JSON.stringify(d)); } catch (e) {} }
+  // #1520：与 ta-ask 同款的整包写闸（#1519 只覆盖了同一文件里的 ta-ask 键，这三本当时漏了）：
+  //   大键盲窗里读空播种纯预设 → 这一发整包写回＝自定义内容被清空。拦下照实 toast、绝不落笔。
+  function trSave(d) {
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY4, 'TA 的吐槽题库')) return false;
+    try { store.set(KEY4, JSON.stringify(d)); } catch (e) {}
+    return true;
+  }
   // v3.6.x：useDefault=false 时不抽取系统预设（isPreset）字卡
   function trPick(d, lastUserText) {
     const useDefault = (d.settings || {}).useDefault !== false;
-    const pool = (d.questions && d.questions.length) ? d.questions : TR_DEFAULT;
+    // #1315：整类停用先作用于内置兜底表（这一路 pool 就是 TR_DEFAULT，条目没有 isPreset 字段）
+    const pool = (d.questions && d.questions.length) ? d.questions : TR_DEFAULT.filter(q => !pgCatOff('ta-roast', q.cat));
     if (lastUserText) {
-      const matched = pool.filter(q => q.enabled !== false && Array.isArray(q.match) && q.match.length && (useDefault || !q.isPreset) && q.match.some(k => lastUserText.indexOf(k) >= 0));
+      const matched = pool.filter(q => q.enabled !== false && Array.isArray(q.match) && q.match.length && (useDefault || !q.isPreset) && presetCatOpen('ta-roast', q) && q.match.some(k => lastUserText.indexOf(k) >= 0));
       if (matched.length) return matched[Math.floor(Math.random() * matched.length)];
     }
-    let qs = pool.filter(q => q.enabled !== false && (useDefault || !q.isPreset));
-    if (!qs.length) qs = TR_DEFAULT.slice();
+    let qs = pool.filter(q => q.enabled !== false && (useDefault || !q.isPreset) && presetCatOpen('ta-roast', q));
+    // #1315：旧写法「抽空就 TR_DEFAULT.slice() 整表回灌」＝逐张关闭与整类停用全被越过（开关是装饰）。
+    //   现在只在库里连预设题都没合并过时才用内置表，且同样过类闸。
+    if (!qs.length && !(d.questions || []).some(q => q.isPreset === true)) qs = TR_DEFAULT.filter(q => !pgCatOff('ta-roast', q.cat));
     return qs[Math.floor(Math.random() * qs.length)];
   }
   function trPush(q, opts) {
@@ -3279,7 +3393,7 @@ window.openTCPanel = openTCPanel;
     const idx = el ? Number(el.dataset.idx) : -1;
     // v3.5.141：后台收到互动卡片 → 系统通知提示
     // v3.5.146：通知文本合并提示语 + 具体内容
-    if (window.bgNotifyCheck) window.bgNotifyCheck('TA吐槽了你一句：' + q.text, Date.now(), { name: 'TA的吐槽', late: _lateNotify() });
+    if (window.bgNotifyCheck) window.bgNotifyCheck('TA吐槽了你一句：' + q.text, Date.now(), { name: 'TA的吐槽', late: _lateNotify(), kind: 'ask' });
     // v3.6.x：用户正在聊天输入栏打字时不弹（弹窗会抢焦点打断输入法，见 chatInputFocused）
     // v3.12.x：迟到弹窗守卫（冻结定时器回前台补跑不再弹旧卡，见 autoPopupStale）
     if (popup) {
@@ -3374,7 +3488,7 @@ window.openTCPanel = openTCPanel;
       ccStateSave(st);
       interactGateMark();
       if (window.chatAddIn) window.chatAddIn(text, { initiative: 1, tag: '用了你建的字卡' });
-      if (window.bgNotifyCheck) { try { window.bgNotifyCheck(text, Date.now(), { name: window.taFit ? window.taFit('TA') + '的字卡' : 'TA的字卡' }); } catch (e) {} }
+      if (window.bgNotifyCheck) { try { window.bgNotifyCheck(text, Date.now(), { name: window.taFit ? window.taFit('TA') + '的字卡' : 'TA的字卡', kind: 'msg' }); } catch (e) {} }
     } catch (e) {}
   }
   window.maybeTriggerTACC = maybeTriggerTACC;
@@ -3495,6 +3609,9 @@ window.openTCPanel = openTCPanel;
         html += '<button class="cc-tab' + (k === trSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + escT(TR_CAT_LABEL[k] || k) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
       });
       html += '</div>';
+      // #1315：整类停用条——本页的一个分类就是一个「分组」，旧版只能逐张点掉
+      const sysCatLabel = escT(TR_CAT_LABEL[trSysCat] || trSysCat);
+      html += window.presetGroup ? window.presetGroup.catBar('ta-roast', trSysCat, String(sysCatLabel)) : '';
       const arr = d.questions.filter(q => q.cat === trSysCat && q.isPreset === true && (search === '' || q.text.indexOf(search) >= 0));
       arr.forEach(q => {
         const idx = d.questions.indexOf(q);
@@ -3506,6 +3623,7 @@ window.openTCPanel = openTCPanel;
           '</div></div>';
       });
       container.innerHTML = html;
+      if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-roast', trSysCat, function () { renderTRCatsInto(container, true, search); });
       container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
         t.addEventListener('click', () => { trSysCat = t.dataset.cat; renderTRCatsInto(container, true, search); });
       });
@@ -3765,11 +3883,100 @@ window.openTCPanel = openTCPanel;
       let d = null;
       try { d = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return; }
       const arr = Array.isArray(d) ? d : (d && Array.isArray(d.history) ? d.history : null);
-      if (arr) out.push.apply(out, arr);
+      if (!arr) return;
+      // #1403：浅拷贝并挂上来源桌面 __cid——「按条删」要知道这一条来自哪个桌面（删除只在那一个
+      // 桌面里摘掉那一条）。刻意不改下面的排序与返回形态：#101／#625a-d／#625h 六支针钉的就是
+      // 「五个分类统一走本函数跨桌面汇总」这条链，动它＝把那些修复的锚一起拔掉。
+      arr.forEach(function (x) { if (x) out.push(Object.assign({}, x, { __cid: cid })); });
     });
     out.sort(function (a, b) { return (Number(b && b.ts) || 0) - (Number(a && a.ts) || 0); });
     return out;
   }
+  // #1403：按条删除的落笔处。写回口径照 clearDeskHistories（#625 同一条轴）：裸数组档写数组本身，
+  // 对象档只换 history——题库/设置/分组/二级密码那些同档字段一律不动。
+  function delDeskHistoryEntry(cid, key, ts) {
+    const raw = deskRaw(cid, key);
+    if (!raw) return false;
+    let d = null;
+    try { d = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return false; }
+    const arr = Array.isArray(d) ? d : (d && Array.isArray(d.history) ? d.history : null);
+    if (!arr) return false;
+    const i = arr.findIndex(function (x) { return x && (Number(x.ts) || 0) === ts; });
+    if (i < 0) return false;
+    arr.splice(i, 1);
+    if (Array.isArray(d)) { deskWrite(cid, key, JSON.stringify(arr)); }
+    else { d.history = arr; deskWrite(cid, key, JSON.stringify(d)); }
+    return true;
+  }
+  // 五档共用一条渲染链：行内容各自给（rowFn，保持各档原有字段与形态），折叠与「删除」交站内唯一
+  // 那两把件（idb.js 的 mochiHistFold／mochiHistDel＋Bind）＝当天直显、更早按月折、每条一删，
+  // 不裁条目、也不替用户动那个已有的「清空全部桌面」大动作
+  function askListRender(el, h, key, name, rowFn) {
+    if (!el) return;
+    el.innerHTML = window.mochiHistFold(h.map(function (x) {
+      const label = String(x.q || x.roast || x.my || '').slice(0, 30);
+      return { ts: Number(x.ts) || 0, html: '<div class="tc-listitem">' + rowFn(x) + window.mochiHistDel((x.__cid || '') + '|' + (Number(x.ts) || 0), label) + '</div>' };
+    }), {
+      key: key,
+      empty: '<div class="ta-empty">暂无' + name + '记录</div>',
+      todayEmpty: '<div class="dc-h-day-empty">今天暂无' + name + '记录</div>'
+    });
+    window.mochiHistDelBind(el, {
+      title: '删除这条' + name + '记录？',
+      onDel: function (k) {
+        const p = String(k).split('|');
+        if (delDeskHistoryEntry(p[0], key, Number(p[1]))) {
+          window.renderAskRecords();
+          if (typeof window.toast === 'function') window.toast('已删除这条' + name + '记录');
+        }
+      }
+    });
+  }
+  window.renderAskRecords = function () {
+    // TA的询问
+    const askEl = document.getElementById('ar-ask');
+    if (askEl) {
+      const h = allDeskHistories('ta-ask');
+      askListRender(askEl, h, 'ta-ask', '询问', function (x) {
+        return '<div class="tc-li-q">问：' + escG(x.q) + '</div>' + (x.status === 'pending' ? '<div class="tc-li-pending">待回答</div>' : '<div class="tc-li-line">你：' + escG(x.a) + '</div>' + (x.reply ? '<div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div>' : '')) + '<div class="tc-li-time">' + fmtDT(x.ts) + '</div>';
+      });
+    }
+    // TA的小问题
+    const chEl = document.getElementById('ar-choose');
+    if (chEl) {
+      const h = allDeskHistories(KEY2);
+      askListRender(chEl, h, KEY2, '小问题', function (x) {
+        return '<div class="tc-li-q">' + escG(x.q) + '</div><div class="tc-li-line">你的选择：' + escG(x.my) + '</div><div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div><div class="tc-li-match">' + escG(x.match) + '</div><div class="tc-li-time">' + fmtDT(x.ts) + '</div>';
+      });
+    }
+    // TA的好奇
+    const cuEl = document.getElementById('ar-curious');
+    if (cuEl) {
+      const h = allDeskHistories(KEY3);
+      askListRender(cuEl, h, KEY3, '好奇', function (x) {
+        return '<div class="tc-li-q">' + escG(x.q) + '</div><div class="tc-li-line">你：' + escG(x.my) + '</div><div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div><div class="tc-li-time">' + fmtDT(x.ts) + '</div>';
+      });
+    }
+    // TA的吐槽
+    const roEl = document.getElementById('ar-roast');
+    if (roEl) {
+      const h = allDeskHistories(KEY4);
+      askListRender(roEl, h, KEY4, '吐槽', function (x) {
+        return '<div class="tc-li-q">' + escG(x.roast) + '</div><div class="tc-li-line">你：' + escG(x.my) + '</div><div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div><div class="tc-li-time">' + fmtDT(x.ts) + '</div>';
+      });
+    }
+    // 邀请 / 问问 TA（我的提问 + 联系人答案）
+    const inEl = document.getElementById('ar-invite');
+    if (inEl) {
+      const h = allDeskHistories('invite-ask-history');
+      askListRender(inEl, h, 'invite-ask-history', '邀请/问问', function (x) {
+        return '<div class="tc-li-q">' +
+          (x.type === 'invite' ? '邀请：' : '问：') + String(x.q || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '</div>' +
+          '<div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escG(window.taFit ? window.taFit(window.askCardReplyClean ? window.askCardReplyClean(x.a || '') : (x.a || '')) : (window.askCardReplyClean ? window.askCardReplyClean(x.a || '') : (x.a || ''))) + '</div>' +
+          '<div class="tc-li-time">' + fmtDT(x.ts) + '</div>';
+      });
+    }
+  };
   // 清空各桌面记录：读改写保留题库/设置/分组，只清 history（或裸数组本身）
   function clearDeskHistories(key) {
     deskCids().forEach(function (cid) {
@@ -3790,51 +3997,6 @@ window.openTCPanel = openTCPanel;
       if (pg && !pg.hidden && window.renderAskRecords) window.renderAskRecords();
     } catch (e) {}
   }
-  window.renderAskRecords = function () {
-    // TA的询问
-    const askEl = document.getElementById('ar-ask');
-    if (askEl) {
-      const h = allDeskHistories('ta-ask');
-      askEl.innerHTML = h.length
-        ? h.map(x => '<div class="tc-listitem"><div class="tc-li-q">问：' + escG(x.q) + '</div>' + (x.status === 'pending' ? '<div class="tc-li-pending">待回答</div>' : '<div class="tc-li-line">你：' + escG(x.a) + '</div>' + (x.reply ? '<div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div>' : '')) + '<div class="tc-li-time">' + fmtDT(x.ts) + '</div></div>').join('')
-        : '<div class="ta-empty">暂无询问记录</div>';
-    }
-    // TA的小问题
-    const chEl = document.getElementById('ar-choose');
-    if (chEl) {
-      const h = allDeskHistories(KEY2);
-      chEl.innerHTML = h.length
-        ? h.map(x => '<div class="tc-listitem"><div class="tc-li-q">' + escG(x.q) + '</div><div class="tc-li-line">你的选择：' + escG(x.my) + '</div><div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div><div class="tc-li-match">' + escG(x.match) + '</div><div class="tc-li-time">' + fmtDT(x.ts) + '</div></div>').join('')
-        : '<div class="ta-empty">暂无小问题记录</div>';
-    }
-    // TA的好奇
-    const cuEl = document.getElementById('ar-curious');
-    if (cuEl) {
-      const h = allDeskHistories(KEY3);
-      cuEl.innerHTML = h.length
-        ? h.map(x => '<div class="tc-listitem"><div class="tc-li-q">' + escG(x.q) + '</div><div class="tc-li-line">你：' + escG(x.my) + '</div><div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div><div class="tc-li-time">' + fmtDT(x.ts) + '</div></div>').join('')
-        : '<div class="ta-empty">暂无好奇记录</div>';
-    }
-    // TA的吐槽
-    const roEl = document.getElementById('ar-roast');
-    if (roEl) {
-      const h = allDeskHistories(KEY4);
-      roEl.innerHTML = h.length
-        ? h.map(x => '<div class="tc-listitem"><div class="tc-li-q">' + escG(x.roast) + '</div><div class="tc-li-line">你：' + escG(x.my) + '</div><div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + taReplyShow(x.reply) + '</div><div class="tc-li-time">' + fmtDT(x.ts) + '</div></div>').join('')
-        : '<div class="ta-empty">暂无吐槽记录</div>';
-    }
-    // 邀请 / 问问 TA（我的提问 + 联系人答案）
-    const inEl = document.getElementById('ar-invite');
-    if (inEl) {
-      const h = allDeskHistories('invite-ask-history');
-      inEl.innerHTML = h.length
-        ? h.map(x => '<div class="tc-listitem"><div class="tc-li-q">' +
-            (x.type === 'invite' ? '邀请：' : '问：') + String(x.q || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '</div>' +
-            '<div class="tc-li-line">' + (window.taFit ? window.taFit('TA：') : 'TA：') + escG(window.taFit ? window.taFit(window.askCardReplyClean ? window.askCardReplyClean(x.a || '') : (x.a || '')) : (window.askCardReplyClean ? window.askCardReplyClean(x.a || '') : (x.a || ''))) + '</div>' +
-            '<div class="tc-li-time">' + fmtDT(x.ts) + '</div></div>').join('')
-        : '<div class="ta-empty">暂无邀请/问问记录</div>';
-    }
-  };
   // 清空按钮（#625：列表已是全桌面汇总，清空必须同口径清全桌面，
   // 否则清完别桌记录立刻又出现在列表里＝「清了个寂寞」）
   const clearBind = (id, key, label) => {
@@ -3964,6 +4126,7 @@ window.openTCPanel = openTCPanel;
 
   // ================= 批量提问问卷（v3.32.x：用户批量出题 → 联系人作答交卷） =================
   // 题目格式（textarea 批量编辑）：单选题 = 第一行【问题】+ 下面每行一个选项（≥2 个成单选）；
+  // 多选题 = 题干里带「多选」标记（【问题（多选）】）+ 每行一个选项，TA 一次答好几个；
   // 文字题 = 第一行【问题】+ 下一行只写一个「一」（与单选题的区别标记）。
   // 联系人文字题用字卡作答，与正常聊天同源：自定义字卡 1~5 张空格连发，系统预设默认聊天
   // 字卡（getDefaultCards('chat')）可覆盖——后者内部尊重 #319 未成年人防护锁（锁定时系统
@@ -3996,20 +4159,46 @@ window.openTCPanel = openTCPanel;
   function surveySyncCard(d) {
     try { if (window.chatSyncSurveyCard) window.chatSyncSurveyCard(d.sentAt, d.status, d.answers.slice()); } catch (e) {}
   }
-  // 解析问卷文本：返回 [{type:'single'|'text', text, options}]
+  // #1415：「多选」标记的唯一定义处——批量问卷解析与题库批量导入共用一份判据。
+  // 认两种写法：括号式「题？（多选）」与裸后缀「题？多选」，命中后从题干里剥掉，屏上念的是干净问题。
+  // #1480：标记里还可以把「最多选几个」按题写死——「（多选·最多2）」「（多选·最多 3 个）」
+  // 「（多选：最多4）」与裸后缀「题？多选·最多2」；数字 2~6 有效（与「最多选几个」那根杆同档位），
+  // 写成别的数只当普通多选、上限仍走全站那根杆（宁可少限，也不把没剥干净的标记念给 TA 听）。
+  function askMultiMarkOf(text) {
+    const s = String(text == null ? '' : text).trim();
+    const capOf = function (n) { const v = parseInt(n, 10); return (v >= 2 && v <= 6) ? v : 0; };
+    const br = s.match(/[（(]\s*多\s*选\s*(?:[·•:：]?\s*最\s*多\s*(\d{1,2})\s*个?\s*)?[)）]\s*$/);
+    if (br) return { text: s.slice(0, br.index).trim(), multi: true, max: capOf(br[1]) };
+    const bare = s.length > 2 ? s.match(/\s*多\s*选\s*(?:[·•:：]?\s*最\s*多\s*(\d{1,2})\s*个?\s*)?$/) : null;
+    if (bare) return { text: s.slice(0, bare.index).trim(), multi: true, max: capOf(bare[1]) };
+    return { text: s, multi: false, max: 0 };
+  }
+  // 解析问卷文本：返回 [{type:'single'|'multi'|'text', text, options}]（多选题可带 multiMax=#1480）
+  // #1415：多选题的写法＝题干里带「多选」标记（【今晚想吃点什么？（多选）】或【……？多选】），
+  // 标记在入库前从题干剥掉，屏上念出来的就是干净问题。选项仍不足 2 个时按文字题处理（同单选口径）。
   function surveyParse(text) {
     const lines = String(text || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
     const qs = [];
     let cur = null, marked = false;
     const flush = () => {
       if (!cur) return;
-      if (!marked && cur.opts.length >= 2) qs.push({ type: 'single', text: cur.text, options: cur.opts.slice() });
+      if (!marked && cur.opts.length >= 2) {
+        const sq = { type: cur.multi ? 'multi' : 'single', text: cur.text, options: cur.opts.slice() };
+        // #1480：题干标记里写死了「最多N」就随题存（multiMax），没写＝走「最多选几个」那根杆
+        if (cur.multi && cur.max >= 2) sq.multiMax = cur.max;
+        qs.push(sq);
+      }
       else qs.push({ type: 'text', text: cur.text, options: [] });
       cur = null; marked = false;
     };
     lines.forEach(t => {
       const m = t.match(/^【(.+?)】$/);
-      if (m) { flush(); if (m[1].trim()) cur = { text: m[1].trim(), opts: [] }; return; }
+      if (m) {
+        flush();
+        const mk = askMultiMarkOf(m[1]);
+        if (mk.text) cur = { text: mk.text, opts: [], multi: mk.multi, max: mk.max || 0 };
+        return;
+      }
       if (cur) {
         if (!marked && !cur.opts.length && t === '一') { marked = true; return; }
         cur.opts.push(t); return;
@@ -4055,8 +4244,17 @@ window.openTCPanel = openTCPanel;
   // d.answers 并回写卡片；是否把该答案作为聊天消息逐条发出由 settings.sendToChat 决定
   // （v3.33.x #523：批量问卷题多、逐条刷聊天太吵，用户可在发出前取消勾选）。
   function surveyPickAnswer(q) {
-    if (q && q.type === 'single' && Array.isArray(q.options) && q.options.length) {
-      return q.options[Math.floor(Math.random() * q.options.length)];
+    if (q && Array.isArray(q.options) && q.options.length) {
+      // #1415：多选题一次抽「2 ~ min(最多选几个, 选项数)」个，按题目原序念成「A、B」整串。
+      // 上限取全站共用的那一根杆（chat.js 的 per-cid 键 ask-multi-max）——半框里改过这里就跟着变，
+      // 不留两把尺；助手取不到时（单独载入本文件的探针）退化成抽 1 个，不抛错。
+      // #1480：题自己写死了「最多N」（multiMax）就用题上的，没写的题仍走那根杆。
+      if (q.type === 'multi' && typeof window.mochiPickMulti === 'function') {
+        const max = (q.multiMax >= 2 && q.multiMax <= 6) ? q.multiMax
+          : (typeof window.askMultiMaxLoad === 'function' ? window.askMultiMaxLoad() : 3);
+        return window.mochiPickMulti(q.options.length, max).map(k => String(q.options[k] == null ? '' : q.options[k])).join('、');
+      }
+      if (q.type === 'single' || q.type === 'multi') return q.options[Math.floor(Math.random() * q.options.length)];
     }
     return surveyAnswerText();
   }
@@ -4070,7 +4268,9 @@ window.openTCPanel = openTCPanel;
     surveySave(cur);
     surveySyncCard(cur);
     if (cur.settings.sendToChat !== false) {
-      const msg = (q.type === 'single' && Array.isArray(q.options) && q.options.length)
+      // #1415：多选题也是「从选项里挑」，逐条发到聊天时要带「我的选择：」，别念成一条自由文本
+      const isPick = (q.type === 'single' || q.type === 'multi') && Array.isArray(q.options) && q.options.length;
+      const msg = isPick
         ? '【' + q.text + '】我的选择：' + ans
         : '【' + q.text + '】' + ans;
       try { window.chatAddIn(msg, {}); } catch (e) {}
@@ -4157,11 +4357,20 @@ window.openTCPanel = openTCPanel;
     if (pv) pv.textContent = d.settings.prob + '%';
     const schatEl = document.getElementById('ta-survey-chat');
     if (schatEl) schatEl.checked = d.settings.sendToChat !== false;
+    // #1415：多选题上限回显——这一格与「问问TA」半框里那行是同一个 per-cid 键，任一处改完另一处跟上
+    const mmaxEl = document.getElementById('ta-survey-mmax-val');
+    if (mmaxEl) mmaxEl.value = typeof window.askMultiMaxLoad === 'function' ? window.askMultiMaxLoad() : 3;
     const st = document.getElementById('ta-survey-status');
     if (st) {
       if (d.status === 'draft') {
         const nS = d.qs.filter(q => q.type === 'single').length;
-        st.innerHTML = '当前状态：草稿 —— 已解析 <b>' + d.qs.length + '</b> 题' + (d.qs.length ? '（单选 ' + nS + ' 题 / 文字 ' + (d.qs.length - nS) + ' 题）' : '') + '。填好后点「发出问卷给TA」。';
+        // #1415：多选题单独计一格，草稿态一眼看出这一卷里几种题型各有多少
+        const nM = d.qs.filter(q => q.type === 'multi').length;
+        const brk = d.qs.length ? '（单选 ' + nS + ' 题' + (nM ? ' / 多选 ' + nM + ' 题' : '') + ' / 文字 ' + (d.qs.length - nS - nM) + ' 题）' : '';
+        const cap = (typeof window.askMultiMaxLoad === 'function' ? window.askMultiMaxLoad() : 3);
+        // #1480：有题自带「最多N」时点名说明——杆上那格只是没单独限选的题的默认档
+        const nCap = d.qs.filter(q => q.type === 'multi' && q.multiMax >= 2).length;
+        st.innerHTML = '当前状态：草稿 —— 已解析 <b>' + d.qs.length + '</b> 题' + brk + (nM ? '；多选题' + (nCap ? nCap + ' 题单独限选、其余' : '') + '每次最多选 ' + cap + ' 个。' : '。') + '填好后点「发出问卷给TA」。';
       } else if (d.status === 'sent') {
         st.innerHTML = '当前状态：TA 作答中 —— 已答 <b>' + d.answers.length + '</b> / ' + d.qs.length + ' 题' + (d.settings.deadline ? '；交卷时间 ' + fmtDeadlineText(d.settings.deadline) : '；未设交卷时间') + '；每 30 秒按 ' + d.settings.prob + '% 概率提前交卷。';
       } else {
@@ -4223,7 +4432,7 @@ window.openTCPanel = openTCPanel;
         html += '<div class="tc-listitem" style="text-align:left">' +
           '<div class="tc-li-top">' +
           '<input type="checkbox" class="sv-fav-cb" data-i="' + i + '" style="width:16px;height:16px;flex-shrink:0;cursor:pointer">' +
-          '<span class="tc-li-q">' + (i + 1) + '. ' + escT((q && q.text) || '') + (opts ? ' <span class="tc-known">单选·' + opts.length + '选项</span>' : '') + '</span>' +
+          '<span class="tc-li-q">' + (i + 1) + '. ' + escT((q && q.text) || '') + (opts ? ' <span class="tc-known">' + (q.type === 'multi' ? '多选' + (q.multiMax >= 2 ? '·限' + q.multiMax : '') + '·' : '单选·') + opts.length + '选项</span>' : '') + '</span>' +
           '<span class="sv-fav-state" data-i="' + i + '" style="font-size:11px;font-weight:600;color:#c2864b;flex-shrink:0;white-space:nowrap">' + (favStates[i] ? '★ 已收藏' : '') + '</span>' +
           '</div>' +
           (opts ? '<div class="tc-li-line">选项：' + escT(opts.join(' / ')) + '</div>' : '') +
@@ -4249,7 +4458,7 @@ window.openTCPanel = openTCPanel;
           if (!text) { dup++; return; }
           if ((d.questions || []).some(b => b && String(b.text || '') === text)) { dup++; return; }
           const nq = { id: 'q_' + Date.now() + '_' + Math.floor(Math.random() * 9999), text: text, cat: 'daily', enabled: true, isPreset: false };
-          if (q && Array.isArray(q.options) && q.options.length >= 2) { nq.type = 'single'; nq.options = q.options.slice(0, 12).map(o => String(o)); }
+          if (q && Array.isArray(q.options) && q.options.length >= 2) { nq.type = q.type === 'multi' ? 'multi' : 'single'; nq.options = q.options.slice(0, 12).map(o => String(o)); if (nq.type === 'multi' && q.multiMax >= 2) nq.multiMax = q.multiMax; }
           d.questions.push(nq);
           added++;
         });
@@ -4363,6 +4572,22 @@ window.openTCPanel = openTCPanel;
       surveySave(d);
       toast(schat.checked ? 'TA 的每条作答都会发送到聊天消息' : 'TA 的作答只写入问卷卡片，不再逐条发到聊天消息');
     });
+    // #1415：多选题「最多选几个」。这一行与「问问TA」半框里那行读写同一个 per-cid 键
+    // （ask-multi-max，定义与取数都在 chat.js）——两处一起调，不会各量一把尺。
+    const mmaxRow = document.getElementById('ta-survey-mmax');
+    if (mmaxRow) {
+      const mmaxVal = document.getElementById('ta-survey-mmax-val');
+      const clampMMax = () => {
+        // 与半框那一行同一条收边：越界钉在端点，不打回默认值（两处控件读写同一个键，行为也得一致）
+        let n = parseInt(mmaxVal.value, 10);
+        if (isNaN(n)) n = 3;
+        else n = n < 2 ? 2 : (n > 6 ? 6 : n);
+        mmaxVal.value = n;
+        if (typeof window.askMultiMaxSave === 'function') window.askMultiMaxSave(n);
+      };
+      mmaxRow.querySelector('.stp-min').addEventListener('click', (e) => { if (e) e.stopPropagation(); mmaxVal.value = (parseInt(mmaxVal.value, 10) || 3) - 1; clampMMax(); });
+      mmaxRow.querySelector('.stp-max').addEventListener('click', (e) => { if (e) e.stopPropagation(); mmaxVal.value = (parseInt(mmaxVal.value, 10) || 3) + 1; clampMMax(); });
+    }
     const ssend = document.getElementById('ta-survey-send');
     if (ssend) ssend.addEventListener('click', surveySend);
     const sreset = document.getElementById('ta-survey-reset');

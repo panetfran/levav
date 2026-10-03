@@ -313,6 +313,24 @@
     // #386：file:// 直开本地文件时浏览器禁止 fetch 同目录 json（origin 'null'），
     // 版本轮询只会每 5s 刷一条 CORS 报错并误弹「网络异常」，直接跳过（线上 http/https 才启用）。
     if (location.protocol === 'file:') return;
+    // FIX 2026-09-28 #1351c「知道有线上新版，却从没去取过那个新包」——换版送达的那半件事
+    //   （iPhone 15／iOS 17.6.1 复报「上次的大部分需要添加图片的功能都已修复，但……还是无法添加」，
+    //   随附诊断单里【更新状态】逐字写着：远端部署于 23:26、本机构建 13:28＝落后约 10 小时，
+    //   而同一张单【保活现场】写着 保活=开／通知=开＝#992 那道「后台不落地换版」的闸门永久生效，
+    //   更新条用户没点＝这一场永远停在旧包。上一批修好的门，对这台手机等于没修过）。
+    //   全站没有一处调用 registration.update()：新 sw.js 只能等浏览器自己的更新检查
+    //   （规范上限 24h，且只在导航时做），而 PWA 桌面快捷方式一开就是几天不重新导航。
+    //   本函数只在「线上 version.json 的 ts 比这一页的构建 ts 新」这一刻调用一次，
+    //   判据零机型／零 UA；它只让新 sw 装上（新缓存就位、旧缓存按 sw 自己的 activate 清掉），
+    //   换版【落地】时机一字未动——#965 的待换版登记、#992 的保活闸门、手动更新条全照旧。
+    function askSwUpdate() {
+      try {
+        if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistration) return;
+        navigator.serviceWorker.getRegistration().then(function (r) {
+          try { if (r && typeof r.update === 'function') r.update(); } catch (e) {}
+        }).catch(function () {});
+      } catch (e2) {}
+    }
     let baseTs = null;      // 当前页面的版本时间戳（基线）
     let baseGot = false;
     // v3.7.x：基线在页面加载时直接从 splash-ver data-build-ts 确定（构建时注入），
@@ -352,6 +370,7 @@
           // #965：前台轮询发现新版也走自动通道（不只弹条）——长开会话（用户几天不关）也能
           // 后台预取，转后台即换版；tryAutoUpgrade 返回 false（无 controller／本版本已试过）才回更新条
           if (ts > baseTs) { if (!tryAutoUpgrade(ts)) showVerBar(ts); }
+          askSwUpdate(); // FIX 2026-09-28 #1351c：判出「线上比这一页新」这一刻就去请 sw.js 重新装一次（见函数注释）
         })
         .catch(function () { failCount++; maybeNetHint(); });
     }
@@ -407,6 +426,7 @@
         if (!ts || isNaN(ts)) return;
         if (!baseGot) { baseTs = ts; baseGot = true; return; }
         if (ts > baseTs && !tryAutoUpgrade(ts)) showVerBar(ts);
+        if (ts > baseTs) askSwUpdate(); // FIX 2026-09-28 #1351c：冷启动/重进这一发同样顺手请一次
       }).catch(function () { /* 网络不可用：不动静，等周期轮询网络恢复后弹条 */ });
     });
   })();
@@ -428,11 +448,28 @@
     const G = 'xy-home-v2:';
     const DAY = 86400000;
     const startedAt = Date.now();
-    function ts(key) { try { return Number(localStorage.getItem(G + key)) || 0; } catch (e) { return 0; } }
+    // FIX 2026-09-26 #1307：冷却标记改走 xyStore（内存缓存 + LS 快照 + IndexedDB），不再裸写 localStorage。
+    //   一加 Ace5/Edge 实报「已经备份了，还是不断弹出备份的弹窗」而同一台机的导出件写着
+    //   「localStorage 状态：写入失败(QuotaExceededError)」＋「整域 187 键 ≈10.0 MB，其中非本项目
+    //   94 键 ≈9.4 MB」＝同源（GitHub Pages 一个源一个 localStorage，兄弟站点把配额吃满）时，
+    //   下面这三处裸写各自被 catch 静默吞掉，标记永远是 0 ⇒ due() 永远为真、上面那条 2s 快轮询
+    //   每 2 秒把用户刚关掉的弹窗再弹一次——「明明备份过了还在弹」。裸写点的失败在 #1305 之前
+    //   根本没有现场，本批把该族里唯一「失败即改变用户可见行为」的标记收到持久层这一侧。
+    //   取值仍要兼容旧设备：老数据只在 localStorage，xyStore.get 读空时回落裸 LS 一次。
+    const flagStore = window.xyStore ? window.xyStore('xy-home-v2') : null;
+    function flagGet(key) {
+      try { const v = flagStore ? flagStore.get(key) : null; if (v !== null && v !== undefined) return v; } catch (e) {}
+      try { return localStorage.getItem(G + key); } catch (e) { return null; }
+    }
+    function flagSet(key, val) {
+      try { if (flagStore) { flagStore.set(key, val); return; } } catch (e) {}
+      try { localStorage.setItem(G + key, val); } catch (e) {}
+    }
+    function ts(key) { try { return Number(flagGet(key)) || 0; } catch (e) { return 0; } }
     // 冷却按「自然日」判定而非「距今满 24 小时」：按 24h 计时时，每天比前一天早一秒打开
     // 就永远凑不满 24 小时（提醒会无限往后漂＝用户所见「从来没弹过」）。
     function dayKey(t) { const d = new Date(t); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); }
-    function markReminded() { try { localStorage.setItem(G + '__last-backup-remind', String(Date.now())); } catch (e) {} }
+    function markReminded() { flagSet('__last-backup-remind', String(Date.now())); }
     // 开屏是否已关闭（clock.js：点击进入 → 加 .hide → 400ms 后移除节点）。
     // modal-mask 在 .phone 内（开屏期间 .phone 整棵 visibility:hidden）、提醒条 z-998 也低于
     // splash z-999 ⇒ 开屏期间弹＝弹在看不见的地方，旧版却照样写冷却，于是当天再也不会第二次弹。
@@ -467,6 +504,9 @@
       if (typeof window.openModal !== 'function') return 'nofn';
       const mask = document.getElementById('modal-mask');
       if (mask && !mask.hidden) return 'busy';
+      // #1541a 同族：modal-mask 之外的自绘弹层（联系人管理面板 #contact-manager 等）开着
+      // 也是占用——返 busy 下轮复查再弹，不顶掉用户正在操作的层及其上层输入弹窗。
+      if (window.mochiOverlayBusy && window.mochiOverlayBusy()) return 'busy';
       const intro = everBacked
         ? '距上次完整备份已经 ' + days + ' 天了。'
         : '你到现在还没做过一次完整的数据备份（「备份聊天」只含聊天记录，不算完整备份）。';
@@ -517,7 +557,9 @@
     }
     // 是否到了该提醒的时候（今日未提醒 + 不是刚备份过 + 本地确有数据可备）
     function due() {
-      try { if (!localStorage.getItem(G + 'contacts')) return false; } catch (e) { return false; }
+      // #1307：contacts 是 xyStore 键（contacts.js regStore 写）——裸读 LS 在配额满的设备上
+      // 会读空并把提醒整族静默掐掉（＝与「不断弹」同一根因的反向症状：标记写不进＝永远不弹）
+      try { if (!flagGet('contacts')) return false; } catch (e) { return false; }
       const lastRemind = ts('__last-backup-remind');
       if (lastRemind && dayKey(lastRemind) === dayKey(Date.now())) return false;
       const lastBackup = ts('__last-backup');
@@ -527,7 +569,7 @@
     function tryShow() {
       if (window.__resetting || document.hidden) return;
       // 数据就绪才判；IDB 整轮挂起的设备上 __mochiDataReady 永不置位，60s 后按已就绪处理
-      //（这里只读 localStorage 的小键，回填没完成也不会读到脏值）
+      //（标记只有 KB 级小键，回填没完成时最坏是多弹一次，不会读到脏值）
       if (!window.__mochiDataReady && Date.now() - startedAt < 60000) return;
       if (!splashGone()) return;
       if (!due()) return;
@@ -688,8 +730,15 @@
           const k = localStorage.key(i);
           if (k && k.indexOf(G) === 0 && k !== G + '__onboard-done' && k !== G + '__edge-backup-hint-done') { hasData = true; break; }
         }
-        if (isEdgeAndroid && !isStandalone && hasData && !localStorage.getItem(G + '__last-backup') && !localStorage.getItem(G + '__edge-backup-hint-done')) {
-          try { localStorage.setItem(G + '__edge-backup-hint-done', String(Date.now())); } catch (e) {}
+        // FIX 2026-09-26 #1307：这条「安装前先导出」的已提示标记同样是裸写 localStorage——
+        // 同源配额被兄弟站点吃满时写失败被吞，每次点安装按钮都重弹一遍（与备份弹窗同一根因）。
+        const hintFlag = window.xyStore ? window.xyStore('xy-home-v2') : null;
+        const hintGet = function (k) {
+          try { const v = hintFlag ? hintFlag.get(k) : null; if (v !== null && v !== undefined) return v; } catch (e) {}
+          try { return localStorage.getItem(G + k); } catch (e) { return null; }
+        };
+        if (isEdgeAndroid && !isStandalone && hasData && !hintGet('__last-backup') && !hintGet('__edge-backup-hint-done')) {
+          try { if (hintFlag) hintFlag.set('__edge-backup-hint-done', String(Date.now())); else localStorage.setItem(G + '__edge-backup-hint-done', String(Date.now())); } catch (e) {}
           if (window.openModal) {
             window.openModal('安装前建议先导出备份', '', () => {
               try { if (window.runBackupExport) window.runBackupExport(); } catch (e) {}
@@ -869,15 +918,32 @@
     for (let i = 0; i < fail.length; i++) if (loaded.indexOf(fail[i]) < 0 && out.indexOf(fail[i]) < 0) out.push(fail[i]);
     return out;
   }
+  // FIX 2026-09-28 #1371e：开机求值序＝build.mjs 的 jsFiles 下标（device/idb/contacts 在前、
+  // mobile-adapt 在最后＝那一份数组本身就是依赖序）。自愈的两条腿都必须按它补发，见下方 reinject。
+  function byBootOrder(list) {
+    const seq = window.__mochiJsFiles || [];
+    const rank = {};
+    for (let i = 0; i < seq.length; i++) if (rank[seq[i]] === undefined) rank[seq[i]] = i;
+    const at = f => (rank[f] === undefined ? seq.length : rank[f]);
+    return (list || []).slice().sort((a, b) => at(a) - at(b));
+  }
   function reinject(list) {
     const now = Date.now();
-    for (let i = 0; i < list.length; i++) {
-      const f = list[i];
+    // FIX 2026-09-28 #1371e：原实现按下标顺序 append＋s.async=true＝执行序退回「谁先下完谁先跑」，
+    // 把 <script defer> 那份「依赖先于调用方」的保证整张丢掉。window.activeStore 要到 contacts.js
+    // 自己跑到它那一行才挂上（jsFiles 第 3 位），而 quote-cards／fav-settings／records／loc-lib／sfx／
+    // chat／chatcard 都在 IIFE 第一行就调它——报障件 00:06 那四条「window.activeStore is not a function」
+    // 正是 70 个包首拉全灭后自愈乱序的那一场：抛错那一发整段 IIFE 中止＝自定义字卡／表情包／收藏这一场
+    // 全空，而库里一字未动＝用户所见「都没了」。零机型／零 UA 分支，判据只问「谁必须先跑」。
+    const q = byBootOrder(list);
+    for (let i = 0; i < q.length; i++) {
+      const f = q[i];
       if (lastTry[f] && now - lastTry[f] < 4000) continue;
       lastTry[f] = now;
       const s = document.createElement('script');
       s.src = 'js/' + f;
-      s.async = true;
+      // async=false＝动态插入的脚本按插入序执行（与 defer 同一份序），下一发不抢跑
+      s.async = false;
       s.onerror = function () { try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {} };
       document.head.appendChild(s);
     }
@@ -887,32 +953,48 @@
   function looksLikeJs(txt) {
     return typeof txt === 'string' && txt.length > 64 && !/^\s*<\w/.test(txt);
   }
+  // FIX 2026-09-28 #1371e：换址逃生这条腿同形——并发 fetch＋到手就 append＝执行序仍是完成序，
+  // 与 reinject 是同一把尺子的两个口子（用户口径：不要覆盖式修补）。改成一串按依赖序的链：
+  // 上一发执行完（或这一发判定放弃）才发下一发，就地执行的 inline 脚本因此与 <script defer> 同序。
+  // 链上每一发各带一个天花板——弱网正是一发不回来的常态，挂死一发不能拖住后面全部；到点放弃的那一发
+  // 即使后来才到手也不再插回去（同一文件跑两遍＝#897 记过的双绑定风险）。
+  const BYPASS_WAIT_MS = 12000;
+  function bypassOne(f) {
+    if (healing[f] || (bust[f] || 0) >= HEAL_MAX) return Promise.resolve();
+    const now0 = Date.now();
+    if (lastTry[f] && now0 - lastTry[f] < 4000) return Promise.resolve();
+    lastTry[f] = now0;
+    healing[f] = 1;
+    bust[f] = (bust[f] || 0) + 1;
+    let gaveUp = false;
+    let tid = 0;
+    const work = fetch('js/' + f + '?mb=' + HEAL_NS + '.' + bust[f], { cache: 'reload' }).then(function (res) {
+      if (!res || !res.ok) throw new Error('status');
+      return res.text();
+    }).then(function (txt) {
+      healing[f] = 0;
+      if (!looksLikeJs(txt)) throw new Error('bad-body');
+      // 等字节这段时间里原标签可能只是慢、终于跑完了（或前一次换址已成功）＝不再执行第二遍
+      if ((window.__mochiLoaded || []).indexOf(f) >= 0) return;
+      if (gaveUp) return; // 天花板已到＝链已经往下走了，这一发插回来就是同一文件第二遍
+      const s = document.createElement('script');
+      s.textContent = txt;
+      s.onerror = function () { try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {} };
+      document.head.appendChild(s);
+    }).catch(function () {
+      healing[f] = 0;
+      try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {}
+    });
+    return new Promise(function (resolve) {
+      const next = function () { if (tid) clearTimeout(tid); resolve(); };
+      tid = setTimeout(function () { gaveUp = true; healing[f] = 0; tid = 0; resolve(); }, BYPASS_WAIT_MS);
+      work.then(next, next);
+    });
+  }
   function healByBypass(list) {
-    const now = Date.now();
-    for (let i = 0; i < list.length; i++) {
-      const f = list[i];
-      if (healing[f] || (bust[f] || 0) >= HEAL_MAX) continue;
-      if (lastTry[f] && now - lastTry[f] < 4000) continue;
-      lastTry[f] = now;
-      healing[f] = 1;
-      bust[f] = (bust[f] || 0) + 1;
-      fetch('js/' + f + '?mb=' + HEAL_NS + '.' + bust[f], { cache: 'reload' }).then(function (res) {
-        if (!res || !res.ok) throw new Error('status');
-        return res.text();
-      }).then(function (txt) {
-        healing[f] = 0;
-        if (!looksLikeJs(txt)) throw new Error('bad-body');
-        // 等字节这段时间里原标签可能只是慢、终于跑完了（或前一次换址已成功）＝不再执行第二遍
-        if ((window.__mochiLoaded || []).indexOf(f) >= 0) return;
-        const s = document.createElement('script');
-        s.textContent = txt;
-        s.onerror = function () { try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {} };
-        document.head.appendChild(s);
-      }).catch(function () {
-        healing[f] = 0;
-        try { window.__mochiExtFail = (window.__mochiExtFail || []).concat(f); } catch (x) {}
-      });
-    }
+    let p = Promise.resolve();
+    byBootOrder(list).forEach(function (f) { p = p.then(function () { return bypassOne(f); }); });
+    return p;
   }
   function syncBar(miss) {
     if (!miss.length) { if (bar) bar.hidden = true; return; }

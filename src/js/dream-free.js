@@ -251,10 +251,27 @@
   //   mjf-punct = 0 → 完全不补（回到 #317 原味，出句保持截断后的裸文本）；
   //   mjf-punct-pool（reply-mjf-punct-pool 原串，非数值键）非空 → 用它当候选池；空格/| 分隔，
   //   没写分隔符时按字符拆（「。！？」＝三个候选）；空/解析不出 → 内置默认池。
+  // FIX 2026-09-29 #1396 用户直派「这里的可用标点（空格分隔）与多字卡那套拼接符号不一样＝设计
+  //   不完整」——设置侧换成与 #650/#712 同款 chips 池（内置含空格/换行、可加自定义、至少一枚），
+  //   整池存 reply-mjf-punct-set＝JSON [{s,on}]，只取 on===1 当候选、等概率。判定顺序＝先认新池
+  //   （用户点过 chip 才有），没有再走上面 #953 那条旧链（旧原串 → 内置默认池），所以从没动过
+  //   这颗开关的设备出句分布一字不变（含默认池里句号写三遍的偏置）。
   const END_PUNCT_OK = /[。．！？!?~～…，、,.;；:：）)”’"]/;
   const END_PUNCT_DEFAULT = ['。', '。', '。', '~', '！', '……'];
+  function poolFromSet(rawSet) {
+    let arr = null;
+    try { arr = JSON.parse(String(rawSet)); } catch (e) { return null; }
+    if (!Array.isArray(arr)) return null;
+    const out = arr.filter(it => it && typeof it.s === 'string' && it.s && it.s.length <= 6 && it.on === 1)
+      .map(it => it.s).slice(0, 20);
+    return out.length ? out : null;
+  }
   function endPunctPool(c) {
     if (c && Number(c['mjf-punct']) === 0) return null; // 关＝不补标点
+    if (c && c['mjf-punct-set']) {
+      const sel = poolFromSet(c['mjf-punct-set']);
+      if (sel) return sel;
+    }
     const raw = c && c['mjf-punct-pool'] != null ? String(c['mjf-punct-pool']).trim() : '';
     if (!raw) return END_PUNCT_DEFAULT;
     let arr = raw.split(/[\s|]+/).filter(Boolean);
@@ -330,4 +347,6 @@
   // 暴露切词/造句（verify 脚本与排查用）
   window.dreamFreeSegment = segment;
   window.dreamFreeRebuild = rebuild;
+  // #1396 句尾标点池现读现出（verify 尺子用它判「新池/旧串/默认池」三条链，不必掷几百次赌分布）
+  window.dreamFreePunctPool = endPunctPool;
 })();

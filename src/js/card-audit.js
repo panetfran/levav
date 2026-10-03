@@ -62,6 +62,26 @@
   function clampPct(v) { var n = Number(v); if (!isFinite(n)) return 0; return Math.max(0, Math.min(100, Math.round(n))); }
   function boolOf(v, d) { if (v === null || v === undefined || v === '') return d; return v === '1'; }
   function locked() { try { return !(window.cardLockOpen && window.cardLockOpen()); } catch (e) { return false; } }
+  // FIX 2026-09-29 #1451 回复设置读数改真源：本文件原先拿 store('qs-en') 这类【裸键】读回复设置
+  //   的键——可回复设置的存键一律是 'reply-' + k（reply-settings.js getCfg 读 ls.get('reply-'+k)），
+  //   裸读永远取不到存盘值、一律落回本文件写死的默认数：用户把「词典拼字」关掉、体检照样写「开」，
+  //   把 qs-prob 调成 0、体检还说 25%。同一族的「一键修复」也把值写进裸键＝点了修复实际什么
+  //   都没改（用户实报「我设的 2~5 可它一直发 5 张」在体检里根本查不出来，病根就在这）。
+  //   现在回复侧读数一律走 window.replyCfg()（＝设置页与抽卡侧同一份 getCfg 生效值；#1451 起
+  //   含折好的 qs-min/qs-max 一对），写入口走 window.saveReplyCfg（'reply-' 前缀、成对收口、
+  //   主动发送重排定时器都在它里面）。replyCfg 取不到时退回读 'reply-' + k 的存盘值，再兜底默认数。
+  function replyRaw(k) {
+    var v = null;
+    try { var rc0 = window.replyCfg ? window.replyCfg() : null; if (rc0) v = rc0[k]; } catch (e) { v = null; }
+    if (v === undefined || v === null || v === '') { try { v = store('reply-' + k); } catch (e) { v = null; } }
+    return v;
+  }
+  function replyNum(k, d) { return num(replyRaw(k), d); }
+  function replyBool(k, d) { var v = replyRaw(k); if (v === null || v === undefined || v === '') return d; return Number(v) === 1; }
+  function replySet(k, v) {
+    try { if (window.saveReplyCfg) { window.saveReplyCfg(k, v); return true; } } catch (e) {}
+    return storeSet('reply-' + k, v);
+  }
   function dcpAll() { return Math.max(0, Math.min(100, num(store('reply-dcp-all'), 100))); }
   function dcfEff(raw, key) {
     var a = dcpAll();
@@ -334,6 +354,24 @@
       return ok ? true : 'fail';
     }, function () { return [key + '：关闭 → 开启']; });
   }
+  // FIX 2026-09-29 #1451 回复设置侧的同款修复：写入口换 replySet（'reply-' 前缀 + 成对收口），
+  //   撤销按【带前缀的全键】记账——否则撤销那一笔读/写的又是裸键＝撤了等于没撤（同 #1451 读数族）。
+  function fixReplyProb(id, key, def, after) {
+    addFix(id, function () {
+      recordUndo('own', 'reply-' + key);
+      var ok = replySet(key, def);
+      if (ok && after) { try { after(); } catch (e) {} }
+      return ok ? true : 'fail';
+    }, function () { return ['reply-' + key + '：' + replyNum(key, def) + '% → ' + def + '%']; });
+  }
+  function fixReplyEnable(id, key, after) {
+    addFix(id, function () {
+      recordUndo('own', 'reply-' + key);
+      var ok = replySet(key, '1');
+      if (ok && after) { try { after(); } catch (e) {} }
+      return ok ? true : 'fail';
+    }, function () { return ['reply-' + key + '：关闭 → 开启']; });
+  }
   function fixGroupOff(id, scope, type) {
     addFix(id, function () {
       var key = scope === 'public' ? 'cc-groups-public-off' : 'cc-groups-off';
@@ -411,14 +449,20 @@
     //   ② 预设默认字卡最终落进回复的概率 = (1 − csp-cust%) × P(drawCards 命中)，不是与
     //      自定义字卡「二选一」——chat.js genReplyText 在默认字卡覆盖点前按 csp-cust 掷签
     //      保留自定义文本，命中保留则 drawCards 的结果被丢弃。
-    var cspCust = clampPct(num(store('csp-cust'), 50));
-    var dcUseChat = boolOf(store('dc-use-chat'), true);
-    var dcOvRaw = clampPct(num(store('dc-overall-chat'), 30));
+    var cspCust = clampPct(replyNum('csp-cust', 50));
+    var dcUseChat = boolOf(store('dc-use-chat'), true);        // 裸键：default-cards.js 场景开关，非 reply 命名空间
+    var dcOvRaw = clampPct(num(store('dc-overall-chat'), 30)); // 裸键：同上（chatcard.js 也按裸键读）
     var dcOvEff = Math.round(dcOvRaw * all / 100);
-    var qsEn = boolOf(store('qs-en'), true);
-    var qsProbRaw = clampPct(num(store('qs-prob'), 25));
+    // #1451：以下回复侧读数一律走 replyNum/replyBool（reply- 前缀真源），别改回裸读
+    var qsEn = replyBool('qs-en', true);
+    var qsProbRaw = clampPct(replyNum('qs-prob', 25));
     var qsProbEff = Math.round(qsProbRaw * all / 100);        // quote-spell.js 套总档
-    var qsCc = boolOf(store('qs-cc'), true);
+    var qsCc = replyBool('qs-cc', true);
+    // #1451 拼字张数一对：抽卡侧取的就是这两个数（缺键＝由 getCfg 折成跟随「最少/最多条数」，
+    //   单设时是用户自己那一对）。「设的 2~5 可它一直发 5 张」这类报障先看这里的 单设/跟随 标记。
+    var qsMinN = Math.max(1, Math.min(10, replyNum('qs-min', 2)));
+    var qsMaxN = Math.max(qsMinN, Math.min(10, replyNum('qs-max', 5)));
+    var qsPairOwn = replyBool('qs-pair-own', false);
     // 注意：定义 window.dictUse / dictOverall 的那个 IIFE 开头是 `if (!dictView) return;`
     //   ——词典页锚点缺失时这两个 API 整个不存在。所以先按存储键取默认值、API 在时再覆盖，
     //   别把「API 不在」写成硬编码 true（那会把用户关掉的场景误报成开）。
@@ -427,26 +471,26 @@
     var dictOvChat = clampPct(num(store('dict-overall-chat'), 75));
     try { if (window.dictOverall) dictOvChat = clampPct(num(window.dictOverall('chat'), 75)); } catch (e) {}
     var dictPoolN = Math.max(0, presetCount('dict') - effOff('dict'));
-    var mjfEn = boolOf(store('mjf-en'), true);
-    var mjfProb = clampPct(num(store('mjf-prob'), 20));       // 不过总档
+    var mjfEn = replyBool('mjf-en', true);
+    var mjfProb = clampPct(replyNum('mjf-prob', 20));         // 不过总档
     var MJF_SRC = [['mjf-src-cc', 'mjf-w-cc', '自定义字卡', 50], ['mjf-src-def', 'mjf-w-def', '默认聊天字卡', 25], ['mjf-src-dict', 'mjf-w-dict', '词典', 25]];
-    var mjfSrcOn = MJF_SRC.filter(function (s) { return boolOf(store(s[0]), true) && num(store(s[1]), s[3]) > 0; });
-    var rcProbRaw = clampPct(num(store('rcard-prob'), 30));
-    var cfProbRaw = clampPct(num(store('cf-prob'), 20));
+    var mjfSrcOn = MJF_SRC.filter(function (s) { return replyBool(s[0], true) && replyNum(s[1], s[3]) > 0; });
+    var rcProbRaw = clampPct(num(store('rcard-prob'), 30));   // 裸键：mood-reply-cards.js 的回应字卡概率
+    var cfProbRaw = clampPct(replyNum('cf-prob', 20));
     var rcProbEff = Math.round(rcProbRaw * all / 100);
     var cfProbEff = Math.round(cfProbRaw * all / 100);
-    var pyEn = boolOf(store('py-en'), true);
-    var pyProb = clampPct(num(store('py-prob'), 50));
-    var rcSw = boolOf(store('rc-enabled'), true);        // 聊天回应字卡总开关（与「撤回后补发」的 rc-en 不是同一个键）
-    var rnProb = clampPct(num(store('rn-prob'), 20));
-    var asEn = boolOf(store('as-en'), true);
-    var dndEn = boolOf(store('dnd-en'), false);
+    var pyEn = replyBool('py-en', true);
+    var pyProb = clampPct(replyNum('py-prob', 50));
+    var rcSw = boolOf(store('rc-enabled'), true);        // 裸键：聊天回应字卡总开关（与「撤回后补发」的 reply-rc-en 不是同一个键）
+    var rnProb = clampPct(replyNum('rn-prob', 20));
+    var asEn = replyBool('as-en', true);
+    var dndEn = replyBool('dnd-en', false);
     // 附加件（不套总档，chat.js 直接读存盘值）
     var ATTACH = [['touch-prob', '拍一拍', 5], ['sticker-prob', '表情包', 10], ['emoji-prob', 'emoji', 5], ['image-prob', '图片', 5], ['voice-prob', '语音', 10], ['kaomoji-prob', '颜文字', 5], ['quote-prob', '引用', 30]];
-    var attachOn = ATTACH.filter(function (a) { return num(store(a[0]), a[2]) > 0; });
+    var attachOn = ATTACH.filter(function (a) { return replyNum(a[0], a[2]) > 0; });
     // 表情包/图片两条附加概率同时为 0 ⇒ 字卡库里的 sticker/image 卡永不进聊天（见下方附加件行）。
     // 必须在这里（问题清单之前）算好——放到渲染段会因 var 提升恒为 undefined，那条问题永不触发。
-    var mediaOff = clampPct(num(store('sticker-prob'), 10)) === 0 && clampPct(num(store('image-prob'), 5)) === 0;
+    var mediaOff = clampPct(replyNum('sticker-prob', 10)) === 0 && clampPct(replyNum('image-prob', 5)) === 0;
 
     // ===== 问题清单（先算，结论卡与角标都用） =====
     if (lock) addIssue('bad', '系统预设字卡被「二级密码锁」整体锁定（#319 防未成年人保护）——默认聊天字卡、词典（含词典拼字）等系统预设池当前都取不到，下方开关全开也无效。到开屏公告区「防未成年人·内置字卡锁定」卡点「输入密码解锁」即可恢复。');
@@ -494,7 +538,7 @@
     if (!mjfEn) addIssue('warn', '「梦角自由造句」总开关关闭。');
     else if (mjfProb === 0) addIssue('warn', '「梦角自由造句」概率为 0%。');
     else if (!mjfSrcOn.length) addIssue('warn', '「梦角自由造句」开着，但三个语料来源（自定义字卡/默认聊天字卡/词典）全关或权重全为 0——不会触发。');
-    if (!pyEn) addIssue('warn', '「多字卡回复」总开关关闭：每条消息只回一条、每条只用一张字卡。');
+    if (!pyEn) addIssue('warn', '「多字卡回复」总开关关闭：每条消息只回一条、每条只用一张字卡；#1236 起它同时是词典拼字的总闸（关掉＝单气泡拼字与逐卡连发都不触发）。');
     if (cspCust === 0) addIssue('warn', '「自定义字卡占比」为 0%：TA 的纯文字回复会尽量让系统预设默认字卡覆盖，你自己建的字卡基本不出现（想反过来就把它调高）。');
     if (!attachOn.length) addIssue('warn', '拍一拍/表情包/emoji/图片/语音/颜文字/引用 七项附加概率全为 0：回复只剩纯文字（回复设置→聊天 的被动回复组）。');
     else if (mediaOff) addIssue('warn', '「表情包概率」「图片概率」都为 0：字卡库里的表情包与图片字卡不会在聊天里出现（这两项是命中后往同一条回复里加图，不是独立机制，所以平时不容易联想到它们卡住了媒体字卡）。');
@@ -575,8 +619,10 @@
     function replyFixSpec(m) {
       if (!m.fix) return null;
       var id = 'inl-rs-' + m.id;
-      if (m.fix.kind === 'en') fixEnable(id, m.fix.key);
-      else if (m.fix.kind === 'num') fixProb(id, m.fix.key, m.fix.v);
+      // #1451：本节（回复链路）里的 en/num 修复项都是 reply- 命名空间的键，一律走 reply 版
+      //   修复器——老的 fixEnable/fixProb 会把值写进裸键，点了修复实际什么都没改。
+      if (m.fix.kind === 'en') fixReplyEnable(id, m.fix.key);
+      else if (m.fix.kind === 'num') fixReplyProb(id, m.fix.key, m.fix.v);
       else if (m.fix.kind === 'fn' && typeof m.fix.run === 'function') addFix(id, m.fix.run);
       else return null;
       replyFixables.push(id);
@@ -584,11 +630,25 @@
     }
     var MECH = [
       {
-        id: 'qs', name: '词典拼字', key: 'qs-en · qs-prob', ok: !lock && qsEn && qsProbEff > 0 && dictUseChat && dictOvChat > 0 && dictPoolN > 0,
+        id: 'qs', name: '词典拼字', key: 'qs-en · qs-prob', ok: !lock && pyEn && qsEn && qsProbEff > 0 && dictUseChat && dictOvChat > 0 && dictPoolN > 0,
         txt: '存盘 ' + qsProbRaw + '% · 生效 ' + qsProbEff + '%（' + humanProb(qsProbEff, 'reply') + '）',
-        extra: '池 ' + dictPoolN + ' 条 · ' + (qsCc ? '混用自定义字卡' : '只用词典语录'),
-        gates: [{ t: '锁', ok: !lock }, { t: '拼字开关', ok: qsEn }, { t: '拼字概率', ok: qsProbEff > 0 }, { t: '词典聊天使用', ok: dictUseChat }, { t: '词典概率', ok: dictOvChat > 0 }, { t: '抽卡池', ok: dictPoolN > 0 }],
-        fix: !qsEn ? { kind: 'en', key: 'qs-en', label: '打开' } : (qsProbRaw === 0 ? { kind: 'num', key: 'qs-prob', v: 25, label: '恢复概率' } : null)
+        // #1451：把抽卡侧真正取用的张数区间摆出来（单设/跟随一眼分清）——「设的 2~5 一直发 5 张」
+        //   先看这里：若写着「跟随」而「多字卡回复」那对的条数已是 5~5，病根就在条数那对。
+        extra: '池 ' + dictPoolN + ' 条 · ' + (qsCc ? '混用自定义字卡' : '只用词典语录') + ' · 每次拼 ' + qsMinN + '~' + qsMaxN + ' 张' + (qsPairOwn ? '（单设）' : '（跟随多字卡回复）'),
+        // FIX 2026-09-25 #1236：pyEn 自本批起是词典拼字的总闸（关掉它两种形态都不触发）——体检的
+        //   ok 与漏斗必须摆出它，否则「全绿却永不出拼字」＝体检说谎（#998/#1000 同族）。
+        gates: [{ t: '锁', ok: !lock }, { t: '多字卡总闸', ok: pyEn }, { t: '拼字开关', ok: qsEn }, { t: '拼字概率', ok: qsProbEff > 0 }, { t: '词典聊天使用', ok: dictUseChat }, { t: '词典概率', ok: dictOvChat > 0 }, { t: '抽卡池', ok: dictPoolN > 0 }],
+        fix: (!qsEn || !pyEn || qsProbRaw === 0) ? {
+          kind: 'fn', label: (!qsEn ? '打开' : (!pyEn ? '开多字卡' : '恢复概率')), run: function () {
+            // 三颗闸同一颗按钮收口（同 py 行的取舍）：只写 qs-en 而 py-en 还关着＝点了没反应。
+            // #1451：写入口换 replySet——老写法 storeSet('qs-en') 写的是裸键，回复侧根本读不到。
+            var n = 0;
+            if (!replyBool('qs-en', true)) { recordUndo('own', 'reply-qs-en'); replySet('qs-en', '1'); n++; }
+            if (!replyBool('py-en', true)) { recordUndo('own', 'reply-py-en'); replySet('py-en', '1'); n++; }
+            if (replyNum('qs-prob', 25) === 0) { recordUndo('own', 'reply-qs-prob'); replySet('qs-prob', 25); n++; }
+            return n > 0;
+          }
+        } : null
       },
       {
         id: 'mjf', name: '梦角自由造句', key: 'mjf-en · mjf-prob', ok: mjfEn && mjfProb > 0 && mjfSrcOn.length > 0,
@@ -614,14 +674,15 @@
       },
       {
         id: 'py', name: '多字卡回复', key: 'py-en · py-prob', ok: pyEn && pyProb > 0,
-        txt: (pyEn ? '开' : '关') + ' · ' + pyProb + '%（' + humanProb(pyProb, 'reply') + '，不过总档） · 每条拼 ' + num(store('py-min'), 2) + '~' + num(store('py-max'), 5) + ' 张',
+        txt: (pyEn ? '开' : '关') + ' · ' + pyProb + '%（' + humanProb(pyProb, 'reply') + '，不过总档） · 每条消息 ' + Math.max(1, Math.min(10, replyNum('py-min', 2))) + '~' + Math.max(1, Math.min(10, replyNum('py-max', 5))) + ' 条',
         extra: '', gates: [{ t: '总开关', ok: pyEn }, { t: '概率', ok: pyProb > 0 }],
         // py-prob 也是会被设成 0 的（模板 data-min=0）——「概率为 0」与「开关关着」是两个闸门，
-        //   同一颗按钮一起收口，不然点了「打开」仍然不出多字卡。
+        //   同一颗按钮一起收口，不然点了「打开」仍然不出多字卡。写入口走 replySet（#1451：老写法
+        //   storeSet('py-en') 写的是裸键，点了修复回复侧读不到）。
         fix: (!pyEn || pyProb === 0) ? {
           kind: 'fn', label: (!pyEn ? '打开' : '恢复概率'), run: function () {
-            if (!boolOf(store('py-en'), true)) storeSet('py-en', '1');
-            if (num(store('py-prob'), 50) === 0) storeSet('py-prob', 50);
+            if (!replyBool('py-en', true)) { recordUndo('own', 'reply-py-en'); replySet('py-en', '1'); }
+            if (replyNum('py-prob', 50) === 0) { recordUndo('own', 'reply-py-prob'); replySet('py-prob', 50); }
             return true;
           }
         } : null
@@ -642,7 +703,7 @@
       '<div class="ca-ratio-legend"><span class="ca-ok">预设默认字卡覆盖 ' + presetFinal + '%</span><span class="ca-mute">其余 ' + (100 - presetFinal) + '%：自定义字卡 / 兜底池</span></div></div>';
     var idCsp = 'inl-rs-csp';
     var cspFix = '';
-    if (cspCust === 0 && !lock) { fixProb(idCsp, 'csp-cust', 50); replyFixables.push(idCsp); cspFix = idCsp; }
+    if (cspCust === 0 && !lock) { fixReplyProb(idCsp, 'csp-cust', 50); replyFixables.push(idCsp); cspFix = idCsp; }
     chainInner += rowHtml('自定义字卡占比（csp-cust）', cspCust + '%' + (cspCust === 0 ? ' · 自定义字卡基本不出现' : (cspCust >= 100 ? ' · 预设默认字卡基本不覆盖' : '')), cspCust === 0 ? 'warn' : 'ok', { fix: cspFix, edit: '@reply:chat' });
     chainInner += rowHtml('默认聊天字卡 · 聊天使用 / 概率（dc-use-chat · dc-overall-chat）', (dcUseChat ? '场景开' : '场景关') + ' · 存盘 ' + dcOvRaw + '% · 生效 ' + dcOvEff + '%（总档 ' + all + '%）', (!dcUseChat || dcOvEff === 0 || !dcEn) ? 'warn' : 'ok', { edit: 'defaultCards' });
     chainInner += funnelHtml([{ t: '锁', ok: !lock }, { t: '总开关', ok: dcEn }, { t: '聊天场景', ok: dcUseChat }, { t: '总档', ok: all > 0 }, { t: '聊天概率', ok: dcOvEff > 0 }, { t: '自定义占比放行', ok: cspCust < 100 }]);
@@ -651,7 +712,7 @@
     var attachMech = [['sticker-prob', '表情包'], ['image-prob', '图片'], ['kaomoji-prob', '颜文字'], ['touch-prob', '拍一拍'], ['emoji-prob', 'emoji'], ['voice-prob', '语音'], ['quote-prob', '引用']];
     var ATTACH_DEF = {};
     ATTACH.forEach(function (a) { ATTACH_DEF[a[0]] = a[2]; });
-    var attachTxt = attachMech.map(function (a) { return a[1] + ' ' + clampPct(num(store(a[0]), ATTACH_DEF[a[0]])) + '%'; }).join(' · ');
+    var attachTxt = attachMech.map(function (a) { return a[1] + ' ' + clampPct(replyNum(a[0], ATTACH_DEF[a[0]])) + '%'; }).join(' · ');
     // FIX 2026-09-16 #583：附加件里有两类是从你自己的字卡库里抽卡的——「表情包概率」抽
     //   sticker 卡、「图片概率」抽 image 卡（chat.js genOneReply 命中后 push 一张
     //   getMediaCards(...)）。所以这两项同时为 0 ＝ 字卡库里的表情包/图片永远不会出现在
@@ -665,10 +726,13 @@
     if (attachNeedFix) {
       addFix('inl-rs-attach', function () {
         var okAny = false;
+        // 先记撤销（旧值），再写；#1451：七项附加概率都在 reply- 命名空间——老写法
+        //   storeSet('sticker-prob') 写的是裸键，点了「恢复表情包/图片」实际什么都没改。
+        function fixOne(a) { recordUndo('own', 'reply-' + a[0]); if (replySet(a[0], a[2])) okAny = true; }
         if (attachOn.length) {
-          ATTACH.forEach(function (a) { if ((a[0] === 'sticker-prob' || a[0] === 'image-prob') && storeSet(a[0], a[2])) okAny = true; });
+          ATTACH.forEach(function (a) { if (a[0] === 'sticker-prob' || a[0] === 'image-prob') fixOne(a); });
         } else {
-          ATTACH.forEach(function (a) { if (storeSet(a[0], a[2])) okAny = true; });
+          ATTACH.forEach(fixOne);
         }
         return okAny ? true : 'fail';
       });
@@ -680,7 +744,7 @@
     // 行为闸门：不影响「字卡出不出」，但决定「TA 这条回复到底会不会发生」——已读不回
     //   100% 时一切都看不到，属 bad；主动发送/免打扰是用户自己的选择，只作中性展示。
     chainInner += rowHtml('已读不回概率（rn-prob）', rnProb + '%' + (rnProb >= 100 ? ' · TA 不再回复任何内容' : (rnProb > 60 ? ' · 大多数消息只显示回执' : '')), rnProb >= 100 ? 'bad' : rnProb > 60 ? 'warn' : 'ok', { edit: '@reply:chat' });
-    chainInner += rowHtml('主动发送（as-en · as-prob）', (asEn ? '开 · ' + clampPct(num(store('as-prob'), 30)) + '%' : '关（TA 不主动找你）') + (dndEn ? ' · 免打扰中' : ''), 'mute', { edit: '@reply:chat' });
+    chainInner += rowHtml('主动发送（as-en · as-prob）', (asEn ? '开 · ' + clampPct(replyNum('as-prob', 30)) + '%' : '关（TA 不主动找你）') + (dndEn ? ' · 免打扰中' : ''), 'mute', { edit: '@reply:chat' });
     if (replyFixables.length) {
       addFix('__allfix-reply', function () {
         var n = 0;   // 同 __allfix：按实际落地数回报，全空转时不假报「已修复」
@@ -701,7 +765,7 @@
     lockInner += rowHtml('当前状态', lock ? '锁定中（系统预设字卡整体停用）' : '已解锁', lock ? 'bad' : 'ok');
     lockInner += rowHtml('存储键', GNS + ':cardlock-state（全局，不随桌面）', 'mute');
     push('一、二级密码锁（#319 防未成年人）', lockInner,
-      '锁定时：默认聊天字卡、词典（含词典拼字）、其他互动功能字卡的系统预设内容全部取不到，各页开关看起来「开了却没效果」属正常。<br><b>不受此锁影响（#499 豁免）</b>：聊天情绪字卡、心意字卡、交流意图、聊天回应字卡、TA 的心情、今日情话、位置卡、查岗问题库、TA 主动提问——未解锁也照常使用。<br>解锁：开屏公告区「防未成年人·内置字卡锁定」卡点「输入密码解锁」；重锁：同卡一键重新上锁。');
+      '锁定时：默认聊天字卡、词典（含词典拼字）、其他互动功能字卡的系统预设内容全部取不到，各页开关看起来「开了却没效果」属正常。<br><b>不受此锁影响（#499 豁免）</b>：聊天情绪字卡、心意字卡、交流意图、聊天回应字卡、TA 的心情、今日情话、位置卡、查岗问题库、TA 主动提问——未解锁也照常使用。<br><b>「浏览受锁、回应不受锁」（#1422）</b>：贴贴的回应与婉拒、游戏邀请的婉拒、朋友圈 TA 的点评与回复、我发出的邀请预设——这六组已进【其他互动功能字卡→互动回应】，锁定时<b>在库里看不到也搜不到</b>（跟系统预设整体一个口径），但 TA <b>照样会按它们说话</b>：婉拒与回应是交互的必需回应，锁定的只是浏览入口，不能出现「拒绝了 TA 的贴贴邀请之后一句话都不回」。解锁后可见可关，关掉的句子即刻从回应里退场（整组停用同理）。<br>解锁：开屏公告区「防未成年人·内置字卡锁定」卡点「输入密码解锁」；重锁：同卡一键重新上锁。');
 
     // ===== 二、默认聊天字卡 =====
     var dcInner = '';
@@ -849,7 +913,7 @@
       if (num(store('rcard-prob'), 30) === 0) a.push('rcard-prob：0% → 30%');
       return a.length ? a : ['聊天回应字卡已是默认'];
     });
-    oInner += rowHtml('聊天回应字卡（rc-enabled / rcard-prob）', (rcEn ? '开启' : '关闭') + ' · 整条替换 ' + rcProb + '%（' + humanProb(rcProb, 'reply') + '） · 连接词追加 cf-prob ' + num(store('cf-prob'), 20) + '% · ' + dataCount(MC.followup) + ' 张', (rcEn && rcProb > 0) ? 'ok' : 'warn', { fix: (!rcEn || rcProb === 0) ? idRc : '', edit: 'replyCards' });
+    oInner += rowHtml('聊天回应字卡（rc-enabled / rcard-prob）', (rcEn ? '开启' : '关闭') + ' · 整条替换 ' + rcProb + '%（' + humanProb(rcProb, 'reply') + '） · 连接词追加 cf-prob ' + replyNum('cf-prob', 20) + '% · ' + dataCount(MC.followup) + ' 张', (rcEn && rcProb > 0) ? 'ok' : 'warn', { fix: (!rcEn || rcProb === 0) ? idRc : '', edit: 'replyCards' });
     var tmEn = boolOf(store('tm-enabled'), true), tmProb = num(store('tm-prob'), 15);
     var idTm = 'inl-tm';
     addFix(idTm, function () {
@@ -870,7 +934,7 @@
     });
     var ck = null; try { ck = JSON.parse(store('ta-checkin') || 'null'); } catch (e) {}
     var ckUseDef = ck && ck.settings ? ck.settings.useDefault !== false : true;
-    oInner += rowHtml('查岗问题库（ta-checkin.settings.useDefault）', (ckUseDef ? '使用系统预设' : '仅用自建') + ' · 触发 ckq-en ' + (boolOf(store('ckq-en'), true) ? '开' : '关') + ' / ckq-prob ' + num(store('ckq-prob'), 2) + '%', 'mute', { jump: 'taCheckin' });
+    oInner += rowHtml('查岗问题库（ta-checkin.settings.useDefault）', (ckUseDef ? '使用系统预设' : '仅用自建') + ' · 触发 ckq-en ' + (replyBool('ckq-en', true) ? '开' : '关') + ' / ckq-prob ' + replyNum('ckq-prob', 2) + '%', 'mute', { jump: 'taCheckin' });
     var TA_EDIT = { 'ta-ask': 'taAsk', 'ta-choose': 'taChoose', 'ta-curious': 'taCurious', 'ta-roast': 'taRoast' };
     ['ta-ask:询问', 'ta-choose:小问题', 'ta-curious:好奇', 'ta-roast:吐槽'].forEach(function (pair) {
       var key = pair.split(':')[0], label = pair.split(':')[1];
@@ -958,13 +1022,13 @@
       buildErr = errText(e);
       lastText = (lines.length ? lines.join('\n') + '\n\n' : '') +
         '【自检未能完成】读取数据时出错：' + buildErr +
-        '\n（本页只跑完了上面这些检查项；请把这份报告发给开发者）';
+        '\n（本页只跑完了上面这些检查项）';
       r = { issueCount: issueCount + 1 };
     }
     updateBadge(r.issueCount);
     var secs = sections.slice();
     if (buildErr) secs.unshift(cardHtml('自检未能完成（内部错误）',
-      '<div class="ca-banner ca-bad">⚠ 自检中途出错，下面显示的是出错前已跑完的部分：<br><b>' + esc(buildErr) + '</b><br>请把本页「导出文件」的报告发给开发者。</div>', null));
+      '<div class="ca-banner ca-bad">⚠ 自检中途出错，下面显示的是出错前已跑完的部分：<br><b>' + esc(buildErr) + '</b><br>可用本页「导出文件」导出报告留档。</div>', null));
     bodyEl.innerHTML = '';
     var i = 0;
     (function step() {
@@ -1018,17 +1082,19 @@
       var gso = goffRecord();
       Object.keys(gso).forEach(function (c) { if (Array.isArray(gso[c]) && gso[c].length) n++; });
       // #583：回复设置 → 聊天 侧的闸门（都只读单个键，不触发池解析）
-      if (num(store('rn-prob'), 20) > 60) n++;   // >=100 是 bad、>60 是 warn，两者都计（同 build 的问题清单）
-      if (!boolOf(store('qs-en'), true)) n++;
-      else if (num(store('qs-prob'), 25) === 0) n++;
-      if (!boolOf(store('mjf-en'), true)) n++;
-      else if (num(store('mjf-prob'), 20) === 0) n++;
-      if (!boolOf(store('py-en'), true) || num(store('py-prob'), 50) === 0) n++;
-      if (num(store('csp-cust'), 50) === 0) n++;
+      // #1451：这几个键全在 reply- 命名空间，读数走 replyNum/replyBool——老写法裸读永远读不到
+      //   存盘值，角标和「打开自检页后的结论」会对不上（角标说没问题、页里列出问题）。
+      if (replyNum('rn-prob', 20) > 60) n++;   // >=100 是 bad、>60 是 warn，两者都计（同 build 的问题清单）
+      if (!replyBool('qs-en', true)) n++;
+      else if (replyNum('qs-prob', 25) === 0) n++;
+      if (!replyBool('mjf-en', true)) n++;
+      else if (replyNum('mjf-prob', 20) === 0) n++;
+      if (!replyBool('py-en', true) || replyNum('py-prob', 50) === 0) n++;
+      if (replyNum('csp-cust', 50) === 0) n++;
       var _att = [['touch-prob', 5], ['sticker-prob', 10], ['emoji-prob', 5], ['image-prob', 5], ['voice-prob', 10], ['kaomoji-prob', 5], ['quote-prob', 30]];
-      var _attAllOff = !_att.some(function (a) { return num(store(a[0]), a[1]) > 0; });
+      var _attAllOff = !_att.some(function (a) { return replyNum(a[0], a[1]) > 0; });
       if (_attAllOff) n++;
-      else if (num(store('sticker-prob'), 10) === 0 && num(store('image-prob'), 5) === 0) n++;  // 媒体字卡不出镜（同 build 的 mediaOff）
+      else if (replyNum('sticker-prob', 10) === 0 && replyNum('image-prob', 5) === 0) n++;  // 媒体字卡不出镜（同 build 的 mediaOff）
     } catch (e) {}
     return Math.min(n, 99);
   }

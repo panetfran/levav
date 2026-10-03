@@ -77,9 +77,14 @@
     if (changed) d.mergedIds = merged;
     return changed;
   }
+  // #1520：加载期自动写的静默读数闸（自动路径不弹 toast；读不全＝宁可不落笔）
+  function ckAutoHold(k) { try { return !!(window.xyBigWriteHold && window.xyBigWriteHold(store, k)); } catch (e) { return false; } }
   function tiLoad() {
     let d = null;
     try { d = JSON.parse(store.get(KEY) || 'null'); } catch (e) { d = null; }
+    // #1519：读空但库里本该有＝大键没读全，当场请库取回一次（#1349a 单次飞行闸）；这一拍仍按旧形状
+    //   走（播种纯预设只在内存里，isNew 守卫不写盘），下一拍读到权威值
+    if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY)) store.requestBigKey(KEY); } catch (e0) {} }
     if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
     if (!d.settings || typeof d.settings !== 'object') d.settings = {};
     if (d.settings.useDefault === undefined) d.settings.useDefault = true;
@@ -92,14 +97,21 @@
       });
       d.mergedIds = DEFAULT_QUESTIONS.map(q => q.id);
       // 全新用户不立即写盘——防本地空快照覆盖 IndexedDB 权威数据（与 ta-ask.js 同因）
-      if (!isNew) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      if (!isNew && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
     } else {
-      if (tiMerge(d)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+      if (tiMerge(d) && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
     }
     if (!Array.isArray(d.groups)) d.groups = [];
     return d;
   }
-  function tiSave(d) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+  // #1519：邀请字卡库整包写＝读-改-写。大键没读全时把「纯预设＋本次改动」写回＝自定义内容被清空，
+  //   判据与文案同 ta-ask（xyBigWriteBlocked 拦下时照实 toast、绝不落笔；回填后再点一次即可）
+  function tiSave(d) {
+    // #1520：回传布尔＝调用方知道这一发有没有真落笔（被拦时不报成功）
+    if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY, '邀请字卡库')) return false;
+    try { store.set(KEY, JSON.stringify(d)); } catch (e) {}
+    return true;
+  }
 
   // ---------- 抽取 ----------
   // 池内随机并避免连抽同一张
@@ -117,7 +129,10 @@
   function drawFrom(pool) { const q = pickFrom(pool, lastId()); if (q) markLast(q); return q; }
   function enabledPool(d, kinds) {
     const useDefault = (d.settings || {}).useDefault !== false;
-    return d.questions.filter(q => q && q.enabled !== false && q.text && kinds.indexOf(q.kind) >= 0 && (useDefault || q.isPreset !== true));
+    // #1315：整类停用（共用件 window.presetGroup，键 pg-groups-off）——本页的分类字段是 kind；
+    //   只闸系统预设邀请，用户自建的同类条目不受影响。
+    const pgOff = function (q) { return !!(q.isPreset === true && q.kind && window.presetGroup && window.presetGroup.isOff('ta-invite', q.kind)); };
+    return d.questions.filter(q => q && q.enabled !== false && q.text && kinds.indexOf(q.kind) >= 0 && (useDefault || q.isPreset !== true) && !pgOff(q));
   }
   // 自动链路抽取（chat.js tryActiveInvite 调用）：保持旧版权重语义——
   // 先掷猜拳门（ai-rps-en/ai-rps-prob），命中且猜拳池有货则出猜拳；
@@ -201,6 +216,8 @@
       html += '<button class="cc-tab' + (k === tiSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + esc(label) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
     });
     html += '</div>';
+    // #1315：整类停用条——本页的一个分类（猜拳/游戏/贴贴）就是一个「分组」
+    html += window.presetGroup ? window.presetGroup.catBar('ta-invite', tiSysCat, esc((CATS_TI.find(c => c[0] === tiSysCat) || [])[1] || tiSysCat)) : '';
     d.questions.forEach(q => {
       if (!(hitKw(q) && q.kind === tiSysCat)) return;
       const idx = d.questions.indexOf(q);
@@ -210,6 +227,7 @@
         '</div>';
     });
     container.innerHTML = html;
+    if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-invite', tiSysCat, function () { renderTiSysInto(container, search); });
     container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
       t.addEventListener('click', () => { tiSysCat = t.dataset.cat; renderTiSysInto(container, search); });
     });
