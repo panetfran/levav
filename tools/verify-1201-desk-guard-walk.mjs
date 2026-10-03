@@ -115,7 +115,11 @@ const NEEDLES = [
   ['S3 inkBottom 早退（删＝已证明真溢出仍要把整棵子树扫完）',
     'if (maxB > stopAt) return maxB;'],
   ['S4 结构变更档＝强制重扫（删＝组件增删后照抄旧裁决＝#989/#1013 都可能被旧结论钉死）',
-    'new MutationObserver(() => pageScrollGuard.later(400, true))'],
+    // #1311 重锚：这一档从「任何 childList 都 force」收成「这批变异里有非文本节点才 force」——
+    // 音乐/时钟每 500ms 重写自己读数（textContent＝删旧文本节点＋插新文本节点）过去被当成结构变了，
+    // 把上面那把记忆化整层绕过。needle 取新的力档判据行；行为判据（滴答零扫描 vs 换节点照样扫）在
+    // tools/verify-1311-desk-text-tick-and-cover-surface.mjs 的 A 组。
+    'new MutationObserver((muts) => pageScrollGuard.later(400, !textOnlyChurn(muts)))'],
   ['S5 resize 档＝强制重扫（几何随视口变，裁决必须作废）',
     "window.addEventListener('resize', () => pageScrollGuard.later(120, true));"],
   ['S6 取证口径：只有真扫子树才打点（删＝下份 perfcheck 再也分辨不出护栏是否在咬人）',

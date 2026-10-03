@@ -26,14 +26,14 @@ const prodHtml = read('index.html');
 const prodJson = read('notice.json');
 
 // ---- S/P 静态 ----
-ok(tpl.includes('>' + H + '</p>'), 'S1 离线兜底（template.html）含该章标题');
+ok(tpl.includes(H + '</p>'), 'S1 离线兜底（template.html）含该章标题（#1502 起目录统一编号，判据去前导「>」＝对「N、」前缀不敏感）');
 const tplBlocks = tpl.split('class="splash-sec-wrap"');
 ok(tplBlocks[tplBlocks.length - 1].includes(H), 'S2 该章是公告的最后一个章节块（用户要求放最后）');
 const tplChunk = tplBlocks[tplBlocks.length - 1].split('class="splash-bullet"').length - 1;
 ok(tplChunk >= 6, 'S3 离线兜底 6 条要点齐（实为 ' + tplChunk + ' 条）');
 let J = null;
 try { J = JSON.parse(json); } catch (e) {}
-ok(!!J && J.sections[J.sections.length - 1].h === H, 'S4 在线权威源 notice.json 的 sections 末条＝该章');
+ok(!!J && String(J.sections[J.sections.length - 1].h).replace(/^\d+、/, '') === H, 'S4 在线权威源 notice.json 的 sections 末条＝该章（#1502 起剥编号前缀再比）');
 ok(!!J && (J.sections[J.sections.length - 1].p || []).length >= 6, 'S5 在线源要点数 ≥6（实为 ' + (J ? (J.sections[J.sections.length - 1].p || []).length : '-') + '）');
 ok(!json.includes('<b>'), 'S6 在线源保持纯文本（渲染走 textContent，写 <b> 会显示成字面量）');
 ok(prodHtml.includes(H), 'P1 产物 index.html 含该章（离线兜底已构建）');
@@ -77,7 +77,7 @@ const seen = await ev(`(function(){
   return JSON.stringify({seps:seps.length,last:last,bullets:bullets,toc:toc[0]||''});
 })()`);
 const S = (() => { try { return JSON.parse(seen || '{}'); } catch (e) { return {}; } })();
-ok(S.last === H, 'B1 开屏渲染出的最后一个章节就是本章', 'last=' + String(S.last).slice(0, 40));
+ok(String(S.last).replace(/^\d+、/, '') === H, 'B1 开屏渲染出的最后一个章节就是本章（#1502 起剥编号前缀再比）', 'last=' + String(S.last).slice(0, 40));
 ok(Number(S.bullets) >= 6, 'B2 本章 6 条要点渲染出来（实为 ' + S.bullets + ' 条）');
 const nToc = Number((String(S.toc).match(/(\d+)/) || [])[1] || 0);
 ok(nToc > 0 && nToc >= Number(S.seps), 'B3 「目录（N 章）」计数包含本章（章数 ' + S.seps + ' / 目录显示 ' + nToc + '）', S.toc);

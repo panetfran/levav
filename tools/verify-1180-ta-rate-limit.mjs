@@ -29,15 +29,17 @@ const tpl = read('src/template.html');
 const nz = read('src/pwa/notice.json');
 const fh = read('src/js/feature-hub.js');
 ok(ck.includes('if (++n >= max) return true;'), 'S1 窗口内按 msgs 的 in 侧收件计数判额（return true 被删＝限流永不触发）');
-ok(ck.includes("if (rateBlocksIn(rec.side, rec.special, rec.nightAllow)) return null;"), 'S2 限流闸接在 addRec（覆盖 chatAddGift 等不过 addIn 的通道）');
-ok(ck.includes("if (rateBlocksIn('in', opts.special, opts.nightAllow)) return null;"), 'S3 限流闸同样接在 addIn 的音效之前（否则超额「响一声没气泡」）');
-ok(ck.includes('if (rateLimitFull()) return;'), 'S4 额度满时不再演「对方正在输入」');
+// #1341 换锚：判据从「三个散装参数」收成「整份记录」（豁免位与夜间闸分开、保底记在记录上）——语义不变，旧 needle 在新形态下必然消失
+ok(ck.includes('if (rateBlocksIn(rec)) return null;'), 'S2 限流闸接在 addRec（覆盖 chatAddGift 等不过 addIn 的通道）');
+// #1341 换锚：同上，addIn 侧改判一份探针对象（音效仍在闸之后播）
+ok(ck.includes("if (rateBlocksIn({ side: 'in', special: opts.special, rateAllow: opts.rateAllow })) return null;"), 'S3 限流闸同样接在 addIn 的音效之前（否则超额「响一声没气泡」）');
+ok(ck.includes('if (rateLimitFull() && !rlReserveAvailable()) return;') || ck.includes('if (rateLimitFull()) return;'), 'S4 额度满时不再演「对方正在输入」（#1341 起还要求「这一次保底确实已用掉」）');
 ok(rs.includes("'rl-en': 0, 'rl-win': 5, 'rl-max': 15,"), 'S5 三个键进 DEFAULTS 且总开关默认 0（不登记＝开关初值恒空、读不到兜底）');
 ok((rs.match(/'rc-en', 'rl-en', 'fish-en'/g) || []).length === 3, 'S6 rl-en 同步进三处通用开关列表（回显/绑定/回填）', '实数=' + (rs.match(/'rc-en', 'rl-en', 'fish-en'/g) || []).length);
 ok(tpl.includes('id="rl-en"') && tpl.includes('data-k="rl-win"') && tpl.includes('data-k="rl-max"'), 'S7 设置页「总量限流」组三行在位');
 ok(tpl.includes('想让上面这些一起被管住，打开本面板下方「总量限流」'), 'S8「为什么比设的还多」那条说明指向限流出口（#869 同族）');
-ok(tpl.includes('>关于 TA 发消息太多（「回复条数」为什么管不住，以及新增的总量限流）</p>'), 'S9 开屏公告（离线兜底源）新增该章');
-ok(nz.includes('"h": "关于 TA 发消息太多'), 'S10 在线权威源 notice.json 同口径一份（两份必须同改）');
+ok(tpl.includes('关于 TA 发消息太多（「回复条数」为什么管不住，以及新增的总量限流）</p>'), 'S9 开屏公告（离线兜底源）新增该章（#1502 起目录统一编号，判据去前导「>」＝对「N、」前缀不敏感）');
+ok(nz.includes('关于 TA 发消息太多（「回复条数」为什么管不住，以及新增的总量限流）"'), 'S10 在线权威源 notice.json 同口径一份（两份必须同改；#1502 起同前）');
 ok(fh.includes("n: 'TA 消息限流（总量限流）'") && fh.includes("n: '为什么 TA 发的比「回复条数」还多'"), 'S11 功能大全两条目（功能＋解释都能被搜到）');
 
 // ---- B 行为 ----
@@ -132,8 +134,12 @@ ok(typ1 === 0, 'B8 额度已满期间不再显示「对方正在输入」（不�
 // 阶段2：豁免口径（此刻窗口额度已满＝3/3）
 const readOk = await ev("(function(){var ok=0;for(var i=0;i<5;i++){if(window.chatAddIn('1180-read'+i, {special:'read'}))ok++;}return ok;})()");
 ok(Number(readOk) === 5, 'B9 已读回执额度已满时照落、不被拦（5 条全落）', '落地=' + readOk);
-const naOk = await ev("(function(){var ok=0;for(var i=0;i<3;i++){if(window.chatAddIn('当刻操作'+i, {nightAllow:true}))ok++;}return ok;})()");
-ok(Number(naOk) === 3, 'B10 nightAllow（用户当刻操作引发的记录：决定结果/战绩/存钱罐）不占额度也不被拦', '落地=' + naOk);
+// #1341 翻案并新增：旧写法里 nightAllow 这一把钥匙同时豁免了夜间闸与限流（＝带它的 TA 自发内容既不占额度也拦不住，
+// 与设置页文案「只有已读回执与你当刻操作引发的记录豁免」不符）。现在两把钥匙分开：当刻操作记录认 rateAllow。
+const onlyNa = await ev("(function(){var ok=0;for(var i=0;i<3;i++){if(window.chatAddIn('只有夜间豁免'+i, {nightAllow:true}))ok++;}return ok;})()");
+ok(Number(onlyNa) === 0, 'B10b 只带 nightAllow（TA 自发内容：经期关心／音乐互动台词）此刻占额度并被拦＝两把钥匙已分开（#1341 翻案）', '落地=' + onlyNa);
+const naOk = await ev("(function(){var ok=0;for(var i=0;i<3;i++){if(window.chatAddIn('当刻操作'+i, {nightAllow:true,rateAllow:true}))ok++;}return ok;})()");
+ok(Number(naOk) === 3, 'B10 rateAllow（用户当刻操作引发的记录：决定结果/战绩/存钱罐）不占额度也不被拦（#1341 换这把钥匙）', '落地=' + naOk);
 // B11：窗口外的旧收件不占额度——先关闸灌 10 条「10 分钟前」的历史收件（模拟 TA 过去聊过），
 // 再开闸连发 3 条新鲜收件：3 条必须全落（旧消息被 ts 挡在窗口外），第 4 条才被拦。
 await ev("(function(){window.clearChatHistory();window.saveReplyCfg('rl-en',0);return 1;})()");

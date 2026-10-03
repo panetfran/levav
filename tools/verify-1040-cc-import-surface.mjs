@@ -12,6 +12,8 @@
 //   B4 surface 真的盖在按钮正上方（elementFromPoint 命中＝手指物理点按确实落在 input 上）
 //   B5 切回「文字」＝surface 被撤掉（幂等铺/撤，不残留）
 //   B6 切「语音」＝surface 存在且 accept 为空（iOS 文件选择器按 accept 过滤会灰显语音文件）
+//   B7 空列表态「批量导入图片」按钮也铺真·可点层（独立 id、同口径、物理命中＝#1448 同族第十二波）
+//   B8 空状态委托不再 preventDefault 这张层（否则原生选择器刚弹起就被取消）、旁路按钮仍独立可点
 //   Z  零 window 报错
 // 用法：node tools/verify-1040-cc-import-surface.mjs（MOCHI_ROOT=目录 可指向隔离副本）
 // 需要：Node 21+ + 本机 Chrome/Edge（CHROME_PATH 可指定）
@@ -174,6 +176,60 @@ console.log('--- B5/B6 切回「文字」撤层 / 切「语音」accept 放开 -
   await sleep(1000); await clearGates();
   const j6 = JSON.parse(await ev(SURF) || '{}');
   check('B6 语音分类铺层且 accept 为空（iOS 按 accept 过滤会灰显语音文件）', j6.has === true && j6.accept === '', JSON.stringify(j6));
+}
+
+console.log('--- B7/B8 空列表态「批量导入图片」按钮也铺真·可点层（#1448） ---');
+{
+  // 本夹具无表情包/图片/语音预设卡片 ⇒ 切到表情包即空列表态：用户唯一看得到的入口就是
+  // 「批量导入图片」按钮。它过去只有 el.click() 一条合成腿（iOS Safari 静默无视＝空库传图
+  // 完全没反应），#1448 给它铺一张和右上角门同口径、但 id 不同的真·可点层。
+  await clearGates();
+  await ev(`(function(){var t=document.querySelector('.cc-tab[data-type=sticker]');if(t)t.click();return true;})()`);
+  await sleep(1200); await clearGates();
+  const EMPTY = `(function(){
+    var g = document.getElementById('applock-mask'); if (g && !g.hidden) g.hidden = true;
+    var b = document.querySelector('#cc-list [data-cc-empty="import"]');
+    if (!b) return JSON.stringify({ noBtn: true });
+    var s = b.querySelector('input[data-file-pick-surface]');
+    var out = { has: !!s, id: s ? s.id : null, accept: s ? s.accept : null, multi: s ? s.multiple : null };
+    try {
+      var r = b.getBoundingClientRect();
+      var el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      out.hit = el ? (el.tagName + (el.id ? '#' + el.id : '')) : null;
+      out.hitIsSurface = !!(el && el === s);
+    } catch (e) { out.hit = 'err'; }
+    return JSON.stringify(out);
+  })()`;
+  const j7 = JSON.parse(await ev(EMPTY) || '{}');
+  check('B7 空状态「批量导入图片」按钮铺了 surface 层，且 id 与右上角那扇不同（按 id 复用不会搬家）',
+    j7.has === true && j7.id === 'cc-empty-import-surf', JSON.stringify(j7));
+  check('B7b 空状态门 accept=image/*、multiple=true（与右上角媒体门同口径）',
+    j7.accept === 'image/*' && j7.multi === true, JSON.stringify(j7));
+  check('B7c 手指物理点按命中的就是空状态按钮上那张 input（原生默认动作可弹选择器）',
+    j7.hitIsSurface === true, 'elementFromPoint=' + j7.hit);
+  // B8a：空状态委托若对 surface 目标 preventDefault，会取消刚弹起的原生选择器（铺了等于白铺）——
+  // 在层上派发一次真实冒泡 click，看它是否被取消。
+  const prevented = await ev(`(function(){
+    var s = document.querySelector('#cc-list [data-cc-empty="import"] input[data-file-pick-surface]');
+    if (!s) return 'noSurf';
+    var e = new MouseEvent('click', { bubbles: true, cancelable: true });
+    s.dispatchEvent(e);
+    return e.defaultPrevented ? 'prevented' : 'ok';
+  })()`);
+  check('B8a surface 上的 click 未被空状态委托 preventDefault（否则原生选择器刚弹起就被取消）',
+    prevented === 'ok', prevented);
+  // B8b：导入层的盒子必须只盖自己那一格——同一行的「链接导入」按钮要能独立命中，
+  // 否则透明层会把旁路按钮的点击整个吃掉。
+  const jl = JSON.parse(await ev(`(function(){
+    var b = document.querySelector('#cc-list [data-cc-empty="link"]'); if (!b) return JSON.stringify({ noLink: true });
+    if (b.querySelector('input[data-file-pick-surface]')) return JSON.stringify({ hasSurf: true });
+    var r = b.getBoundingClientRect();
+    var el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return JSON.stringify({ hit: el ? (el.tagName + (el.id ? '#' + el.id : '')) : 'null',
+      inside: !!(el && el.closest && el.closest('[data-cc-empty="link"]')) });
+  })()`) || '{}');
+  check('B8b「链接导入」按钮仍可独立命中（导入层的盒子只盖自己那一格）',
+    jl.noLink === true || jl.inside === true, JSON.stringify(jl));
 }
 
 console.log('--- Z 零异常 ---');
