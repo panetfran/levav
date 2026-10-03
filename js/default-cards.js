@@ -72,6 +72,76 @@ const o = groupOffRecord(st);
 const names = o && o[cat];
 return !!(names && names.length) && groupOffTexts(cat, names).has(c);
 }
+const PG_KEY = 'pg-groups-off';
+let pgRaw = null, pgObj = null;   // 单格缓存：原始值没变才复用解析结果（切桌面＝自动重解析）
+function pgRecord(st) {
+let raw = null;
+try { raw = (st || ls).get(PG_KEY); } catch (e) { return null; }
+if (raw === pgRaw) return pgObj;
+let o = null;
+try {
+if (raw) { const p = JSON.parse(raw); if (p && typeof p === 'object' && !Array.isArray(p)) o = p; }
+} catch (e) {}
+pgRaw = raw; pgObj = o;
+return o;
+}
+function pgIsOff(id, grp, st) {
+const o = pgRecord(st);
+const names = o && o[id];
+return !!(names && names.indexOf(grp) >= 0);
+}
+function pgSet(id, grp, off) {
+const cur = pgRecord(ls) || {};
+const arr = (cur[id] || []).slice();
+const i = arr.indexOf(grp);
+if (off && i < 0) arr.push(grp);
+if (!off && i >= 0) arr.splice(i, 1);
+const next = {};
+Object.keys(cur).forEach(k => { if (k !== id && Array.isArray(cur[k]) && cur[k].length) next[k] = cur[k].slice(); });
+if (arr.length) next[id] = arr;
+ls.set(PG_KEY, JSON.stringify(next));
+}
+function pgNames(id) {
+const o = pgRecord(ls);
+const names = o && o[id];
+return Array.isArray(names) ? names.slice() : [];
+}
+function pgSwitchHTML(off) {
+return '<label class="toggle ccard-toggle ccg-switch" title="' + (off ? '启用该分组' : '停用该分组') + '">' +
+'<input type="checkbox"' + (off ? '' : ' checked') + '><span class="tk"></span></label>';
+}
+function pgOffTag(off) { return off ? '<em class="ccg-off-tag">已停用</em>' : ''; }
+function pgWire(scopeEl, id, grp, onChange) {
+if (!scopeEl) return;
+const input = scopeEl.querySelector('.ccg-switch input');
+if (!input) return;
+input.addEventListener('change', () => {
+const nowOff = !input.checked;
+pgSet(id, grp, nowOff);
+if (typeof onChange === 'function') onChange(nowOff, grp);
+});
+}
+function pgCatBar(id, grp, label) {
+const off = pgIsOff(id, grp);
+return '<div class="set-group glass preset-cat-bar"><div class="gs-row"><span>整组停用「' + label + '」' +
+pgOffTag(off) + '</span>' + pgSwitchHTML(off) + '</div></div>';
+}
+window.presetGroup = {
+KEY: PG_KEY,
+isOff: pgIsOff,
+set: pgSet,
+names: pgNames,
+switchHTML: pgSwitchHTML,
+offTag: pgOffTag,
+bind: pgWire,
+bindBar: pgWire,   // 分组头与整类停用条用的是同一形态（.ccg-switch），两个名字都给，调用方按语义读
+catBar: pgCatBar,
+headerHTML: function (id, grp, label, count, extra) {
+const off = pgIsOff(id, grp);
+return '<span class="ccg-name">' + label + pgOffTag(off) + '</span><span class="ccg-count">' + count + '</span>' +
+(extra || '') + pgSwitchHTML(off);
+}
+};
 function apiFor(st) {
 const gE = function () { const v = st.get('dc-enabled'); return v === null ? true : v === '1'; };
 const gO = function () { const v = st.get('dc-overall'); return v === null ? 30 : Number(v); };
@@ -443,9 +513,9 @@ piggy: '【存钱罐】切到心意币「存钱」页时，TA 可能往存钱罐
 drift: '【漂流瓶】捞出漂流瓶时，瓶内话术（海风/TA的话/TA的回应）从「漂流瓶」字卡池抽取。\n触发时机：打开漂流瓶页、捡瓶前、从后台切回时结算；捡瓶有 20 秒冷却，TA 瓶每天最多 3 个；TA 回应在发布后 6–40 小时结算（45% 概率会回应，同时最多 2 个）。\n概率 = 抽到字卡话术的概率（默认 100%），0% = 不出字卡（普通瓶仍有内置兜底、不会空白；TA 回应瓶则不再生成）。',
 interact: '【互动回应】你主动做的各种小互动（戳一戳 / 拍一拍 / 拉拉手等）时，联系人回应的字卡。\n⚠ 当前版本本项概率尚未接线到回应抽取，调整暂不生效（回应的实际概率由回复设置里的相关项控制）。\n触发时机：你主动互动时。\n概率 = 预留的回应字卡概率（默认 100%），设计意图为 0% = 互动不回应字卡，修复接线后生效。',
 music: '【音乐】播放歌曲时，TA 偶尔会「暂停一下再恢复」来逗你。\n触发时机：每开始一首歌判定一次（自带 3% 概率、同一首只触发一次、距上次 ≥10 分钟）；命中后 10–25 秒随机暂停，3.5 秒后恢复。\n概率 = 暂停/恢复时是否附上字卡气泡（默认 100%），0% = 仍有暂停动作和系统消息，但不出字卡。',
-checkin: '【寻踪日常】联系人定期更新「TA 的日常」（在哪里 / 在做什么 / 想对你说），并推送到聊天。\n触发机制与时间：首次打开（数据就绪后）立即生成一条；此后每隔 1–8 小时随机更新一次，页面在前台时每 60 秒检查一次；后台不更新，从后台切回后 90 秒冷静期内不更新。\n推送内容：每次更新向聊天发三条——「更新了一条日常」提示 + 日常内容 + 30% 概率的「提醒你来寻踪」。\n概率 = 本次更新是否推送这三条到聊天的概率（默认 100%），0% = 完全不发（寻踪页与历史记录照常生成）。\n想整体停用：设置 → 工具 → 寻踪（TA 的日常）总开关——关闭后连日常生成、记录与桌面/聊天入口一起停用，与本概率是两层东西。',
+checkin: '【寻踪日常】联系人定期更新「TA 的日常」（在哪里 / 在做什么 / 想对你说），并推送到聊天。\n触发机制与时间：首次打开（数据就绪后）立即生成一条；此后每隔 1–8 小时随机更新一次，页面在前台时每 60 秒检查一次；后台不更新，从后台切回后 90 秒冷静期内不更新。\n推送内容：每次更新向聊天发三条——「更新了一条日常」提示 + 日常内容 + 30% 概率的「提醒你来寻踪」。\n概率 = 本次更新是否推送这三条到聊天的概率（默认 100%），0% = 完全不发（寻踪页与历史记录照常生成）。\n想整体停用：设置 → 工具 → 寻踪（TA 的日常）总开关——关闭后连日常生成与记录一起停用、聊天里的寻踪入口收起（桌面【寻踪】图标仍在，进去写明「已禁用」，页里「TA在身边 · 位置感知」照常可用），与本概率是两层东西。',
 pomo: '【番茄钟】你用番茄钟完成一段专注时，联系人在聊天里发「去休息一会儿」（如有奖励还会附上摸鱼补偿）的消息。\n触发时机：每完成一段「专注」结算一次（休息段不发），需番茄钟页的「发到聊天」开关也打开。\n概率 = 完成后发这条消息的概率（默认 100%），0% = 不发。',
-care: '【TA的关心（经期）】经期中、经前预警日（提前天数见经期页「提醒设置」）、或经期推迟时，联系人主动发消息。v3.42.x #559 起按「语境 × 经期规律」分级：经期中发「经期关心」（附「经期关心」标签，语料=字卡库「经期」tab「经期关心」分组+经期页自管理关心语）；经前预警日/推迟发「经期预警」（附「经期预警」标签）。分级判据=近 3 次周期变异系数 CV<0.2（很规律/较规律）视为预测可信，否则预测仅参考——①经前预警：预测可信按配置预警日发确定口吻（「经前预警」组）；预测仅参考只在最接近的一次预警日发「按记录推算、仅供参考」版（「经前预警·不规律」组）。②推迟：预测可信晚 ≥5 天发「比平时晚了 N 天，你一向很准」（「经期推迟」组），晚 ≥10 天升关注档、措辞带就医建议（「经期推迟·关注」组）；预测仅参考不说「推迟」（预测误差可能比推迟天数还大），晚 ≥10 天才以「距上次经期已经 N 天」间隔口吻轻提（「经期推迟·不规律」组）。各语料 {d} 自动替换为具体天数。\n触发时机：TA 每条文字/表情/图片回复后、打开经期页、保存提醒设置时各判定一次；每个语境每天最多一条；23:00–06:00 深夜静默（不发、也不占当天名额，白天再触发照常）。\n本概率 = 在原有闸门之上统一放行（默认 100%）：经期中第 1–2 天另有 90%、第 3–4 天 70%、第 5+ 天 55%，经前预警/推迟预警 75% 的基数；本项 100% = 保持原节奏，0% = 完全不发。\n更彻底：到「经期记录」页把「梦角关心」按钮也关掉（两者都关才真的完全关）。',
+care: '【TA的关心（经期）】经期中、经前预警日（提前天数见经期页「提醒设置」）、或经期推迟时，联系人主动发消息。v3.42.x #559 起按「语境 × 经期规律」分级：经期中发「经期关心」（附「经期关心」标签，语料=字卡库「经期」tab「经期关心」分组+经期页自管理关心语）；经前预警日/推迟发「经期预警」（附「经期预警」标签）。分级判据=近 3 次周期变异系数 CV<0.2（很规律/较规律）视为预测可信，否则预测仅参考——①经前预警：预测可信按配置预警日发确定口吻（「经前预警」组）；预测仅参考只在最接近的一次预警日发「按记录推算、仅供参考」版（「经前预警·不规律」组）。②推迟：预测可信晚 ≥5 天发「比平时晚了 N 天，你一向很准」（「经期推迟」组），晚 ≥10 天升关注档、措辞带就医建议（「经期推迟·关注」组）；预测仅参考不说「推迟」（预测误差可能比推迟天数还大），晚 ≥10 天才以「距上次经期已经 N 天」间隔口吻轻提（「经期推迟·不规律」组）。各语料 {d} 自动替换为具体天数。\n触发时机：TA 每条文字/表情/图片回复后、打开经期页、保存提醒设置时各判定一次；每个语境每天最多一条；23:00–06:00 深夜静默（不发、也不占当天名额，白天再触发照常）。\n本概率 = 在原有闸门之上统一放行（默认 100%）：经期中第 1–2 天另有 90%、第 3–4 天 70%、第 5+ 天 55%，经前预警/推迟预警 75% 的基数；本项 100% = 保持原节奏，0% = 完全不发。\n与经期页那个「梦角关心」按钮是「与」的关系：本项设 0%、或那边关掉，任一成立就一条都不发（不必两个都关）。被本项拦成 0% 而经期页仍显示「已开启」时，经期页「提醒设置」底部会当场写出这一条与打开方式，不再静默不发。',
 memo: '【备忘提醒】你有未完成的备忘时，联系人在聊天里催一件，带「备忘提醒」标签。\n触发时机：启动 60 秒后首次、之后每 4 分钟判定一次、回前台补触发；至少隔 2 天、23:00–06:00 静默。\n本概率 = 在备忘页自带的「备忘提醒」开关/概率（默认 2%）之上是否放行（默认 100%）：100% = 保持原节奏，0% = 完全不催备忘。\n备忘页里自己的开关仍独立有效。',
 ask: '【TA主动提问】联系人在聊天里主动发起的问题卡：关心询问 / 小问题 / 好奇卡片 / 互动 / 吐槽，带你作答选项。\n触发时机：五类各自定时判定（首次 60–150 秒、之后每 240–300 秒），各有冷却（30/45/90 分钟），任一互动卡发出后 60 分钟内其余类型不再自动触发；无深夜静默。\n本概率 = 在各类自带的触发概率（询问/小问题/好奇/吐槽默认 5%、TA分享你的字卡默认 4%）与冷却之上是否统一放行（默认 100%）：100% = 保持原节奏，0% = 完全不主动提问。\n#1153 频率整体档：设置 → 回复设置 →「互动卡频率」四档（原频率 / 稍安静 / 安静 / 很安静）可把这五类（以及邀请三类、音乐邀请）的概率、提问卡冷却与 60 分钟跨类型间隔一起整体往下缩放；「原频率」（默认）＝完全保持现在的节奏，没有比它更高的档。\n不影响查岗（查岗走自己的「跨桌面查岗」）。',
 deskcheck: '【跨桌面查岗·回应】其他桌面的联系人来查岗、你回答后，TA 是否从「跨桌面查岗」字卡池抽 1–5 张作为回应。\n触发时机：查岗本身由全局「跨桌面查岗频率」控制（原频率：每 60 秒判定、每次 2% 概率、冷却 30 分钟；安静 1% / 3 小时（默认）；更安静 0.5% / 6 小时；最安静 0.2% / 12 小时），本项不控制是否来查岗，只控制回答之后的回应。\n概率 = 回答后抽回应字卡的概率（默认 50%），0% = 只给文字回复、不抽字卡。\n（本项为独立入口，不受「其他互动功能字卡」总开关约束。）'
@@ -1039,18 +1109,36 @@ window.getDefaultCardGroups = function (cat) {
 if (LOCKED()) return []; // #319 锁定＝系统预设字卡不存在
 return (DATA[cat] || []).slice();
 };
-window.getLibPool = function (cat, group, fallback) {
-if (LOCKED()) { // #319 锁定＝只回自建功能字卡，内置同源池与 fallback 兜底都不给
+window.getLibPool = function (cat, group, fallback, exemptLock) {
+if (LOCKED() && !exemptLock) { // #319 锁定＝只回自建功能字卡，内置同源池与 fallback 兜底都不给
 try { return (window.getCustomFuncCards && window.getCustomFuncCards(cat)) || []; } catch (e) { return []; }
 }
 const g = (DATA[cat] || []).find(x => x[0] === group);
 let arr = g && Array.isArray(g[1]) && g[1].length ? g[1] : (Array.isArray(fallback) ? fallback : []);
 arr = arr.slice();
+try { const off = window.isDefaultCardOff; if (off) arr = arr.filter(c => !off(cat, c)); } catch (e) {}
 try {
 const cf = (window.getCustomFuncCards && window.getCustomFuncCards(cat)) || [];
 if (cf.length) arr = arr.concat(cf);
 } catch (e) {}
 return arr;
+};
+window.gateCardFallback = function (cat, fallback) {
+try {
+const arr = Array.isArray(fallback) ? fallback.slice() : [];
+const off = window.isDefaultCardOff;
+if (!off) return arr;
+return arr.filter(c => !off(cat, c));
+} catch (e) { return []; }
+};
+window.getPresetGroupLines = function (group, fallback) {
+let arr = [];
+try {
+const g = ((window.DEFAULT_CARD_DATA || {}).interact || []).find(x => x && x[0] === group);
+arr = g && Array.isArray(g[1]) && g[1].length ? g[1].slice() : (Array.isArray(fallback) ? fallback.slice() : []);
+} catch (e) { arr = Array.isArray(fallback) ? fallback.slice() : []; }
+const off = window.isDefaultCardOff;
+return off ? arr.filter(c => !off('interact', c)) : arr;
 };
 window.getInteractPool = function (name, fallback) {
 return window.getLibPool('interact', name, fallback);

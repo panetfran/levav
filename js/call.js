@@ -3,8 +3,9 @@
 const uid = window.activePrefix();
 const store = window.activeStore();
 const CALL = { incoming: 15, pickup: 70, busy: 15, reject: 15, hangup: 2 };
-function callCfg() {
-const c = (window.replyCfg && window.replyCfg()) || {};
+function callCfg(cid) {
+const own = cid && cid !== (window.__activeCid || 'default');
+const c = (own && window.replyCfgFor ? window.replyCfgFor(cid) : (window.replyCfg && window.replyCfg())) || {};
 return {
 incoming: c['call-incoming'] !== undefined ? c['call-incoming'] : CALL.incoming,
 pickup: c['call-pickup'] !== undefined ? c['call-pickup'] : CALL.pickup,
@@ -58,34 +59,25 @@ id: 'mochi-call-bg-pick', accept: 'image/*',
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) { toast('没有取到图片，请再选一次'); return; }
-const reader = new FileReader();
-reader.onload = () => {
-const img = new Image();
-img.onload = () => {
-try {
-const scale = Math.min(1, 600 / Math.max(img.width, img.height));
-const c = document.createElement('canvas');
-c.width = Math.max(1, Math.round(img.width * scale));
-c.height = Math.max(1, Math.round(img.height * scale));
-c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-const data = c.toDataURL('image/jpeg', 0.85);
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+window.mochiImgIngest(f, { maxSide: 1920, quality: 0.85, tag: 'call-bg' }).then((r) => {
+if (!r || r.st !== 'ok' || !r.data) { toast(window.mochiImgIngestMiss(r, '通话背景')); return; }
+const data = r.data;
 store.set(bgKey, data);
 if (bgKey === CALL_HALF_BG_KEY) applyCallHalfBg(); else applyCallBg();
 toast(msg || '通话背景已设置');
-} catch (e) {
-toast('图片处理失败');
-}
-};
-img.onerror = () => toast('图片读取失败');
-img.src = reader.result;
-};
-reader.onerror = () => toast('图片读取失败');
-reader.readAsDataURL(f);
+});
 }
 });
 }
 const callBgRow = document.getElementById('call-bg-row');
 if (callBgRow) callBgRow.addEventListener('click', () => pickCallBg(CALL_BG_KEY));
+if (window.mochiFilePickDoor) {
+['call-bg-row', 'call-bg-edit-row', 'call-half-bg-row', 'call-half-bg-edit-row'].forEach(function (rid) {
+const door = document.getElementById(rid);
+if (door) window.mochiFilePickDoor(door, { owner: 'mochi-call-bg-pick', accept: 'image/*' });
+});
+}
 const callAvEditRow = document.getElementById('call-av-edit-row');
 if (callAvEditRow) {
 callAvEditRow.addEventListener('click', () => {
@@ -345,6 +337,7 @@ function callActivePayload() {
 return JSON.stringify({
 cid: currentCall.cid, direction: currentCall.direction, status: currentCall.status,
 startTime: currentCall.startTime, connectedTime: currentCall.connectedTime || 0,
+hangupAt: currentCall.hangupAt || 0,
 name: currentCall.name || '', av: '', ts: Date.now()
 });
 }
@@ -446,23 +439,18 @@ function startCallDuration() {
 stopTimers();
 if (!currentCall.connectedTime) currentCall.connectedTime = Date.now(); // v3.26.x：恢复通话时已有 connectedTime 不覆盖，计时从接通时刻继续
 updateDur(); // v3.13.x：接通立即刷新显示，避免接通瞬间仍停留「00:00」卡一下
-let checkCount = 0;
+if (!currentCall.hangupAt) currentCall.hangupAt = Math.max(currentCall.connectedTime + 180000, Date.now());
 let hbCount = 0;
 durationTimer = setInterval(() => {
 updateDur();
 syncCallAv();
 syncCallName();
 if (++hbCount >= 20) { hbCount = 0; saveCallActive(); }
-if (currentCall && currentCall.status === 'connected') {
-if (Date.now() - currentCall.connectedTime >= 180000) {
-checkCount++;
-if (checkCount >= 60) {
-checkCount = 0;
-const hp = callCfg();
+if (currentCall && currentCall.status === 'connected' && Date.now() >= currentCall.hangupAt) {
+currentCall.hangupAt = Date.now() + 60000;
+const hp = callCfg(currentCall.cid);
 if (!(hp.nohangup || hp.hangup <= 0) && Math.random() * 100 < hp.hangup) {
 endCall('对方挂断了电话');
-}
-}
 }
 }
 }, 1000);
@@ -513,7 +501,7 @@ shownName = null;
 }
 function bgCallNotify(name, hint, avOverride) {
 try {
-if (window.bgNotifyCheck) window.bgNotifyCheck(name + ' 来电了' + (hint ? '，' + hint : ''), Date.now(), { name: name + '来电', av: avOverride || partnerAv(), avFixed: true, force: true });
+if (window.bgNotifyCheck) window.bgNotifyCheck(name + ' 来电了' + (hint ? '，' + hint : ''), Date.now(), { name: name + '来电', av: avOverride || partnerAv(), avFixed: true, force: true, callAlert: true, callTag: name, kind: 'call' });
 } catch (e) {}
 }
 const CALL_HOLD_MS = 3 * 60 * 1000;
@@ -522,16 +510,43 @@ const HOLD_SID = 'r' + Date.now().toString(36) + Math.random().toString(36).slic
 function heldMissedHtml(nm) {
 return '<svg class="st-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>' + nm + ' 来电 · 未接听';
 }
+const CALL_REPEAT_MS = 30000;
+const CALL_REPEAT_MAX = 5;
+let callRepeatTimer = 0;
+let callRepeatCount = 0;
+function stopCallRepeat() {
+if (callRepeatTimer) { clearTimeout(callRepeatTimer); callRepeatTimer = 0; }
+callRepeatCount = 0;
+}
+function startCallRepeat(name, cid, avOverride) {
+stopCallRepeat();
+const wantCid = cid || (window.__activeCid || 'default');
+const tick = function () {
+callRepeatTimer = 0;
+if (currentCall) { stopCallRepeat(); return; } // 已接通/前台响铃中/通话已结束
+if (document.visibilityState === 'visible') { stopCallRepeat(); return; }
+let h = null;
+try { h = readCallHold(); } catch (e) {}
+if (!h || h.name !== name || h.cid !== wantCid || Date.now() - h.ts > CALL_HOLD_MS) { stopCallRepeat(); return; }
+if (callRepeatCount >= CALL_REPEAT_MAX) { stopCallRepeat(); return; }
+callRepeatCount++;
+bgCallNotify(name, '快回来接听，对方会等你几分钟', avOverride);
+callRepeatTimer = setTimeout(tick, CALL_REPEAT_MS);
+};
+callRepeatTimer = setTimeout(tick, CALL_REPEAT_MS);
+}
 function holdIncomingCall(name, cid, avOverride, msgWritten) {
 let prev = null;
 try { prev = readCallHold(); } catch (e) {}
+const justNotified = prev && prev.name === name && Date.now() - prev.ts < 6000;
 if (prev && prev.cid && prev.sid === HOLD_SID && Date.now() - prev.ts > CALL_HOLD_MS) {
 notifyCallEnd(prev.cid, heldMissedHtml(prev.name || partnerName()), 'in', '未接听');
 }
 const h = { ts: Date.now(), name: name, cid: cid || (window.__activeCid || 'default'), msg: !!msgWritten, sid: HOLD_SID };
 try { localStorage.setItem(CALL_HOLD_KEY, JSON.stringify(h)); } catch (e) {}
 if (window.idbSet) { try { window.idbSet(CALL_HOLD_KEY, h); } catch (e) {} }
-bgCallNotify(name, '快回来接听，对方会等你几分钟', avOverride);
+if (!justNotified) bgCallNotify(name, '快回来接听，对方会等你几分钟', avOverride);
+startCallRepeat(name, cid, avOverride);
 }
 window.callHoldIncoming = holdIncomingCall;
 window.callRecordMissed = function (cid, name) {
@@ -544,6 +559,7 @@ return (h && h.ts) ? h : null;
 } catch (e) { return null; }
 }
 function clearCallHold() {
+stopCallRepeat();
 try { localStorage.setItem(CALL_HOLD_KEY, '{"ts":0}'); } catch (e) {}
 if (window.idbSet) { try { window.idbSet(CALL_HOLD_KEY, { ts: 0 }); } catch (e) {} }
 }
@@ -884,7 +900,7 @@ const dir = info.direction || 'out';
 const name = info.name || 'TA';
 if (callCfg().resume !== 0) {
 try {
-currentCall = { cid: cid, direction: dir, status: 'connected', startTime: info.startTime || info.connectedTime, connectedTime: info.connectedTime, durationSec: 0, name: name, av: info.av || '' };
+currentCall = { cid: cid, direction: dir, status: 'connected', startTime: info.startTime || info.connectedTime, connectedTime: info.connectedTime, hangupAt: info.hangupAt || 0, durationSec: 0, name: name, av: info.av || '' };
 shownAv = null; shownName = null;
 if (callMiniEnabled()) {
 if (mask) mask.hidden = true;

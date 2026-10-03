@@ -32,16 +32,76 @@ el.__timer = setTimeout(() => { el.className = 'cc-toast'; }, 1800);
 function pad(n) { return (n < 10 ? '0' : '') + n; }
 function dkey(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
 function moodByEmoji(e) { return MOODS.find(m => m.e === e) || null; }
+function normPkg(v) {
+if (!v || typeof v !== 'object' || !v.d || typeof v.d !== 'object') return null;
+if (!v.days || typeof v.days !== 'object') v.days = {};
+return v;
+}
 function loadAll() {
-try {
-const v = JSON.parse(store().get(KEY) || 'null');
-if (v && v.d && typeof v.d === 'object') return v;
-} catch (e) {}
-return { d: {} };
+try { const p = normPkg(JSON.parse(store().get(KEY) || 'null')); if (p) return p; } catch (e) {}
+return { d: {}, days: {} };
+}
+function libKey() { return window.activePrefix() + ':' + KEY; }
+function parseLib(raw) {
+if (typeof raw !== 'string' || !raw) return null;
+try { return normPkg(JSON.parse(raw)); } catch (e) { return null; }
+}
+function unionPkg(lib, ours) {
+if (!lib) return ours;
+const out = { d: {}, days: {} };
+const put = function (k) {
+if (out.d[k]) return;
+const a = lib.d[k], b = ours.d[k];
+if (a && b) out.d[k] = (((b.ts || 0) >= (a.ts || 0)) ? b : a);
+else out.d[k] = a || b;
+};
+Object.keys(lib.d).forEach(put);
+Object.keys(ours.d).forEach(put);
+Object.keys(lib.days || {}).forEach(function (k) { out.days[k] = 1; });
+Object.keys(ours.days || {}).forEach(function (k) { out.days[k] = 1; });
+return out;
+}
+function broadcastInteract() {
+setTimeout(function () { try { document.dispatchEvent(new Event('mood-interact-recorded')); } catch (e) {} }, 0);
+}
+let _libMergeBusy = false, _libMergeAgain = false;
+function queueLibMerge(retry) {
+if (_libMergeBusy) { _libMergeAgain = true; return; }
+_libMergeBusy = true;
+const info = {};
+let p;
+try { p = Promise.resolve(window.idbGet(libKey(), info)); } catch (e) { p = Promise.resolve(undefined); }
+const bail = function () {
+_libMergeBusy = false;
+if (!retry) { setTimeout(queueLibMerge, 4000, true); return; }
+if (_libMergeAgain) { _libMergeAgain = false; queueLibMerge(false); }
+};
+Promise.resolve(p).then(function (libRaw) {
+_libMergeBusy = false;
+const ours = loadAll();
+if ((libRaw === undefined || libRaw === null) && info.ambiguous) { bail(); return; }
+const merged = unionPkg(parseLib(libRaw), ours);
+try { store().set(KEY, JSON.stringify(merged)); } catch (e) {}
+const grewD = Object.keys(merged.d).length > Object.keys(ours.d).length;
+const grewDy = Object.keys(merged.days).length > Object.keys(ours.days).length;
+if (grewDy) _interactCache.built = false; // 并回来的那些天也要重新认一遍「有没有互动」
+if (grewD || grewDy) {
+try { renderMonth(); } catch (e) {}
+broadcastInteract();
+}
+if (_libMergeAgain) { _libMergeAgain = false; queueLibMerge(false); }
+}, bail);
 }
 function saveAll(data) {
-try { store().set(KEY, JSON.stringify(data)); } catch (e) {}
-try { if (window.idbSet) window.idbSet(window.activePrefix() + ':' + KEY, JSON.stringify(data)); } catch (e) {}
+const s = JSON.stringify(data);
+try { if (window.idbMemoSet) window.idbMemoSet(libKey(), s); } catch (e) {}
+try { localStorage.setItem(libKey(), s); } catch (e) {}
+if (!window.idbMemoSet || !window.idbGet || !window.idbSet) {
+try { store().set(KEY, s); } catch (e2) {}
+try { if (window.idbSet) window.idbSet(libKey(), s); } catch (e2) {}
+return;
+}
+queueLibMerge(false);
 }
 function hashStr(s) {
 let h = 5381;
@@ -53,18 +113,36 @@ try { const m = window.getChatMsgs ? window.getChatMsgs() : null; if (Array.isAr
 try { const v = JSON.parse(store().get('chat-msgs') || '[]'); if (Array.isArray(v)) return v; } catch (e) {}
 return [];
 }
-const _interactCache = { built: false, set: {} };
+const _interactCache = { built: false, set: {}, seen: false };
+function dayKeyOf(ts) { const d = new Date(ts); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
 function buildInteractSet() {
+const pkg = loadAll();
 const set = {};
-for (const m of chatArr()) {
-if (m && m.ts) { const d = new Date(m.ts); set[d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())] = 1; }
+Object.keys(pkg.days || {}).forEach(function (k) { set[k] = 1; });
+const arr = chatArr();
+let grew = 0;
+for (let i = 0; i < arr.length; i++) {
+const m = arr[i];
+if (m && m.ts && !set[dayKeyOf(m.ts)]) { set[dayKeyOf(m.ts)] = 1; grew++; }
 }
+let ready = false;
+try { ready = !!(window.__chatDbReady && window.__chatDbReady()); } catch (e) {}
 _interactCache.set = set;
+_interactCache.seen = !!arr.length || ready;
 _interactCache.built = true;
+if (grew) {
+pkg.days = set;
+saveAll(pkg); // 看到一次就记下来，别等下一场现算——下一场本机那份未必还带着这几天
+broadcastInteract();
+}
 }
 function hasInteraction(dateKey) {
 if (!_interactCache.built) buildInteractSet();
 return !!_interactCache.set[dateKey];
+}
+function interactionUnknown(dateKey) {
+if (!_interactCache.built) buildInteractSet();
+return !_interactCache.set[dateKey] && !_interactCache.seen;
 }
 function taMoodFor(dateKey) {
 if (!hasInteraction(dateKey)) return null; // 无真实交互 → 不显示 TA 心情
@@ -114,7 +192,7 @@ if (ta) {
 const tm = taMoodFor(k);
 const nm = store().get('lbl-partner') || 'TA';
 ta.textContent = tm ? (nm + ' 今天的心情：' + tm.e + ' ' + tm.n)
-: ((window.mochiDataPending && window.mochiDataPending()) ? window.mochiLoadingText()
+: (((window.mochiDataPending && window.mochiDataPending()) || interactionUnknown(k)) ? window.mochiLoadingText()
 : (nm + ' 今天还没有互动，还没有心情哦'));
 }
 const btn = document.getElementById('mood-save');
@@ -250,8 +328,8 @@ const rec = data.d[k];
 const mine = rec ? { e: rec.m, n: (moodByEmoji(rec.m) || {}).n || '', note: rec.n || '' } : null;
 _interactCache.built = false; // 重建「有交互日期」集合，确保读到最新聊天
 const tm = taMoodFor(k);
-return { mine: mine, ta: tm ? { e: tm.e, n: tm.n } : null };
-} catch (e) { return { mine: null, ta: null }; }
+return { mine: mine, ta: tm ? { e: tm.e, n: tm.n } : null, taUnknown: !tm && interactionUnknown(k) };
+} catch (e) { return { mine: null, ta: null, taUnknown: false }; }
 };
 })();
 if (window.__mochiLoaded) window.__mochiLoaded.push("mood-diary.js");

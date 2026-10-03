@@ -437,8 +437,8 @@ window.chatAddSystem('记忆翻牌 · 你 ' + g.myPairs + ' 对 · ' + T('TA') +
 const pool = window.getInteractPool
 ? window.getInteractPool('游戏平局·回应', ['一起找完了。', '好默契呀。', '差不多嘛。', '再来一局？'])
 : ['一起找完了。', '好默契呀。'];
-const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : '一起找完了。';
-setTimeout(() => {
+const say = pool.length ? pool[Math.floor(Math.random() * pool.length)] : ''; // #1515 整组停用＝静默（记忆翻牌）
+if (say) setTimeout(() => {
 try { if (window.chatAddIn) window.chatAddIn(say, { silent: true }); } catch (e) {}
 }, 800);
 } catch (e) {}

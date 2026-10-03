@@ -170,6 +170,56 @@ return window.idbGet(FULL + m[1]).then(function (v) {
 return (typeof v === 'string' && v) ? v : null;
 }).catch(function () { return null; });
 };
+const paintWait = new Map();          // hash -> [{ el, done }]
+const PAINT_WAIT_MS = 1200;
+function paintFinish(el, done, ok) {
+try { el.__moPaint = 0; } catch (eC) {}
+try { if (done) done(ok); } catch (eD) {}
+}
+function paintDeliver(h, payload) {
+const list = paintWait.get(h);
+if (!list) return;
+paintWait.delete(h);
+for (let i = 0; i < list.length; i++) {
+const it = list[i], el = it.el;
+let cur = '';
+try { cur = el.getAttribute('src') || ''; } catch (eG) {}
+if (cur) { paintFinish(el, it.done, false); continue; } // 已被上好图/已被换掉：不插手
+try { el.setAttribute('src', payload || (TOK + h)); } catch (eS) {} // 有载荷写真载荷，确缺才写令牌
+paintFinish(el, it.done, !!payload);
+}
+}
+window.mochiMediaPaint = function (el, val, done) {
+const v = String(val || '');
+if (!el || !v) { try { if (done) done(false); } catch (e0) {} return; }
+const m = TOKEN_RE.exec(v);
+if (!m) {
+try { el.setAttribute('src', v); } catch (e1) {}
+paintFinish(el, done, true);
+return;
+}
+const h = m[1];
+const c = map.get(h);
+if (typeof c === 'string' && c) { // 热缓存命中（本会话刚落过池/已预热）＝一次赋值、一发请求都不发
+try { el.setAttribute('src', c); } catch (e3) {}
+paintFinish(el, done, true);
+return;
+}
+if (missing.has(h)) { // 本会话已确认缺失：当场交回令牌，#397 占位那一路立刻接手（旧语义）
+try { el.setAttribute('src', v); } catch (e5) {}
+paintFinish(el, done, false);
+return;
+}
+let list = paintWait.get(h);
+if (!list) {
+list = [];
+paintWait.set(h, list);
+setTimeout(function () { paintDeliver(h, map.get(h) || null); }, PAINT_WAIT_MS); // 纪律②上限兜底
+}
+try { el.__moPaint = 1; } catch (eF) {} // 在飞＝这一格此刻既没载荷也没令牌，面板「等图 ready」闸读它
+list.push({ el: el, done: done });
+if (window.mochiMediaWarmTokens) { try { window.mochiMediaWarmTokens([h]); } catch (eW) {} } // 纪律③
+};
 window.mochiMediaReplace = function (hash, dataUrl) {
 const h = String(hash || '');
 if (!TOKEN_RE.test(TOK + h)) return Promise.resolve(false);
@@ -178,6 +228,7 @@ try { writeBuf = writeBuf.filter(function (p) { return !(p && p.k === FULL + h);
 return window.idbSet(FULL + h, dataUrl).then(function (ok) {
 if (!ok) return false;
 map.set(h, dataUrl);
+paintDeliver(h, dataUrl); // #1314 在等这一哈希的格子当场拿新载荷（不经令牌那一趟）
 missing.delete(h);
 try { window.mochiMediaPhRestore(h, dataUrl); } catch (ePH) {} // #439 原位换回自愈
 let nodes;
@@ -281,6 +332,7 @@ missRetryPump();
 return;
 }
 if (info.ambiguous) { softMissImg(img, h); return; }
+paintDeliver(h, null); // #1314 确缺＝把令牌交回在等的格子，让观察器＋#397 占位那一路接手（下一行 #387 的语义一字未动）
 missing.add(h); markMissing(h); return;
 }
 missing.delete(h); // 后续读到有效值＝池已补回（导入完整备份等），解除剔除/占位
@@ -291,6 +343,7 @@ softTry.delete(h);
 let nodes;
 try { nodes = document.querySelectorAll('img[src="' + TOK + h + '"]'); } catch (e) { nodes = []; }
 Array.prototype.forEach.call(nodes, function (el) { el.src = v2; });
+paintDeliver(h, v2); // #1314 同哈希在登记的格子（src 还空着）一并上好图
 }).catch(function () { __tokSettle(); });
 }
 function scanRoot(root) {
@@ -336,6 +389,7 @@ if (!map.has(h)) map.set(h, v);
 let nodes;
 try { nodes = document.querySelectorAll('img[src="' + TOK + h + '"]'); } catch (e) { nodes = []; }
 Array.prototype.forEach.call(nodes, function (el) { el.src = v; });
+paintDeliver(h, v); // #1314 同上：预热回来先喂登记处，别让格子靠「src 里躺着令牌」才被捞到
 });
 if (warmQueue.length) warmT = setTimeout(warmPump, 0);
 }).catch(function () {

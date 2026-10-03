@@ -2,6 +2,7 @@
 (function () {
 const LS_HEADROOM = 512 * 1024;
 const SNAPSHOT_KEY = 'xy-home-v2:__auto-backup-snapshot';
+const IMPORT_LOG_KEY = 'xy-home-v2:__import-log';
 function toast(msg) {
 let t = document.getElementById('cc-toast');
 if (!t) { t = document.createElement('div'); t.id = 'cc-toast'; document.body.appendChild(t); }
@@ -61,17 +62,30 @@ return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
 function readFileText(file) {
 return new Promise((resolve) => {
+const rd = { text: '', err: null, why: '' };
+function done(why) { rd.why = why; resolve(rd); }
 if (typeof file.text === 'function') {
-file.text().then(resolve).catch(() => readViaReader());
+file.text().then((t) => {
+if (t === '' && file.size > 0) readViaReader();
+else { rd.text = String(t); done(t === '' ? 'zero-byte' : 'text-ok'); }
+}).catch((e) => { rd.err = e; readViaReader(); });
 } else readViaReader();
 function readViaReader() {
 const r = new FileReader();
-r.onload = () => resolve(String(r.result || ''));
-r.onerror = () => resolve('');
+r.onload = () => {
+rd.text = String(r.result || '');
+if (rd.text !== '') { rd.err = null; done('reader-ok'); }
+else done(rd.err ? 'unreadable' : 'reader-empty');
+};
+r.onerror = () => {
+if (!rd.err) rd.err = new Error('读取失败：FileReader 无法读出文件内容');
+done('unreadable');
+};
 r.readAsText(file, 'utf-8');
 }
 });
 }
+function impLog(w) { try { if (window.mochiImportLog) window.mochiImportLog('backup:' + w); } catch (e) {} }
 function blobToBase64(blob) {
 return blob.arrayBuffer().then((buf) => {
 const bytes = new Uint8Array(buf);
@@ -471,9 +485,10 @@ for (let i = 0; i < localStorage.length; i++) {
 const k = localStorage.key(i);
 if (!k || k.indexOf('xy-home-v2:') !== 0) continue;
 if (k === SNAPSHOT_KEY) continue; // v3.7.0：副本键不进导出文件（防自包含无限增长）
+if (k === IMPORT_LOG_KEY) continue; // #1272：LS 侧跳过导入回执键（本机取证不进备份文件）
 if (cfg.skip(k)) continue; // #275 范围外键（文字模式的媒体池等）同样不进小键段，防 strip 剥成空串入库
 const v = localStorage.getItem(k);
-if (byteLen(v) > LS_SMALL_LIMIT) lsBig[k] = v; // 大键：留待 IndexedDB 权威读取
+if (byteLen(v) > LS_SMALL_LIMIT || MEDIA_POOL_KEY_RE.test(k)) lsBig[k] = v; // 大键：留待 IndexedDB 权威读取
 else { small[k] = v; cover.see(k, v); }
 }
 } catch (e) {}
@@ -503,6 +518,10 @@ idbKeys = listed;
 function routeValue(k, v, own) {
 cover.see(k, v);
 if (isAuthorityKey(k)) { try { delete small[k]; } catch (e) {} } // 有损 LS 快照不得混进备份
+if (MEDIA_POOL_KEY_RE.test(k)) {
+try { delete small[k]; } catch (eSmall) {} // LS 侧若有旧副本（上一次错路由的遗留）一律让位给权威值
+return { k: k, v: v, own: own };
+}
 if (!overSmallLimit(v, LS_SMALL_LIMIT)) { small[k] = v; return null; }
 return { k: k, v: v, own: own };
 }
@@ -524,6 +543,7 @@ expKeyBytes = 0;
 try {
 if (k.indexOf('xy-home-v2:') !== 0) continue;
 if (k === SNAPSHOT_KEY) continue; // v3.7.0：副本键不进导出文件
+if (k === IMPORT_LOG_KEY) continue; // #1272：IDB 侧同样跳过导入回执键
 if (k in small && !isAuthorityKey(k)) continue;
 if (cfg.skip(k)) { skipped++; if (MEDIA_POOL_KEY_RE.test(k)) skippedMedia++; continue; } // 所选范围之外的键（本地音乐文件/文字模式媒体池）
 impShow('正在导出…', '正在读取并打包 ' + Math.min(cursor, estTotal) + ' / ' + estTotal, pct());
@@ -640,7 +660,12 @@ coverText += '\n⚠ 这个文件约 ' + fmtSize(blob.size) + '，新设备导入
 const fname = (cfg.mode === 'chat' ? 'mochi聊天记录_' : 'mochi数据备份_') + localDateStr(new Date()) + '.json';
 const sizeStr = fmtSize(blob.size);
 const doneText = '数据已导出（' + sizeStr + '，' + cfg.note + '）';
-if (cfg.mode !== 'chat') { try { localStorage.setItem('xy-home-v2:__last-backup', String(Date.now())); } catch (e) {} }
+if (cfg.mode !== 'chat') {
+try {
+if (window.xyStore) window.xyStore('xy-home-v2').set('__last-backup', String(Date.now()));
+else localStorage.setItem('xy-home-v2:__last-backup', String(Date.now()));
+} catch (e) {}
+}
 impShow('正在导出…', '正在准备保存文件', 92);
 const saveRes = await saveBackupFile(blob, fname);
 impHide();
@@ -763,7 +788,7 @@ try { ta.select(); } catch (e) {}
 let ok = false;
 try { ok = document.execCommand('copy'); } catch (e2) { ok = false; }
 try { if (ta.parentNode) ta.parentNode.removeChild(ta); } catch (e3) {}
-toast(ok ? '已复制网址和设备信息：粘贴到浏览器地址栏打开，或发给开发者'
+toast(ok ? '已复制网址和设备信息：粘贴到浏览器地址栏打开'
 : '复制失败，请手动复制上方网址到浏览器打开');
 } catch (e4) {}
 } }
@@ -907,16 +932,60 @@ lines.push('· 摸鱼累计：' + (fish !== null ? fish : '✗无'));
 lines.push('若这里显示「聊天记录：无/头像✗」等，说明不是最新完整备份，请勿导入。');
 return lines.join('\n');
 }
+const RETAIN_BATCH = 8; // 一批八键：整库残留键挤同一趟只读事务，几十 MB 必然超 idbGetMany 的 4s+4s
+async function readRetainKeys(retain) {
+const kept = [];
+for (let i = 0; i < retain.length; i += RETAIN_BATCH) {
+const slice = retain.slice(i, i + RETAIN_BATCH);
+let map = {};
+try { map = (await window.idbGetMany(slice)) || {}; } catch (e) { map = {}; }
+for (let j = 0; j < slice.length; j++) {
+const k = slice[j];
+if (k in map) { // 这一格有回执：值就保留，undefined/null 就是库里确实没有
+const v = map[k];
+if (v !== undefined && v !== null) kept.push({ k: k, v: v });
+continue;
+}
+const one = await readRetainedKey(k);
+if (one.unknown) return { abort: true, unknownKey: k }; // 问不出＝未知，绝不清掉
+if (one.v !== undefined && one.v !== null) kept.push({ k: k, v: one.v });
+}
+}
+return kept;
+}
+async function readRetainedKey(key) {
+if (typeof window.idbGet !== 'function') return { unknown: true }; // 连问的口子都没有＝未知，不许按「库里没有」清掉
+try {
+const late = window.idbLateRead && window.idbLateRead(key);
+if (late) {
+const lv = await late;
+if (lv !== undefined && lv !== null) return { v: lv };
+return { unknown: true };
+}
+} catch (e) {}
+let size = 0;
+try { size = (window.idbBigSize && window.idbBigSize(key)) || 0; } catch (e) {}
+const info = { minWaitMs: 4000 + Math.min(28000, Math.ceil(Math.max(size, 1) / 1048576) * 2000) };
+let v;
+try { v = await window.idbGet(key, info); } catch (e) { v = undefined; }
+if (v !== undefined && v !== null) return { v: v };
+return info.ambiguous ? { unknown: true } : { none: true };
+}
 async function doImport(file) {
 impShow('正在读取数据文件…', '大备份（上百 MB）解析需要几秒，请稍候', null);
 let data;
 try {
-const text = await readFileText(file);
-data = JSON.parse(text || 'null');
+const rd = await readFileText(file);
+impLog('read:' + rd.why + ' size=' + (file && file.size) + ' name=' + ((file && file.name) || '').slice(0, 24));
+const text = rd.text;
+if (!text && rd.err) throw rd.err;
+if (!text) throw new Error('读空：内核回读内容为空（' + (rd.why === 'zero-byte' ? '文件是 0 字节' : '两条读取腿都回空') + '，size=' + (file && file.size) + '）');
+data = JSON.parse((text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text) || 'null');
 } catch (e) {
 impHide();
 const msg = (e && (e.message || String(e))) || '';
 if (/string length|out of memory|ArrayBuffer length|memory/i.test(msg)) {
+impLog('fail:too-large');
 if (window.openModal) {
 window.openModal('这份备份太大，本机读不进去', '', function () {}, {
 noInput: true, okText: '知道了', big: true,
@@ -928,19 +997,70 @@ toast('这份备份太大，本机读不进去——请在原设备上改选更�
 }
 return;
 }
-toast('无效的数据文件');
+if (/读空|读取失败/i.test(msg)) {
+impLog('fail:empty-read');
+if (window.openModal) {
+window.openModal('没有从这份文件读出内容', '', function () {}, {
+noInput: true, okText: '知道了', big: true,
+staticText: '原因：' + msg + '\n\n浏览器从你选的文件里一个字都没读到（多半是传输/下载不完整，或选到了还没写完的空文件）。\n' +
+'本机数据没有被改动。\n请回到原设备重新「导出数据」，用云盘/数据线完整传到这台设备（微信发送会压缩改名，容易传坏），再选新文件导入。'
+});
+} else {
+toast('没有从这份文件读出内容，请重新导出并完整传输后再导入');
+}
+return;
+}
+if (/unexpected (end of|token)|expected .*json|invalid or unexpected token|invalid character|unterminated/i.test(msg)) {
+impLog('fail:syntax');
+if (window.openModal) {
+window.openModal('这份备份文件读不出来', '', function () {}, {
+noInput: true, okText: '知道了', big: true,
+staticText: '原因：' + msg + '\n\n多半是文件本身不完整（导出或传输过程被截断/损坏），或选错了文件（不是「导出数据」产生的备份）。\n' +
+'本机数据没有被改动。\n建议回到原设备重新「导出数据」，用微信文件/云盘等完整传输一份再导入；数据较大时改选「不含音乐文件」或「只备份文字」。'
+});
+} else {
+toast('备份文件不完整或损坏（' + msg + '），请重新导出并完整传输后再导入');
+}
+return;
+}
+impLog('fail:read ' + msg.slice(0, 60));
+if (window.openModal) {
+window.openModal('读不了这份数据文件', '', function () {}, {
+noInput: true, okText: '知道了', big: true,
+staticText: '原因：' + msg + '\n\n本机数据没有被改动。请确认选的是「导出数据」产生的备份文件后重试；反复失败可先重启浏览器（释放被占满的内存）再试。'
+});
+} else {
+toast('读不了这份数据文件：' + msg);
+}
 return;
 }
 impHide();
-if (!data || typeof data !== 'object' || !data.ls || typeof data.ls !== 'object') {
+if (!data || typeof data !== 'object') {
+impLog('reject:not-object');
 toast('不是 mochi 导出的数据文件');
 return;
 }
+if (Array.isArray(data) || Array.isArray(data.msgs)) {
+impLog('route:chat-file');
+if (window.openModal && window.runChatAllImport) {
+window.openModal('这份是「聊天记录」备份文件', '', function () { window.runChatAllImport(file); }, {
+noInput: true, okText: '去导入这份聊天记录', big: true,
+staticText: '它的内容是单个桌面的聊天记录，不是「导出数据 → 完整备份」产生的整包文件，完整备份入口不会导入它。\n' +
+'点「去导入这份聊天记录」走「仅聊天记录」通道：先预览条数再确认，只覆盖聊天记录，设置/字卡/音乐都不动。\n' +
+'（若想恢复全部数据，请在原设备选「导出数据 → 完整备份」。）'
+});
+} else {
+toast('这份是聊天记录文件，请改用「导入数据 → 仅聊天记录」');
+}
+return;
+}
+if (data.ls == null || typeof data.ls !== 'object') data.ls = {};
 const MOCHI_PREFIX = 'xy-home-v2:';
 const lsLooksMochi =
 Object.keys(data.ls).some(k => k.indexOf(MOCHI_PREFIX) === 0) ||
 !!(data.idb && typeof data.idb === 'object' && Object.keys(data.idb).some(k => k.indexOf(MOCHI_PREFIX) === 0));
 if (data.app && data.app !== 'mochi-zika' && !lsLooksMochi) {
+impLog('reject:app-mismatch');
 toast('不是 mochi 导出的数据文件');
 return;
 }
@@ -950,21 +1070,24 @@ if (!window.openModal) return;
 const summary = backupSummary(d);
 let adjNote = '';
 try {
-const adjKeys = Object.keys(d.ls || {}).filter(k => /^xy-home-v2:screen-adj-(top|bottom|h|desk|shift|text|side)$/.test(k) && parseInt(d.ls[k], 10));
+const adjKeys = Object.keys(d.ls || {}).filter(k => /^xy-home-v2:screen-adj-(top|bottom|h|desk|shift|text|side|kbgap)$/.test(k) && parseInt(d.ls[k], 10));
 if (adjKeys.length) adjNote = '\n\n⚠ 这份备份带有屏幕适配偏移（' + adjKeys.length + ' 项，属于原来的那台设备）。换设备恢复后若出现错位/裁切，到 设置→屏幕适配微调 点「全部恢复默认」再重新拖，或用「屏幕适配诊断→一键修正」。';
 } catch (eA) {}
 window.openModal('确定导入数据？将覆盖当前所有数据，且无法恢复。', '', () => {
+impLog('confirm:go');
 doImportGo(d);
 }, { noInput: true, staticText: summary + adjNote });
 }
 if (!hasMochiKeys) {
 const allKeys = Object.keys(data.ls || {}).concat(Object.keys(data.idb || {}));
 if (!allKeys.length) {
+impLog('reject:empty-backup');
 toast('备份文件是空的（无任何数据键），没有可导入的数据');
 return;
 }
 const firstColon = allKeys[0].indexOf(':');
 if (firstColon < 0) {
+impLog('reject:key-format');
 toast('备份文件键格式异常（无冒号分隔），无法导入');
 return;
 }
@@ -1027,6 +1150,7 @@ return;
 confirmAndImport(data);
 }
 function doImportGo(data) {
+impLog('write:start idbKeys=' + Object.keys((data && data.idb) || {}).length + ' lsKeys=' + Object.keys((data && data.ls) || {}).length);
 try { window.__resetting = true; } catch (e) {}
 impShow('正在导入…', '准备中', 2);
 function scrubMediaPool(obj) {
@@ -1039,6 +1163,14 @@ if (typeof v !== 'string' || v.indexOf('data:') !== 0) { try { delete obj[k]; } 
 }
 scrubMediaPool(data.idb);
 scrubMediaPool(data.ls);
+const lsPoolKeys = Object.keys((data && data.ls) || {}).filter(k => MEDIA_POOL_KEY_RE.test(k));
+if (lsPoolKeys.length) {
+if (!data.idb || typeof data.idb !== 'object') { try { data.idb = {}; } catch (eI) {} }
+lsPoolKeys.forEach(k => {
+try { data.idb[k] = data.ls[k]; delete data.ls[k]; } catch (eM) {}
+});
+impLog('pool:from-ls=' + lsPoolKeys.length); // 非零才记：这一发是「用户手里那份文件是旧形状」的取证信号
+}
 let backup = null;
 try {
 backup = {};
@@ -1047,6 +1179,7 @@ const k = localStorage.key(i);
 if (k && k.indexOf('xy-home-v2:') === 0) backup[k] = localStorage.getItem(k);
 }
 } catch (e) { backup = null; }
+let retainUnknownKey = ''; // #1359c：有键问不出＝未知 → 这一发中止，并把键名留给回执环与文案（不当「没有」）
 const idbRestored = new Promise((resolve) => {
 if (!data.idb || typeof data.idb !== 'object') { resolve(true); return; }
 const idbKeys = Object.keys(data.idb).filter(k => k.indexOf('xy-home-v2:') === 0 && k !== SNAPSHOT_KEY);
@@ -1058,8 +1191,10 @@ const lsKeySet = {};
 try { Object.keys(data.ls || {}).forEach(k => { if (k.indexOf('xy-home-v2:') === 0) lsKeySet[k] = true; }); } catch (e) {}
 const backupKeySet = {};
 try { idbKeys.forEach(k => { backupKeySet[k] = true; }); } catch (e) {}
-const retainStep = (window.idbListKeys && window.idbGetMany)
-? window.idbListKeys().then(function (curKeys) {
+const havePorts = !!(window.idbListKeys && window.idbGetMany);
+if (!havePorts) { retainUnknownKey = '(no-port)'; }
+const retainStep = havePorts
+? window.idbListKeys().then(async function (curKeys) {
 if (!Array.isArray(curKeys)) return { abort: true };
 const retain = curKeys.filter(function (k) {
 return k && k.indexOf('xy-home-v2:') === 0 &&
@@ -1067,16 +1202,17 @@ k !== SNAPSHOT_KEY &&
 !backupKeySet[k] && !lsKeySet[k];
 });
 if (!retain.length) return [];
-return window.idbGetMany(retain).then(function (map) {
-const kept = [];
-retain.forEach(function (k) {
-const v = map[k];
-if (v !== undefined && v !== null) kept.push({ k: k, v: v });
-});
-return kept;
+return readRetainKeys(retain).then(function (r) {
+if (r && r.abort) {
+retainUnknownKey = String(r.unknownKey || '');
+impLog('retain:unknown ' + retainUnknownKey.slice(0, 48));
+} else {
+impLog('retain:kept=' + r.length + '/' + retain.length);
+}
+return r;
 }).catch(function () { return { abort: true }; });
 }).catch(function () { return { abort: true }; })
-: Promise.resolve([]);
+: Promise.resolve({ abort: true }); // #1359d：未知即中止（原因已由上面 havePorts 那格记进 retainUnknownKey）
 retainStep.then(function (kept) {
 if (kept && kept.abort) { resolve(false); return; } // #440 清单未知＝无法安全替换式导入 → 中止（原数据保留）
 const keptPairs = kept || [];
@@ -1111,23 +1247,21 @@ p.then(() => resolve(failed === 0)).catch(() => resolve(false));
 function clearLs() {
 try {
 Object.keys(localStorage)
-.filter(k => k.indexOf('xy-home-v2:') === 0)
+.filter(k => k.indexOf('xy-home-v2:') === 0 && k !== IMPORT_LOG_KEY)
 .forEach(k => localStorage.removeItem(k));
 } catch (e) {}
 }
-function rollback() {
-clearLs();
-if (backup) {
-try {
-Object.keys(backup).forEach(k => localStorage.setItem(k, backup[k]));
-} catch (e) {}
-}
-}
 idbRestored.then((idbOk) => {
+impLog('write:idb=' + (!!idbOk ? 'ok' : 'fail'));
 if (!idbOk) {
 try { window.__resetting = false; } catch (e2) {}
 impHide();
+if (retainUnknownKey) {
+toast('导入已中止：本机有一项大文件这次没能读出来（多半是表情包／字卡这类几十 MB 的库），' +
+'为防它被清掉，原有数据一字未动；等手机空闲时再试一次');
+} else {
 toast('导入失败：大文件写入未成功，原有数据已保留，请重试');
+}
 return;
 }
 impShow('正在导入…', '正在写入设置与聊天记录', 62);
@@ -1179,21 +1313,39 @@ idbFalls.push({ k: e.k, v: data.ls[e.k] });
 }
 }
 let fallsOk = 0;
+let fallsBytes = 0;
+const fallsBad = [];
 let p = Promise.resolve();
 idbFalls.forEach(f => {
 p = p.then(() => (window.idbSet ? window.idbSet(f.k, f.v) : Promise.resolve(false)))
-.then(ok => { if (ok) fallsOk++; });
+.then(ok => {
+if (ok) { fallsOk++; fallsBytes += byteLen(f.v); }
+else fallsBad.push(f.k);
+});
 });
 p.then(async () => {
 impShow('正在导入…', '写入完成，正在核对数据', 95);
+let rolledBack = 0;
+if (fallsBad.length && backup) {
+fallsBad.forEach(k => {
+const old = backup[k];
+if (old === undefined || old === null) return;
+try { localStorage.setItem(k, old); rolledBack++; } catch (e) {
+try { if (window.idbMemoSet) window.idbMemoSet(k, old); } catch (e2) {}
+}
+});
+}
 const parts = [];
 if (idbOk) parts.push('音乐/字卡/查岗等大文件已恢复');
 else if (data.idb && Object.keys(data.idb).length) parts.push('⚠ IndexedDB 恢复失败，字卡/音乐/查岗等大文件可能缺失，建议重新导入');
 if (chatMoved) parts.push('聊天记录已存入 IndexedDB（不占浏览器小存储）');
 if (writeFailed.length) parts.push(writeFailed.length + ' 项写入失败（存储空间满）');
-if (idbFalls.length) {
-const mb = (idbFalls.reduce((s, f) => s + byteLen(f.v), 0) / 1048576).toFixed(1);
-parts.push('大文件 ' + idbFalls.length + ' 项（约 ' + mb + ' MB）已存入 IndexedDB，不占小存储');
+if (fallsOk) {
+const mb = (fallsBytes / 1048576).toFixed(1);
+parts.push('大文件 ' + fallsOk + ' 项（约 ' + mb + ' MB）已存入 IndexedDB，不占小存储');
+}
+if (fallsBad.length) {
+parts.push('⚠ ' + fallsBad.length + ' 项未能存入 IndexedDB' + (rolledBack ? '（其中 ' + rolledBack + ' 项已还原为导入前的旧数据）' : '（这些键导入前也没有留底）') + '，这部分新数据没导入成功，清出空间后用完整备份重新导入');
 }
 if (!parts.length) parts.push('导入成功');
 let ok = [];
@@ -1358,7 +1510,7 @@ try { let n = 0; for (let i = 0; i < arr.length; i++) { const m = arr[i]; if (m 
 window.runChatAllImport = function (file) {
 if (file) { chatAllImportRead(file); return; }
 window.mochiFilePick({
-id: 'mochi-chatall-import-pick', accept: '.json,application/json',
+id: 'mochi-chatall-import-pick', accept: window.mochiDataPickAccept, // #1410：并集里补上 text/plain 与 octet-stream，窄串那两型灰显一并挡掉
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -1374,6 +1526,8 @@ try { data = JSON.parse(String(reader.result || '')); } catch (e) { toast('无�
 if (!data || typeof data !== 'object') { toast('无效的聊天记录文件'); return; }
 const chatKeyRe = /^xy-home-v2:(?:chat-msgs|(?:default|c[0-9a-z]{5,}):chat-msgs)$/;
 const mediaKeyRe = /^xy-home-v2:media:/;
+const lsObj = (data && typeof data.ls === 'object') ? data.ls : {};
+const idbObj = (data && typeof data.idb === 'object') ? data.idb : {};
 try {
 Object.keys(idbObj).forEach(function (k) {
 if (!/:chat-blk-idx$/.test(k)) return;
@@ -1390,14 +1544,14 @@ if (!Array.isArray(part)) return;
 full = full.concat(part);
 }
 const msgKey = prefix + ':chat-msgs';
-const cur = idbObj[msgKey];
-const curLen = typeof cur === 'string' ? cur.length : (Array.isArray(cur) ? -1 : -2);
-if (cur === undefined || (curLen >= 0 && full.join('').length > curLen) || curLen === -1) idbObj[msgKey] = full;
-try { if (lsObj[msgKey] === undefined) lsObj[msgKey] = full; } catch (e) {}
+const nOfRaw = (raw) => {
+if (raw === undefined || raw === null) return -1;
+try { const a = typeof raw === 'string' ? JSON.parse(raw) : raw; return Array.isArray(a) ? a.length : -1; } catch (e) { return -1; }
+};
+const curN = Math.max(nOfRaw(idbObj[msgKey]), nOfRaw(lsObj[msgKey]));
+if (full.length >= curN) { idbObj[msgKey] = full; lsObj[msgKey] = full; }
 });
 } catch (e) {}
-const lsObj = (data && typeof data.ls === 'object') ? data.ls : {};
-const idbObj = (data && typeof data.idb === 'object') ? data.idb : {};
 const pickRaw = (k) => {
 if (lsObj[k] !== undefined) return { v: lsObj[k], from: 'ls' };
 if (idbObj[k] !== undefined) return { v: idbObj[k], from: 'idb' };
@@ -1446,6 +1600,7 @@ if (mediaKeys.length) preview.push('· 附带图片/语音 ' + mediaKeys.length 
 preview.push('导入将覆盖对应桌面/群聊的全部聊天记录（不可恢复），其他数据不受影响。');
 if (!window.openModal) return;
 window.openModal('确认导入聊天记录？', '', () => {
+impLog('chat:go 桌=' + chatKeys.length + ' 群=' + groupKeys.length + ' 媒体=' + mediaKeys.length + ' 单桌=' + (Array.isArray(singleMsgs) ? singleMsgs.length : 0)); // #1359e：这条通路此前在回执环里一行都不留（单桌那格按「是不是数组」取，标准备份那一型里 singleMsgs 恒 null＝不兜会把整个回调打死）
 importChatAllGo(chatKeys, groupKeys, singleMsgs, mediaKeys, pickRaw);
 }, { noInput: true, staticText: preview.join('\n') });
 };
@@ -1521,7 +1676,7 @@ pickImportFile();
 }, {
 noInput: true, okText: '开始导入', pill: 'full', lock: true,
 pickOk: {
-entry: 'row-import', accept: '',
+entry: 'row-import', accept: window.mochiDataPickAccept,
 skipWhen: (m) => m === 'cancel',
 onFiles: (files, mode) => {
 const f = files && files[0];
@@ -1536,13 +1691,14 @@ pills: [{ label: '完整备份（全部数据）', value: 'full' },
 staticText: '完整备份：按备份文件恢复全部数据（会覆盖本机现有数据，含设置 / 字卡 / 朋友圈 / 音乐等）。\n' +
 '仅聊天记录：只恢复备份里的聊天记录——全部桌面联系人（含默认桌面）与群聊，' +
 '消息里引用到的图片/语音一并恢复；设置、字卡、朋友圈、音乐一律不动。\n' +
-'两种都能读「导出数据」产生的备份文件；仅聊天记录还会识别单桌导出的聊天文件。'
+'两种都能读「导出数据」产生的备份文件；仅聊天记录还会识别单桌导出的聊天文件。\n' +
+'选文件时若弹出来的是相册，请在选择器里切到「文件／存储空间」再选——备份是 .json 文件。'
 });
 });
 }
 function pickImportFile() {
 window.mochiFilePick({
-id: 'mochi-backup-import-pick', accept: '',
+id: 'mochi-backup-import-pick', accept: window.mochiDataPickAccept, // #1410
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) { toast('没有取到文件，请再选一次'); return; }

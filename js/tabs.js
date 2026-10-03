@@ -4,6 +4,7 @@ const tabs = document.querySelectorAll('.tab');
 const pages = document.querySelectorAll('.page');
 const sdLeaveSnap = () => { try { if (window.__mochiLeaveSnap) window.__mochiLeaveSnap('switch'); } catch (e) {} };
 let _lastVisId = '', _healAt = 0, _healRaf = 0;
+let _blurPh = null;
 try { window.__mochiBlankHeal = window.__mochiBlankHeal || { n: 0, at: 0, last: '' }; } catch (e0) {}
 function liveVisiblePage() {
 const live = document.querySelectorAll('.page');
@@ -47,9 +48,12 @@ tab.classList.add('active');
 hideAllPages();
 target.hidden = false;
 try {
+const ph = _blurPh || (_blurPh = document.querySelector('.phone'));
+if (ph && ph.classList.contains('desk-blur-on')) {
 document.documentElement.classList.add('desk-swiping');
 clearTimeout(window.__mochiBlurT);
 window.__mochiBlurT = setTimeout(function () { document.documentElement.classList.remove('desk-swiping'); }, 400);
+}
 } catch (e0) {}
 });
 });

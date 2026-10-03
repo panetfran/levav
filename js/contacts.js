@@ -3,6 +3,7 @@
 const G = 'xy-home-v2';
 const EXCLUDE = ['contacts', 'active-contact', 'feed-posts', 'migrated-v1', 'js-errors', 'theme-mode', 'accent-color',
 'fish-log', 'fish-log-global-migrated',
+'age-confirmed', 'storage-guide-shown',
 'incoming-requests', 'desk-checkin-en', 'desk-call-en', 'desk-freq-mode', 'call-hold',
 'night-mode-en',
 'group-chat-msgs',
@@ -50,16 +51,19 @@ const EXCLUDE = ['contacts', 'active-contact', 'feed-posts', 'migrated-v1', 'js-
 'battery-check-run', 'battery-check-last', 'heat-check-last',
 'flash-check-last',
 'ver-retry',
-'fhub-freq', 'fhub-seen'];
+'fhub-freq', 'fhub-seen',
+'age-confirmed'];
 function isExcluded(k) {
 const r = k.slice(G.length + 1);
 if (r.indexOf('__') === 0) return true;
 if (EXCLUDE.indexOf(r) >= 0) return true;
+if (r.indexOf('splash-seen:') === 0) return true;
 if (r.indexOf('reply-gc-') === 0) return true;
 if (r.indexOf('music-file:') === 0) return true;
 if (r.indexOf('font-blob-') === 0) return true;
 if (r.indexOf('narc-') === 0) return true;
 if (r.indexOf('myarc') === 0) return true;
+if (r.indexOf('screen-adj-') === 0) return true;
 const m = r.match(/^([^:]+):/);
 if (m) {
 const head = m[1];
@@ -91,6 +95,23 @@ set(k, v) {
 window.xyStore(ns).set(k, v);
 try { window.xyStore(G).remove(k); } catch (e) {}
 },
+awaitingBigKey(k) {
+try { if (window.xyStore(ns).get(k) !== null) return false; } catch (e3) {}
+try { if (window.xyStore(G).get(k) !== null) return false; } catch (e4) {}
+try { return window.xyStore(ns).awaitingBigKey(k); } catch (e) { return false; }
+},
+requestBigKey(k) {
+try { window.xyStore(ns).requestBigKey(k); } catch (e) {}
+try { window.xyStore(G).requestBigKey(k); } catch (e2) {}
+},
+whenBigKeyBack(k, cb) {
+try {
+const s = window.xyStore(ns);
+if (s && s.whenBigKeyBack) { s.whenBigKeyBack(k, cb); return; }
+} catch (e) {}
+try { const r = window.xyStore(G); if (r && r.whenBigKeyBack) { r.whenBigKeyBack(k, cb); return; } } catch (e2) {}
+try { if (cb) cb(); } catch (e3) {}
+},
 remove(k) {
 window.xyStore(ns).remove(k);
 try { window.xyStore(G).remove(k); } catch (e) {}
@@ -105,10 +126,18 @@ return cid === 'default' ? defaultStore() : window.xyStore(G + ':' + cid);
 return {
 get: (k) => dyn().get(k),
 set: (k, v) => dyn().set(k, v),
-remove: (k) => dyn().remove(k)
+remove: (k) => dyn().remove(k),
+awaitingBigKey: (k) => { const d = dyn(); return !!(d.awaitingBigKey && d.awaitingBigKey(k)); },
+requestBigKey: (k) => { const d = dyn(); try { if (d.requestBigKey) d.requestBigKey(k); } catch (e) {} },
+whenBigKeyBack: (k, cb) => {
+const d = dyn();
+if (d.whenBigKeyBack) { d.whenBigKeyBack(k, cb); return; }
+try { if (cb) cb(); } catch (e2) {}
+}
 };
 };
 window.storeFor = function (cid) { return window.xyStore(G + ':' + cid); };
+window.storeForCid = function (cid) { return cid === 'default' ? defaultStore() : window.xyStore(G + ':' + cid); };
 window.partnerGenderFor = function (cid) {
 try { return window.xyStore(G + ':' + (cid || 'default')).get('partner-gender') || ''; } catch (e) { return ''; }
 };
@@ -156,8 +185,10 @@ window.getActiveContact = function () { return window.__activeCid || 'default'; 
 window.createContact = function (name) {
 const list = getContacts();
 const id = 'c' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36);
-list.push({ id: id, name: name || ('联系人' + (list.length)) });
+const nm = name || ('联系人' + (list.length));
+list.push({ id: id, name: nm });
 regStore().set('contacts', JSON.stringify(list));
+try { window.xyStore(G + ':' + id).set('lbl-partner', nm); } catch (e) {}
 return id;
 };
 window.renameContact = function (id, name) {
@@ -315,13 +346,30 @@ try { def.remove(k); } catch (e) {}
 ['pomo-cfg', 'pomo-today', 'pomo-total', 'pomo-msgs', 'pomo-send-chat', 'pomo-bell',
 'pomo-companion', 'pomo-companion-log', 'pomo-cmp-usecards',
 'beauty-schemes', 'chat-beauty-schemes', 'hide-ta-sticker', 'desk-freq-mode',
-'full-beauty-schemes', 'fhub-freq', 'fhub-seen'].forEach(function (k) {
+'full-beauty-schemes', 'fhub-freq', 'fhub-seen',
+'screen-adj-top', 'screen-adj-bottom', 'screen-adj-h', 'screen-adj-desk',
+'screen-adj-shift', 'screen-adj-text', 'screen-adj-side'].forEach(function (k) {
 const v = def.get(k);
 if (v !== null && v !== undefined && v !== '') {
 try { if (root.get(k) === null || root.get(k) === undefined) root.set(k, v); } catch (e) {}
 try { def.remove(k); } catch (e) {}
 }
 });
+['age-confirmed', 'storage-guide-shown'].forEach(function (k) {
+const v = def.get(k);
+if (v !== null && v !== undefined && v !== '') {
+try { if (root.get(k) === null || root.get(k) === undefined) root.set(k, v); } catch (e) {}
+try { def.remove(k); } catch (e) {}
+}
+});
+try {
+const stale = [];
+for (let i = 0; i < localStorage.length; i++) {
+const kk = localStorage.key(i);
+if (kk && kk.indexOf(G + ':default:splash-seen:') === 0) stale.push(kk);
+}
+stale.forEach(function (kk) { try { localStorage.removeItem(kk); } catch (e2) {} });
+} catch (e) {}
 const old = [];
 const garbage = [];
 for (let i = 0; i < localStorage.length; i++) {
@@ -388,31 +436,35 @@ const cleanupOld = function () {
 try { localStorage.removeItem(k); } catch (e) {}
 if (isChat && window.idbDelete) { try { window.idbDelete(k); } catch (e) {} }
 };
+const settle = function (payload) {
+try { window.xyStore(G + ':default').set(rest, payload); } catch (e) {}
+const landed = function (durable) { if (durable) cleanupOld(); next(); };
+try { if (localStorage.getItem(newKey) !== null) { landed(true); return; } } catch (e) {}
+if (window.idbHasKey) {
+Promise.resolve(window.idbHasKey(newKey)).then(function (has) {
+landed(has === true);
+}).catch(function () { landed(false); });
+} else landed(false);
+};
 let v = null; try { v = localStorage.getItem(k); } catch (e) {}
 if (v !== null) {
 const hasNew = window.xyStore(G + ':default').get(rest);
 if (hasNew) { cleanupOld(); next(); return; }
 if (window.idbGet) {
 window.idbGet(newKey).then(function (existing) {
-if (!existing) { try { window.xyStore(G + ':default').set(rest, v); } catch (e) {} }
-cleanupOld();
-next();
-}).catch(function () { try { window.xyStore(G + ':default').set(rest, v); } catch (e) {} cleanupOld(); next(); });
-} else {
-try { window.xyStore(G + ':default').set(rest, v); } catch (e) {}
-cleanupOld();
-next();
-}
+if (existing) { cleanupOld(); next(); return; }
+settle(v);
+}).catch(function () { settle(v); });
+} else settle(v);
 } else if (window.idbGet) {
 window.idbGet(k).then(r => {
 if (r !== undefined && r !== null) {
 const hasNew = window.xyStore(G + ':default').get(rest);
 if (hasNew) { cleanupOld(); next(); return; }
 window.idbGet(newKey).then(function (existing) {
-if (!existing) { try { window.xyStore(G + ':default').set(rest, r); } catch (e) {} }
-cleanupOld();
-next();
-}).catch(function () { try { window.xyStore(G + ':default').set(rest, r); } catch (e) {} cleanupOld(); next(); });
+if (existing) { cleanupOld(); next(); return; }
+settle(r);
+}).catch(function () { settle(r); });
 } else {
 cleanupOld();
 next();
@@ -494,7 +546,10 @@ const ren = el('button', '', '改名');
 ren.style.cssText = 'font-size:12px;padding:4px 8px;border:1px solid var(--pill-border,#ddd);border-radius:8px;background:var(--static-bg,#fafafa);color:var(--ink,#111)';
 ren.addEventListener('click', (e) => {
 e.stopPropagation();
-if (window.openModal) window.openModal('改名', c.name || '', (v) => { if (v && v.trim()) { window.renameContact(c.id, v.trim()); window.openContactManager(); } });
+if (window.openModal) window.openModal('改名', c.name || '', (v) => {
+if (v && v.trim()) { window.renameContact(c.id, v.trim()); window.openContactManager(); }
+else { try { if (window.toast) window.toast('没有读到名字——请再试一次；反复出现请到设置→关于/诊断导出诊断单报障'); } catch (e0) {} }
+});
 });
 acts.appendChild(ren);
 if (c.id !== 'default') {
@@ -511,8 +566,10 @@ const add = el('button', '', '+ 添加联系人 / 桌面');
 add.style.cssText = 'width:100%;padding:12px;border:none;border-radius:10px;background:var(--ink,#111);color:var(--bg-b,#fff);font-size:14px;font-weight:600';
 add.addEventListener('click', () => {
 if (window.openModal) window.openModal('新建联系人', '', (v) => {
-const name = (v || '').trim(); if (!name) return;
+const name = (v || '').trim();
+if (!name) { try { if (window.toast) window.toast('还没有输入名字——先点输入框打一个名字'); } catch (e0) {} return; }
 const id = window.createContact(name); window.setActiveContact(id); hideContactModal(m);
+try { if (window.toast) window.toast('已创建「' + name + '」的桌面，已为你切换'); } catch (e) {}
 });
 });
 box.appendChild(add);

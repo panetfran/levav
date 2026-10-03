@@ -390,8 +390,10 @@ try { md = window.moodDiaryToday ? window.moodDiaryToday() : null; } catch (e) {
 const nm = store.get('lbl-partner') || 'TA';
 if (taLabel) taLabel.textContent = nm + '（心情日记）';
 if (mineEl) mineEl.textContent = (md && md.mine) ? (md.mine.e + ' ' + md.mine.n) : calEmptyTxt('今天还没记心情');
-if (taEl) taEl.textContent = (md && md.ta) ? (md.ta.e + ' ' + md.ta.n) : calEmptyTxt('今天还没有互动');
+if (taEl) taEl.textContent = (md && md.ta) ? (md.ta.e + ' ' + md.ta.n)
+: ((md && md.taUnknown) ? (window.mochiLoadingText ? window.mochiLoadingText() : calEmptyTxt('今天还没有互动')) : calEmptyTxt('今天还没有互动'));
 }
+document.addEventListener('mood-interact-recorded', function () { try { renderMoodEntry(); } catch (e) {} });
 function render() {
 try { ensureFishHeat(); } catch (e) {} // 摸鱼/工作「当日统计」随 selDate 切换刷新
 try { renderMoodEntry(); } catch (e) {}

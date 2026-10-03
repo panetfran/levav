@@ -6,6 +6,7 @@ const DEFAULTS = {
 'rs-min': 1, 'rs-max': 40,
 'reply-min': 1, 'reply-max': 2,
 'rl-en': 0, 'rl-win': 5, 'rl-max': 15,
+'turn-en': 0,
 'rn-prob': 20, 'touch-prob': 5,
 'sticker-prob': 10, 'emoji-prob': 5, 'image-prob': 5, 'voice-prob': 10,
 'kaomoji-prob': 5, 'quote-prob': 30,
@@ -64,6 +65,7 @@ const DEFAULTS = {
 'fish-en': 1, 'work-en': 1,
 'fish-grab-en': 1,
 'gc-prob': 60, 'gc-rs-min': 1, 'gc-rs-max': 40,
+'gc-turn-en': 0,
 'gc-reply-min': 1, 'gc-reply-max': 2,
 'gc-cs-normal': 0, 'gc-cs-trigger-name': 1, 'gc-cs-trigger-bar': 0,
 'gc-touch-prob': 5, 'gc-sticker-prob': 10, 'gc-emoji-prob': 5, 'gc-image-prob': 5, 'gc-voice-prob': 10,
@@ -80,6 +82,24 @@ try { return ls.get('reply-gc-' + k); } catch (e) { return null; }
 function gcWrite(k, v) {
 try { window.xyStore('xy-home-v2').set('reply-gc-' + k, String(v)); } catch (e) {}
 }
+function rawNumFrom(store, k) {
+try {
+const v = store ? store.get(k) : null;
+if (v === null || v === undefined || v === '') return null;
+const n = Number(v);
+return isFinite(n) ? n : null;
+} catch (e) { return null; }
+}
+function spellPairFrom(store, out) {
+const ownMin = rawNumFrom(store, 'reply-qs-min');
+const ownMax = rawNumFrom(store, 'reply-qs-max');
+const baseMin = Math.max(1, Math.min(10, Number(out['py-min']) || 2));
+const baseMax = Math.max(baseMin, Math.min(10, Number(out['py-max']) || 5));
+let mn = ownMin === null ? baseMin : Math.max(1, Math.min(10, ownMin));
+let mx = ownMax === null ? baseMax : Math.max(1, Math.min(10, ownMax));
+if (mx < mn) mx = mn;   // 只设过一枚、而另一枚的跟随值比它更小时：把跟随那枚抬上来，区间不许倒挂
+return { min: mn, max: mx, own: (ownMin !== null && ownMax !== null) ? 1 : 0, rawMin: ownMin, rawMax: ownMax };
+}
 function getCfg() {
 const out = {};
 Object.keys(DEFAULTS).forEach(k => {
@@ -91,16 +111,21 @@ try { if (k.indexOf('gc-') === 0) gcWrite(k, String(n)); else ls.set('reply-' + 
 }
 out[k] = n;
 });
+const spPair = spellPairFrom(ls, out);
+out['qs-min'] = spPair.min;
+out['qs-max'] = spPair.max;
+out['qs-pair-own'] = spPair.own;
 try { out['py-punct-custom'] = String(ls.get('reply-py-punct-custom') || '[]'); } catch (e) { out['py-punct-custom'] = '[]'; }
 try { out['as-badge-custom'] = String(ls.get('reply-as-badge-custom') || '[]'); } catch (e) { out['as-badge-custom'] = '[]'; }
 try { out['mjf-punct-pool'] = String(ls.get('reply-mjf-punct-pool') || ''); } catch (e) { out['mjf-punct-pool'] = ''; }
+try { out['mjf-punct-set'] = String(ls.get('reply-mjf-punct-set') || ''); } catch (e) { out['mjf-punct-set'] = ''; }
 return out;
 }
 window.replyCfg = getCfg;
 window.replyCfgFor = function (cid) {
 const out = {};
 let s = null;
-try { s = (cid && window.storeFor) ? window.storeFor(cid) : ls; } catch (e) { s = ls; }
+try { s = (cid && window.storeForCid) ? window.storeForCid(cid) : (cid && window.storeFor) ? window.storeFor(cid) : ls; } catch (e) { s = ls; }
 Object.keys(DEFAULTS).forEach(k => {
 const v = k.indexOf('gc-') === 0 ? gcRead(k) : (s ? s.get('reply-' + k) : null);
 let n = (v === null || v === undefined || v === '') ? DEFAULTS[k] : Number(v);
@@ -110,6 +135,11 @@ out[k] = n;
 try { out['py-punct-custom'] = String((s || ls).get('reply-py-punct-custom') || '[]'); } catch (e) { out['py-punct-custom'] = '[]'; }
 try { out['as-badge-custom'] = String((s || ls).get('reply-as-badge-custom') || '[]'); } catch (e) { out['as-badge-custom'] = '[]'; }
 try { out['mjf-punct-pool'] = String((s || ls).get('reply-mjf-punct-pool') || ''); } catch (e) { out['mjf-punct-pool'] = ''; }
+try { out['mjf-punct-set'] = String((s || ls).get('reply-mjf-punct-set') || ''); } catch (e) { out['mjf-punct-set'] = ''; }
+const spPair2 = spellPairFrom(s || ls, out);
+out['qs-min'] = spPair2.min;
+out['qs-max'] = spPair2.max;
+out['qs-pair-own'] = spPair2.own;
 return out;
 };
 window.groupChatCfg = function () {
@@ -120,13 +150,66 @@ Object.keys(DEFAULTS).forEach(k => { if (k.indexOf('gc-') === 0) out[k] = c[k]; 
 return out;
 } catch (e) { return {}; }
 };
+const PAIR_SIB = { 'py-min': 'py-max', 'py-max': 'py-min',
+'qs-min': 'qs-max', 'qs-max': 'qs-min',
+'gc-py-min': 'gc-py-max', 'gc-py-max': 'gc-py-min' };
+const isMinSide = (k) => /-min$/.test(k);
+function writePairedRange(k, v) {
+const sib = PAIR_SIB[k];
+if (!sib) return false;
+const gc = k.indexOf('gc-') === 0;
+const n = Math.round(Number(v));
+if (!isFinite(n)) return false;
+const base = getCfg();
+const other = Math.round(Number(base[sib]));
+let lo = isMinSide(k) ? n : (isFinite(other) ? other : n);
+let hi = isMinSide(k) ? (isFinite(other) ? other : n) : n;
+if (hi < lo) { if (isMinSide(k)) hi = lo; else lo = hi; }   // 谁动收谁的对家
+lo = Math.max(1, Math.min(10, lo));
+hi = Math.max(lo, Math.min(10, hi));
+const minK = isMinSide(k) ? k : sib, maxK = isMinSide(k) ? sib : k;
+if (gc) { gcWrite(minK, lo); gcWrite(maxK, hi); }
+else { ls.set('reply-' + minK, String(lo)); ls.set('reply-' + maxK, String(hi)); }
+[minK, maxK].forEach(refreshStepperVal);
+syncSpellPairReadout();
+return true;
+}
+function syncSpellPairReadout() {
+const el = document.getElementById('qs-range-readout');
+if (!el) return;
+try {
+const c = getCfg();
+const mn = Number(c['qs-min']), mx = Number(c['qs-max']);
+if (!isFinite(mn) || !isFinite(mx)) { el.textContent = ''; return; }
+let s = '每次拼字：现在 ' + mn + '~' + mx + ' 张';
+if (mn === mx) s += '（最少＝最多，命中拼字时固定 ' + mx + ' 张、不再随机）';
+s += Number(c['qs-pair-own']) === 1 ? '（本组单设）' : '（跟随上方「多字卡回复」的最少/最多条数；动本组任一格即单独设定）';
+el.textContent = s;
+} catch (e) {}
+}
+function refreshStepperVal(k) {
+document.querySelectorAll('#page-reply-settings .stepper, #page-chat-settings .stepper, #group-chat-settings .stepper').forEach(st => {
+if (st.dataset.k !== k) return;
+const val = st.querySelector('input.stp-val');
+if (!val) return;
+const v = getCfg()[k];
+val.value = String(v);
+val.setAttribute('value', String(v));
+});
+}
+const sessionSavedKeys = new Set();
 window.saveReplyCfg = function (k, v) {
+try { sessionSavedKeys.add(k); } catch (e0) {}
 if (k.indexOf('gc-') === 0) {
-gcWrite(k, v);
+if (PAIR_SIB[k]) writePairedRange(k, v); else gcWrite(k, v);
 if (k.indexOf('gc-cs-') === 0) document.dispatchEvent(new Event('gc-continue-say-changed'));
 return;
 }
+if (PAIR_SIB[k]) {
+writePairedRange(k, v);
+} else {
 ls.set('reply-' + k, String(v));
+}
 if (k === 'as-en' || k === 'as-prob' || k === 'as-min' || k === 'as-max' ||
 k === 'as-count-min' || k === 'as-count-max' || k === 'dnd-en') {
 try { if (window.rescheduleAutoSend) window.rescheduleAutoSend(); } catch (e) {}
@@ -217,11 +300,12 @@ val.value = str;
 val.setAttribute('value', str);
 }
 });
-['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en', 'turn-en', 'gc-turn-en'].forEach(k => {
 const el = document.getElementById(k);
 if (el) el.checked = cfg[k] === 1;
 });
 try { if (window.rpThxModeSync) window.rpThxModeSync(); } catch (e) {}
+syncSpellPairReadout();
 }
 let callIncomingToastTimer = null;
 function toastCallIncoming(v) {
@@ -322,6 +406,8 @@ const TOGGLE_NAMES = {
 'mjf-punct': '造句句尾标点',
 'rc-en': '撤回后补发消息',
 'rl-en': 'TA 消息限流',
+'turn-en': '连发的算一轮',
+'gc-turn-en': '连发的算一轮（群聊）',
 'fish-en': '摸鱼值累计', 'work-en': '工作值累计', 'fish-grab-en': '摸鱼抓包浮字',
 'rp-thx-en': '红包领后捎一句话'
 };
@@ -342,7 +428,7 @@ d.className = 'cc-toast'; void d.offsetWidth; d.className = 'cc-toast show';
 clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, 1800);
 } catch (e) {}
 }
-['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en', 'turn-en', 'gc-turn-en'].forEach(k => {
 const el = document.getElementById(k);
 if (el) {
 el.addEventListener('change', () => {
@@ -702,6 +788,8 @@ const useOk = !(window.dictUse && window.dictUse('chat') === false);
 const ov = window.dictOverall ? window.dictOverall('chat') : 100;
 if (gate(useOk, '词典聊天使用', useOk ? '开（' + ov + '% 概率）' : '关') && !blocked) blocked = '词典「聊天使用」被关（词典独立页里打开）';
 if (useOk && !(typeof ov === 'number' && isFinite(ov) && ov > 0) && !blocked) blocked = '词典「聊天使用概率」为 0（词典独立页调高）';
+const pyOk = c['py-en'] === 1;
+if (gate(pyOk, '多字卡回复总闸', pyOk ? '开' : '关·拼字整体停用') && !blocked) blocked = '「每条消息使用多字卡回复」总开关关着——#1236 起它是词典拼字的总闸，关了就两种形态都不再触发（要拼字就把它打开）';
 const enOk = c['qs-en'] === 1;
 const prob = Number(c['qs-prob']);
 if (gate(enOk, '拼字总开关', enOk ? '开（' + (isFinite(prob) ? prob : 0) + '% 概率）' : '关') && !blocked) blocked = '「词典拼字」总开关被关（本组第一行打开）';
@@ -729,7 +817,7 @@ try { diagEl.innerHTML = '<div class="qsdiag-blocked">链路自检暂不可用</
 }
 }
 qsDiagRender();
-['qs-en', 'qs-one', 'qs-multi', 'qs-cc'].forEach(k => {
+['qs-en', 'qs-one', 'qs-multi', 'qs-cc', 'py-en'].forEach(k => { // #1236：py-en 现在是拼字总闸，翻它必须同步刷新自检
 const el = document.getElementById(k);
 if (el) el.addEventListener('change', () => setTimeout(qsDiagRender, 50));
 });
@@ -782,36 +870,144 @@ else show('梦角自由造句已关闭');
 });
 }
 (function () {
-const POOL_KEY = 'reply-mjf-punct-pool';
-const el = document.getElementById('mjf-punct-pool');
-if (!el) return;
-function poolToast(msg) {
+const SET_KEY = 'reply-mjf-punct-set';
+const LEGACY_KEY = 'reply-mjf-punct-pool';
+const POOL = [['sp', ' ', '空格'], ['dou', '，', '，'], ['per', '。', '。'], ['ex', '！', '！'], ['q', '？', '？'], ['el', '......', '......'], ['dash', '——', '——'], ['nl', '\n', '换行'], ['tilde', '~', '~'], ['ell', '……', '……']];
+const VAL2P = {}; POOL.forEach(p => { VAL2P[p[1]] = p[0]; });
+const labelOf = s => { const p = POOL.find(x => x[1] === s); return p ? p[2] : s; };
+const DEF_LIT = ['。', '~', '！', '……'];
+const box = document.getElementById('mjf-punct-pool');
+if (!box) return;
+function mjfpToast(msg, ms) {
 const d = ccToastEnsure();
-if (d) { d.textContent = msg; d.className = 'cc-toast'; void d.offsetWidth; d.className = 'cc-toast show'; clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, 2000); }
+if (d) { d.textContent = msg; d.className = 'cc-toast'; void d.offsetWidth; d.className = 'cc-toast show'; clearTimeout(d._timer); d._timer = setTimeout(() => { d.className = 'cc-toast'; }, ms || 1800); }
 }
-function poolSync() {
-try { el.value = String(ls.get(POOL_KEY) || ''); } catch (e) {}
-try { el.setAttribute('value', el.value); } catch (e) {}
+const valid = it => !!(it && typeof it.s === 'string' && it.s && it.s.length <= 6);
+function parseLegacy(raw) {
+const s = String(raw == null ? '' : raw).trim();
+if (!s) return null;
+let arr = s.split(/[\s|]+/).filter(Boolean);
+if (arr.length < 2) arr = Array.from(s.replace(/[\s|]+/g, ''));
+arr = arr.filter(x => x.length <= 6).slice(0, 20);
+return arr.length ? arr : null;
 }
-function poolCommit() {
-let v = '';
-try { v = String(el.value == null ? '' : el.value); } catch (e) { v = ''; }
-v = v.replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
-try { ls.set(POOL_KEY, v); } catch (e) {}
-try { el.value = v; el.setAttribute('value', v); } catch (e) {}
-if (v === '') poolToast('句尾标点已改为默认（。 ~ ！ ……）');
-else poolToast('句尾标点已保存：' + v);
+function derive() {
+let lit = null;
+try { lit = parseLegacy(ls.get(LEGACY_KEY) || ''); } catch (e) {}
+if (!lit) lit = DEF_LIT;
+const set = {}; lit.forEach(x => { set[x] = 1; });
+const list = POOL.map(p => ({ s: p[1], on: set[p[1]] ? 1 : 0 }));
+Object.keys(set).forEach(v => { if (VAL2P[v] == null) list.push({ s: v, on: 1 }); });
+return list;
 }
-poolSync();
-el.addEventListener('change', poolCommit);
-el.addEventListener('blur', poolCommit);
+function mjfpGet() {
+let arr = null;
+try { arr = JSON.parse(ls.get(SET_KEY) || ''); } catch (e) {}
+if (Array.isArray(arr)) {
+arr = arr.filter(valid);
+if (arr.length) return arr;
+}
+return derive();
+}
+function mjfpSet(list) { try { ls.set(SET_KEY, JSON.stringify(list)); } catch (e) {} }
+const isCust = it => VAL2P[it.s] == null;
+const custCount = list => list.filter(isCust).length;
+function otherSel(list, skipIdx) {
+let n = 0;
+list.forEach((it, i) => { if (i !== skipIdx && it.on === 1) n++; });
+return n;
+}
+function mjfpDis() {
+return getCfg()['mjf-punct'] !== 1;
+}
+function renderCust(list, dis) {
+box.querySelectorAll('.ppy-chip[data-i]').forEach(el => el.remove());
+const add = document.getElementById('mjfp-add');
+list.forEach((it, i) => {
+if (!isCust(it)) return;
+const el = document.createElement('span');
+el.className = 'tag ppy-chip ppy-chip-c' + (it.on === 1 ? ' sel' : '') + (dis ? ' dis' : '');
+el.dataset.i = String(i);
+el.textContent = it.s;
+const x = document.createElement('i');
+x.className = 'ppy-x';
+x.textContent = '×';
+el.appendChild(x);
+if (add && add.parentNode === box) box.insertBefore(el, add); else box.appendChild(el);
+});
+}
+function sync() {
+const list = mjfpGet();
+const dis = mjfpDis();
+box.querySelectorAll('.ppy-chip[data-p]').forEach(ch => {
+const v = (POOL.find(p => p[0] === ch.dataset.p) || [])[1];
+if (v == null) return;
+const it = list.find(x => x.s === v);
+ch.classList.toggle('sel', !!(it && it.on === 1));
+ch.classList.toggle('dis', dis);
+});
+const add = document.getElementById('mjfp-add');
+if (add) add.classList.toggle('dis', dis);
 const row = document.getElementById('mjf-punct-pool-row');
-const sw = document.getElementById('mjf-punct');
-if (row && sw) {
-const syncDis = () => { row.style.opacity = sw.checked ? '' : '.45'; };
-syncDis();
-sw.addEventListener('change', () => setTimeout(syncDis, 30));
+if (row) row.style.opacity = dis ? '.45' : '';
+renderCust(list, dis);
 }
+function addFlow() {
+const cur = mjfpGet();
+if (custCount(cur) >= 8) { mjfpToast('自定义句尾标点最多添加 8 个（可删掉不要的再加）', 2400); return; }
+if (!window.openModal) return;
+window.openModal('添加句尾标点', '', function (v) {
+const s = String(v == null ? '' : v).replace(/[\r\n]+/g, ' ').trim();
+if (!s) { mjfpToast('没有输入标点', 2000); return; }
+if (s.length > 6) { mjfpToast('标点最长 6 个字符', 2000); return; }
+const list = mjfpGet();
+if (custCount(list) >= 8) { mjfpToast('自定义句尾标点最多添加 8 个（可删掉不要的再加）', 2400); return; }
+if (list.some(it => it.s === s)) {
+mjfpToast(isCust(list.find(it => it.s === s)) ? '该自定义标点已存在' : '这是系统自带标点，点亮对应 chip 即可', 2200);
+return;
+}
+list.push({ s: s, on: 1 });
+mjfpSet(list);
+sync();
+toastSaved('添加句尾标点 ' + s, true);
+}, { maxlength: 6, placeholder: '输入标点，如 ～ / ❗ / !!!' });
+}
+box.addEventListener('click', (ev) => {
+if (ev.target.closest('#mjfp-add')) { addFlow(); return; }
+const ch = ev.target.closest('.ppy-chip');
+if (!ch) return;
+const list = mjfpGet();
+let idx = -1;
+if (ch.dataset.i != null) idx = Number(ch.dataset.i);
+else {
+const v = (POOL.find(p => p[0] === ch.dataset.p) || [])[1];
+if (v != null) idx = list.findIndex(x => x.s === v);
+}
+const it = list[idx];
+if (!it) return;
+const del = !!ev.target.closest('.ppy-x');
+if (it.on === 1 && otherSel(list, idx) === 0) {
+mjfpToast('句尾标点至少保留一枚（想一枚都不补请关上方「句尾标点」开关）', 2400);
+return;
+}
+if (del) {
+list.splice(idx, 1);
+mjfpSet(list);
+sync();
+mjfpToast('已删除句尾标点 ' + it.s);
+return;
+}
+it.on = it.on === 1 ? 0 : 1;
+mjfpSet(list);
+sync();
+toastSaved('句尾标点 ' + labelOf(it.s), it.on === 1);
+});
+sync();
+const swPunct = document.getElementById('mjf-punct');
+if (swPunct) swPunct.addEventListener('change', () => setTimeout(sync, 30));
+['contact-switched', 'mochi-restore-done', 'mochi-wrj-heal'].forEach(evN => {
+document.addEventListener(evN, () => { try { sync(); } catch (e) {} });
+});
 })();
 (function () {
 const DCP_ROWS = [
@@ -1029,13 +1225,35 @@ const genRow2 = document.getElementById('row-general');
 if (genRow2) genRow2.addEventListener('click', () => { try { icSync(); } catch (e) {} });
 }
 })();
+function replyStoreFor(k) {
+if (k.indexOf('gc-') === 0) { try { return window.xyStore ? window.xyStore('xy-home-v2') : null; } catch (e) { return null; } }
+return ls;
+}
+function replyFullKey(k) { return (k.indexOf('gc-') === 0 ? 'reply-gc-' : 'reply-') + k; }
+function replyKeyUnvouched(k) {
+const st = replyStoreFor(k);
+try { if (st && typeof st.awaitingBigKey === 'function' && st.awaitingBigKey(replyFullKey(k))) return true; } catch (e) {}
+try {
+if (!sessionSavedKeys.has(k) && window.mochiDataPending && window.mochiDataPending()) return true;
+} catch (e) {}
+return false;
+}
+function replyAskRehydrate(k) {
+const st = replyStoreFor(k);
+try { if (st && st.requestBigKey) st.requestBigKey(replyFullKey(k)); } catch (e) {}
+}
+function replyBlockedToast() {
+toastReply('部分设置这次没读全（存储正忙），先不覆盖：等几秒再点一次保存即可，不需要重新设置', 3200);
+}
 function saveCurrentReplyPage() {
+const skipped = []; // #1511：读数未确认的键（这格此刻可能是默认/旧账），不拿屏面值顶库
 try {
 document.querySelectorAll('#page-reply-settings .stepper, #page-call-settings .stepper').forEach(st => {
 const k = st.dataset.k;
 if (!k) return; // #518：分类档自定义行无 data-k，跳过防 reply-undefined 落盘
 const val = st.querySelector('input.stp-val');
 if (k && val) {
+if (replyKeyUnvouched(k)) { skipped.push(k); return; } // #1511：这格读数未确认，不拿屏面值顶库
 const intAttr = (name, def) => { const v = parseInt(st.getAttribute(name), 10); return Number.isNaN(v) ? def : v; };
 const min = intAttr('data-min', 0);
 const max = intAttr('data-max', Infinity);
@@ -1045,11 +1263,15 @@ v = Math.min(max, Math.max(min, v));
 window.saveReplyCfg(k, v);
 }
 });
-['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en'].forEach(k => {
+['py-en', 'py-punct-en', 'as-en', 'dnd-en', 'as-badge', 'as-badge-heart', 'as-badge-star', 'as-badge-moon', 'as-badge-spark', 'as-badge-paw', 'as-badge-rand', 'ml-kaomoji-en', 'ml-emoji-en', 'ml-sticker-en', 'cs-normal', 'cs-trigger-name', 'cs-trigger-bar', 'gc-cs-normal', 'gc-cs-trigger-name', 'gc-cs-trigger-bar', 'gc-py-en', 'ai-rps-en', 'ai-game-en', 'ai-cuddle-en', 'ai-cc-en', 'ckq-en', 'call-resume', 'call-no-hangup', 'ml-write-en', 'ml-fish-week-en', 'ml-punct-en', 'fd-post-en', 'fd-punct-en', 'fd-kaomoji-en', 'fd-emoji-en', 'fd-sticker-en', 'fd-image-en', 'qs-en', 'qs-cc', 'qs-one', 'qs-multi', 'qs-noLimit', 'mjf-en', 'mjf-src-cc', 'mjf-src-def', 'mjf-src-dict', 'mjf-mix', 'mjf-punct', 'rc-en', 'rl-en', 'fish-en', 'work-en', 'fish-grab-en', 'rp-thx-en', 'turn-en', 'gc-turn-en'].forEach(k => {
 const el = document.getElementById(k);
-if (el) window.saveReplyCfg(k, el.checked ? 1 : 0);
+if (el) {
+if (replyKeyUnvouched(k)) { if (skipped.indexOf(k) < 0) skipped.push(k); return; } // #1511：同上，读数未确认不落笔
+window.saveReplyCfg(k, el.checked ? 1 : 0);
+}
 });
 } catch (e) {}
+return skipped;
 }
 function toastReply(msg, ms) {
 const d = ccToastEnsure();
@@ -1058,12 +1280,22 @@ if (d) { d.textContent = msg; d.className = 'cc-toast'; void d.offsetWidth; d.cl
 const saveBtn = document.getElementById('reply-save-btn');
 if (saveBtn) {
 saveBtn.addEventListener('click', () => {
-saveCurrentReplyPage();
+const skipped = saveCurrentReplyPage();
+if (skipped && skipped.length) {
+replyAskRehydrate(skipped[0]);
+replyBlockedToast();
+return;
+}
 toastReply('已保存全部回复设置');
 });
 }
 function saveAllContactsDo() {
-saveCurrentReplyPage();
+const skipped = saveCurrentReplyPage();
+if (skipped && skipped.length) {
+replyAskRehydrate(skipped[0]);
+replyBlockedToast();
+return;
+}
 let count = 0;
 try {
 if (window.getContacts && window.storeFor) {

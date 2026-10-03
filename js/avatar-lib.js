@@ -29,6 +29,28 @@ try { const h = new Date().getHours(); return h >= 22 || h < 7; } catch (e) { re
 function getMeLib() { try { return JSON.parse(store.get('avatar-me-lib') || '[]'); } catch (e) { return []; } }
 function saveMeLib(list) { store.set('avatar-me-lib', JSON.stringify(list)); }
 function getMeEnabled() { const v = store.get('avatar-me-lib-enabled'); return v === null ? true : v === '1'; }
+function readPool(key) {
+const v = store.get(key);
+if (v === null || v === undefined || v === '') return [];
+if (Array.isArray(v)) return v; // #950 同款：大键可能以数组形态直驻内存缓存
+try { const a = JSON.parse(v); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function poolWitness(key) { try { return (window.idbBigIdxSize && window.idbBigIdxSize(key)) || 0; } catch (e) { return 0; } }
+function commitPool(key, mutate, done) {
+const settle = (next) => { if (next) store.set(key, JSON.stringify(next)); if (done) done(next || null); };
+const attempt = (tries) => {
+const cur = readPool(key);
+if (cur.length || !poolWitness(key) || !window.idbEnsureBigKey) { settle(mutate(cur)); return; }
+Promise.resolve(window.idbEnsureBigKey(key)).then((st) => {
+if (st === 'unknown') {
+if (tries < 2) { setTimeout(() => attempt(tries + 1), 1200 * (tries + 1)); return; }
+toast('头像库还在读取，请过几秒再试一次（这一次没有改动库里的头像）'); settle(null); return;
+}
+settle(mutate(readPool(key))); // 'ok'＝取回后重读；'absent'＝健康连接确认库里没有 ⇒ 空池就是权威
+}, () => { toast('头像库还在读取，请过几秒再试一次'); settle(null); });
+};
+attempt(0);
+}
 const INVIS_RE = /[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\u206A-\u206F\uFEFF\u180E]/g;
 function cleanNick(s) {
 return String(s == null ? '' : s).replace(INVIS_RE, '').trim().slice(0, 30);
@@ -40,10 +62,18 @@ return Array.isArray(v) ? v.map(cleanNick).filter(Boolean) : [];
 } catch (e) { return []; }
 }
 function getNickLib() { return loadStrList('nick-lib'); }
-function saveNickLib(list) { store.set('nick-lib', JSON.stringify(list)); }
+function saveNickLib(list) {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'nick-lib', '昵称池')) return false;
+store.set('nick-lib', JSON.stringify(list));
+return true;
+}
 function getNickEnabled() { const v = store.get('nick-lib-enabled'); return v === null ? true : v === '1'; }
 function getMeNickLib() { return loadStrList('nick-me-lib'); }
-function saveMeNickLib(list) { store.set('nick-me-lib', JSON.stringify(list)); }
+function saveMeNickLib(list) {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'nick-me-lib', '我的昵称池')) return false;
+store.set('nick-me-lib', JSON.stringify(list));
+return true;
+}
 function getMeNickEnabled() { const v = store.get('nick-me-lib-enabled'); return v === null ? true : v === '1'; }
 function curPartnerNick() { return store.get('cs-lbl-partner') || store.get('lbl-partner') || ''; }
 function curMyNick() { return store.get('cs-lbl-user') || store.get('lbl-user') || ''; }
@@ -65,34 +95,10 @@ return String(h);
 const AV_TARGET = 180 * 1024;
 function normalizeAvSize(data, cb) {
 if (!data || typeof data !== 'string' || data.indexOf('data:image') !== 0 || data.length <= AV_TARGET) { cb(data); return; }
-try {
-let settled = false;
-const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); cb(v); };
-const watchdog = setTimeout(() => once(data), 20000);
-const img = new Image();
-img.onload = function () {
-try {
-const iw = img.width || 256, ih = img.height || 256;
-const scale = Math.min(1, 256 / Math.max(iw, ih));
-let w = Math.max(1, Math.round(iw * scale));
-let h = Math.max(1, Math.round(ih * scale));
-let q = 0.85, out = '';
-for (let tries = 0; tries < 4; tries++) {
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-c.getContext('2d').drawImage(img, 0, 0, w, h);
-out = c.toDataURL('image/jpeg', q);
-if (out.length <= AV_TARGET) break;
-w = Math.max(48, Math.round(w * 0.8));
-h = Math.max(48, Math.round(h * 0.8));
-q = Math.max(0.5, q - 0.1);
-}
-once(out && out.length < data.length ? out : data);
-} catch (e) { once(data); }
-};
-img.onerror = function () { once(data); };
-img.src = data;
-} catch (e) { cb(data); }
+if (!window.mochiImgCompressTo) { cb(data); return; }
+window.mochiImgCompressTo(data, { maxSide: 256, quality: 0.85, byteLimit: AV_TARGET, tag: 'avlib-norm' }).then((out) => {
+cb(out && out.length < data.length ? out : data);
+});
 }
 let appliedPh = null, appliedUh = null;
 function convergeAvatars() {
@@ -194,13 +200,20 @@ syncVal();
 }
 function switchAvTab(me) { avOwner = me ? 1 : 0; syncAvPane(); try { avKickFirstScreen(avGrid); avKickFirstScreen(avMeGrid); } catch (e) {} }
 function switchAvKind(name) { avKind = name ? 'name' : 'avatar'; syncAvPane(); try { avKickFirstScreen(avGrid); avKickFirstScreen(avMeGrid); } catch (e) {} }
+function avPaintSrc(img, src, done) {
+if (src && window.mochiMediaPaint) {
+try { window.mochiMediaPaint(img, src, done || null); return; } catch (e) { img.__moPaint = 0; } // 池抛错：交回原写法
+}
+try { img.setAttribute('src', src || ''); } catch (e2) {}
+if (done) { try { done(true); } catch (e3) {} }
+}
 const avImgObserver = ('IntersectionObserver' in window)
 ? new IntersectionObserver((entries) => {
 for (const en of entries) {
 if (!en.isIntersecting) continue;
 const img = en.target;
 if (img && img.dataset && img.dataset.src && !img.getAttribute('src')) {
-img.setAttribute('src', img.dataset.src);
+avPaintSrc(img, img.dataset.src); // #1314 令牌交回池，不上屏
 img.removeAttribute('data-src');
 }
 try { avImgObserver.unobserve(img); } catch (e) {}
@@ -210,7 +223,7 @@ try { avImgObserver.unobserve(img); } catch (e) {}
 function avAttachLazy(img) {
 if (!img) return;
 if (avImgObserver) { try { avImgObserver.observe(img); } catch (e) {} }
-else { img.setAttribute('src', img.dataset.src || ''); img.removeAttribute('data-src'); }
+else { avPaintSrc(img, img.dataset.src || ''); img.removeAttribute('data-src'); } // #1314 令牌交回池
 }
 function emptyHintMismatch(el, lib) { return !!el && el.hidden !== (lib.length > 0); }
 function updateGridNow() {
@@ -274,11 +287,12 @@ img.addEventListener('click', () => {
 switchAvatarFromLib(src);
 });
 delBtn.addEventListener('click', () => {
-const l = getLib();
-l.splice(idx, 1);
-saveLib(l);
-renderGrid();
-syncVal();
+commitPool('avatar-lib', (lib) => {
+const i = lib.indexOf(src);
+if (i < 0) return null;
+lib.splice(i, 1);
+return lib;
+}, () => { renderGrid(); syncVal(); });
 });
 avGrid.appendChild(d);
 });
@@ -307,10 +321,12 @@ img.addEventListener('click', () => {
 switchMyAvatarFromLib(src);
 });
 delBtn.addEventListener('click', () => {
-const l = getMeLib();
-l.splice(idx, 1);
-saveMeLib(l);
-renderMeGrid();
+commitPool('avatar-me-lib', (lib) => {
+const i = lib.indexOf(src);
+if (i < 0) return null;
+lib.splice(i, 1);
+return lib;
+}, () => { renderMeGrid(); });
 });
 avMeGrid.appendChild(d);
 });
@@ -437,7 +453,7 @@ for (let i = 0; i < imgs.length; i++) {
 const im = imgs[i];
 let ds = ''; try { ds = (im.dataset && im.dataset.src) || ''; } catch (e) {}
 if (ds && !im.getAttribute('src')) {
-im.setAttribute('src', ds); // 当场补：不等 IO 回调（令牌载荷同路径，池会按 src 重写真载荷）
+avPaintSrc(im, ds);
 try { im.removeAttribute('data-src'); } catch (e) {}
 try { if (avImgObserver) avImgObserver.unobserve(im); } catch (e) {}
 }
@@ -453,6 +469,7 @@ const off = function () { try { im.removeEventListener('load', settle); im.remov
 const settle = function () {
 if (done) return;
 if (okNow()) { done = true; off(); res(true); return; }
+if (im.__moPaint) return; // #1314 池的回话还在飞（此刻 src 既没载荷也没令牌）：判「无源」会放行一个没图的格子
 if (srcNow().indexOf('@@m:') !== 0) { done = true; off(); res(false); return; } // 真失败/无源：不挡显示
 };
 try { im.addEventListener('load', settle); im.addEventListener('error', settle); } catch (e) {}
@@ -509,11 +526,11 @@ let n = 0;
 for (let i = 0; i < imgs.length && n < 24; i++) {
 const im = imgs[i];
 if (im.dataset && im.dataset.src && !im.getAttribute('src')) {
-im.setAttribute('src', im.dataset.src);
+avPaintSrc(im, im.dataset.src, function (ok) { if (ok) { try { if (im.decode) im.decode().catch(function () {}); } catch (eD) {} } }); // #1314 令牌交回池；解码发起挪到载荷真落地那一刻
 im.removeAttribute('data-src');
 n++;
 }
-try { if (im.decode) im.decode().catch(function () {}); } catch (e) {}
+if (im.getAttribute('src')) { try { if (im.decode) im.decode().catch(function () {}); } catch (e) {} } // #1314 只在「这一格此刻真有源」时解码；在飞的留给池的回话
 }
 }
 };
@@ -558,8 +575,8 @@ store.set('nick-me-lib-enabled', avMeNickEnabled.checked ? '1' : '0');
 syncVal();
 });
 }
-function bindPoolUpload(btn, listFn, saveFn, rerender) {
-if (!btn) return;
+function bindPoolUpload(btn, key, rerender) {
+if (!btn || !key) return;
 const input = document.createElement('input');
 input.type = 'file'; input.accept = 'image/*'; input.multiple = true;
 input.id = (btn.id || 'avlib') + '-file-pick'; // FIX 2026-09-18 #717：常驻池选择器身份（诊断/测试句柄，按按钮唯一）
@@ -569,44 +586,27 @@ input.onchange = () => {
 const files = Array.prototype.slice.call(input.files || []);
 input.value = '';
 if (!files.length) return;
-const list = listFn();
+const added = [];
 let done = 0, okCount = 0, failCount = 0;
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
 files.forEach(f => {
 let settled = false;
 const settle = (okFlag) => {
-if (settled) return; settled = true; clearTimeout(fileTimer);
+if (settled) return; settled = true;
 done++;
 if (okFlag) okCount++; else failCount++;
 if (done === files.length) finish();
 };
-const fileTimer = setTimeout(() => settle(false), 30000);
-const reader = new FileReader();
-reader.onerror = () => settle(false);
-reader.onload = () => {
-const img = new Image();
-img.onload = () => {
-if (settled) return; // 看门狗已按失败收口，迟到的解码结果不再塞池
-try {
-const c = document.createElement('canvas');
-const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-c.width = Math.max(1, Math.round(img.width * scale));
-c.height = Math.max(1, Math.round(img.height * scale));
-c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-list.push(c.toDataURL('image/jpeg', 0.85));
+window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'avlib-pool' }).then((r) => {
+if (!r || r.st !== 'ok' || !r.data) { settle(false); return; }
+added.push(r.data);
 settle(true);
-} catch (e) {
-list.push(reader.result);
-settle(true);
-}
-};
-img.onerror = () => settle(false);
-img.src = reader.result;
-};
-reader.readAsDataURL(f);
+});
 });
 function finish() {
-saveFn(list);
+commitPool(key, (lib) => lib.concat(added), (out) => {
 rerender();
+if (!out) return; // 闸门拦下＝库里那份没动，提示已由 commitPool 给过，这里不再报「成功」
 if (okCount > 0 && failCount === 0) {
 toast('成功添加 ' + okCount + ' 张头像');
 } else if (okCount > 0 && failCount > 0) {
@@ -614,6 +614,7 @@ toast('添加成功 ' + okCount + ' 张，失败 ' + failCount + ' 张');
 } else {
 toast('添加失败，请选择有效的图片文件');
 }
+});
 }
 };
 if (window.mochiFilePickLabel) window.mochiFilePickLabel(btn, input);
@@ -626,8 +627,8 @@ if (window.mochiFilePickGuard) window.mochiFilePickGuard(input, _fb);
 else _fb();
 });
 }
-bindPoolUpload(avUpload, getLib, saveLib, () => { renderGrid(); syncVal(); });
-bindPoolUpload(avMeUpload, getMeLib, saveMeLib, () => { renderMeGrid(); syncVal(); });
+bindPoolUpload(avUpload, 'avatar-lib', () => { renderGrid(); syncVal(); });
+bindPoolUpload(avMeUpload, 'avatar-me-lib', () => { renderMeGrid(); syncVal(); });
 function bindNickAdd(btn, listFn, saveFn, rerender) {
 if (!btn) return;
 btn.addEventListener('click', () => {
@@ -642,7 +643,7 @@ let dup = 0;
 lines.forEach(n => { if (list.indexOf(n) >= 0) { dup++; return; } list.push(n); });
 const added = lines.length - dup;
 if (!added) { toast(dup > 1 ? '这 ' + dup + ' 个昵称都已经在池子里了' : '这个昵称已经在池子里了'); return; }
-saveFn(list);
+if (saveFn(list) === false) return; // #1521：闸拦下＝这一发没落笔，不重绘也不报「已添加」
 rerender();
 const tail = (dup ? '，' + dup + ' 个已存在' : '') + (blank ? '，跳过 ' + blank + ' 个空行' : '');
 if (dup || blank) toast('已添加 ' + added + ' 个昵称' + tail);
@@ -672,13 +673,14 @@ bindPoolClear(avClear, saveLib, () => { renderGrid(); syncVal(); }, '清空头�
 bindPoolClear(avMeClear, saveMeLib, () => { renderMeGrid(); syncVal(); }, '清空我的头像池？', '已清空我的头像池');
 bindPoolClear(avNickClear, saveNickLib, () => { renderNickGrid(); syncVal(); }, '清空昵称池？', '已清空昵称池');
 bindPoolClear(avMeNickClear, saveMeNickLib, () => { renderMeNickGrid(); syncVal(); }, '清空我的昵称池？', '已清空我的昵称池');
+let avApplyGen = 0; // #1314 屏外气泡头像分片补写的轮次号（见下面写入面那段注释）
 function applyAvatarImg(data, out, chatOnly) {
 if (data) {
 try {
 const _warm = new Image();
 _warm.decoding = 'async';
-_warm.src = data;
-if (_warm.decode) { const _p = _warm.decode(); if (_p && _p.catch) _p.catch(function () {}); }
+const warmDecode = function () { try { if (_warm.decode) { const _p = _warm.decode(); if (_p && _p.catch) _p.catch(function () {}); } } catch (eW) {} };
+avPaintSrc(_warm, data, warmDecode);
 } catch (e) {}
 }
 const chatAv = document.getElementById(out ? 'chat-user-av' : 'chat-partner-av');
@@ -690,10 +692,10 @@ if (el.__avApplied === want) return;
 el.__avApplied = want;
 if (data) {
 const cur = el.querySelector('img');
-if (cur) { cur.src = data; cur.alt = ''; }
+if (cur) { avPaintSrc(cur, data); cur.alt = ''; } // #1314 令牌交回池，不上屏（内联值＝逐字同旧的一次赋值）
 else {
 const img = document.createElement('img');
-img.src = data;
+avPaintSrc(img, data);
 img.alt = '';
 el.innerHTML = '';
 el.appendChild(img);
@@ -704,7 +706,26 @@ el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="#999999" stroke-wid
 };
 applyTo(chatAv);
 applyTo(deskRing);
-document.querySelectorAll((out ? '.msg-out' : '.msg-in') + ' .msg-av').forEach(av => { applyTo(av); });
+const avNodes = document.querySelectorAll((out ? '.msg-out' : '.msg-in') + ' .msg-av');
+const vh = window.innerHeight || 0;
+const avTail = [];
+for (let i = 0; i < avNodes.length; i++) {
+const av = avNodes[i];
+if (!vh) { applyTo(av); continue; }
+let r = null; try { r = av.getBoundingClientRect(); } catch (e) {}
+if (!r || (r.bottom > -80 && r.top < vh + 80)) applyTo(av);
+else avTail.push(av);
+}
+if (!avTail.length) return;
+if (!window.requestAnimationFrame) { for (let k = 0; k < avTail.length; k++) applyTo(avTail[k]); return; }
+const avGen = ++avApplyGen; // 期间又换了一次头像：旧那一轮的剩余分片作废（#169/#228 同族），新那一轮自己会枚举到全部节点
+const avStep = function () {
+if (avGen !== avApplyGen) return;
+const chunk = avTail.splice(0, 24);
+for (let k = 0; k < chunk.length; k++) applyTo(chunk[k]);
+if (avTail.length) { try { window.requestAnimationFrame(avStep); } catch (e) { for (let k = 0; k < avTail.length; k++) applyTo(avTail[k]); avTail.length = 0; } }
+};
+try { window.requestAnimationFrame(avStep); } catch (e) { for (let k = 0; k < avTail.length; k++) applyTo(avTail[k]); }
 }
 function chatSystem(text, img, keep) {
 if (window.chatAddSystem) window.chatAddSystem(text, { img: img, nickKeep: !!keep });
@@ -851,7 +872,7 @@ if (invite) {
 showMeAvatarInvite(data);
 if (document.visibilityState === 'hidden' && window.bgNotifyCheck) {
 const iname = store.get('lbl-partner') || 'TA';
-window.bgNotifyCheck(iname + ' 想给你换头像', Date.now(), { name: iname, img: data });
+window.bgNotifyCheck(iname + ' 想给你换头像', Date.now(), { name: iname, img: data, kind: 'invite' });
 }
 } else {
 const trigHash = strHash(data);
@@ -901,7 +922,7 @@ noteApplied('partner', fit);
 chatSystem(cPartnerName() + ' 更换了头像', fit);
 try {
 if (window.bgNotifyCheck) {
-window.bgNotifyCheck((store.get('lbl-partner') || 'TA') + ' 更换了头像', Date.now(), { name: store.get('lbl-partner') || 'TA', av: fit });
+window.bgNotifyCheck((store.get('lbl-partner') || 'TA') + ' 更换了头像', Date.now(), { name: store.get('lbl-partner') || 'TA', av: fit, kind: 'other' });
 }
 } catch (e) {}
 });
@@ -1039,7 +1060,7 @@ if (invite) {
 showMeNickInvite(name);
 if (document.visibilityState === 'hidden' && window.bgNotifyCheck) {
 const iname = store.get('lbl-partner') || 'TA';
-window.bgNotifyCheck(iname + ' 想给你换昵称', Date.now(), { name: iname });
+window.bgNotifyCheck(iname + ' 想给你换昵称', Date.now(), { name: iname, kind: 'invite' });
 }
 } else {
 applyMyNick(name);
@@ -1078,7 +1099,7 @@ updateNickGridNow();
 const text = nickMsgPartner(name);
 chatSystem(text, null, true);
 try {
-if (window.bgNotifyCheck) window.bgNotifyCheck(text, Date.now(), { name: cPartnerName() });
+if (window.bgNotifyCheck) window.bgNotifyCheck(text, Date.now(), { name: cPartnerName(), kind: 'other' });
 } catch (e) {}
 } catch (e) {}
 }

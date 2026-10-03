@@ -56,31 +56,10 @@ return '<span class="sm-song-ico has-cov" style="background-image:url(\'' + esc(
 return '<span class="sm-song-ico"><svg viewBox="0 0 24 24" fill="currentColor">' + (icon || '<path d="M8 5.5v13l11-6.5z"/>') + '</svg></span>';
 }
 function compressCover(file, cb) {
-let url = null;
-try { url = URL.createObjectURL(file); } catch (e) {}
-if (!url) {
-const r = new FileReader();
-r.onload = () => cb(r.result);
-r.onerror = () => cb('');
-try { r.readAsDataURL(file); } catch (e) { cb(''); }
-return;
-}
-const img = new Image();
-img.onload = function () {
-try { URL.revokeObjectURL(url); } catch (e) {}
-let w = img.width, h = img.height;
-if (!w || !h) { cb(''); return; }
-const k = Math.min(1, 512 / Math.max(w, h));
-w = Math.max(1, Math.round(w * k)); h = Math.max(1, Math.round(h * k));
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-const ctx = c.getContext('2d');
-if (!ctx) { cb(''); return; }
-try { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h); ctx.drawImage(img, 0, 0, w, h); } catch (e) { cb(''); return; }
-try { cb(c.toDataURL('image/jpeg', 0.82)); } catch (e) { cb(''); }
-};
-img.onerror = function () { try { URL.revokeObjectURL(url); } catch (e) {} cb(''); };
-img.src = url;
+if (!window.mochiImgIngest) { cb(''); return; }
+window.mochiImgIngest(file, { maxSide: 512, quality: 0.82, mime: 'image/jpeg', opaque: true, tag: 'pl-cover' }).then((r) => {
+cb(r && r.st === 'ok' && r.data ? r.data : '');
+});
 }
 function saveLibrary() { saveArr('music-library', library); }
 let _saveLibTimer = null;
@@ -937,15 +916,22 @@ next(i + 1);
 next(0);
 }
 const OTHER_APP_LINK_HINT = '<b>✕ 不支持其他 App 的分享链接：</b>QQ音乐 / 酷狗 / 酷我 / 咪咕 / B站 / YouTube / Spotify / Apple Music 等 App 的「分享」链接，点开是网页、不是音频文件，导进来也放不出声。要用这些歌，得先把音频文件拿到手机里（走「上传音乐」）。<br>';
+const PLAYLIST_LINK_REMIND = '<b style="color:var(--danger-ink,#a32d2d)">⚠ 直接导入网易云歌单链接即可</b><br>';
 function triggerUpload() {
 if (!window.openTCPanel) { localPlId = 'default'; }
 window.openTCPanel('添加本地音乐', '' +
 '<div class="sm-form">' +
 '<div class="sm-fld"><label>上传到播放列表</label><select class="tc-input" id="sm-local-pl">' + targetPlOptions() + '</select></div>' +
-'<div class="sm-fld-hint">选择一首或多首本地音频（mp3 / m4a / aac / ogg / wav / flac）存放进上面的歌单；选「新建歌单」可先建一个歌单再上传。<br>整首音乐已经存在手机里（自己转换 / 无版权保护的下载 / 录音等）时用这里；如果歌还在别的 App 里（QQ音乐 / 酷狗 / B站 等），App 的「分享」链接不能直接导入。<br><b>⚠ 文件必须是不加密的标准音频：</b>音乐 App 里下载 / 缓存的歌曲文件大多带了加密，即使扩展名是 .mp3 / .flac / .m4a 也放不出声；无损 .m4a（ALAC 编码）部分浏览器也不支持。上传后点一下播放试试，放不出来的建议转成 <b>mp3</b>（兼容性最好）再上传。</div>' +
+'<div class="sm-fld-hint">选择一首或多首本地音频（mp3 / m4a / aac / ogg / wav / flac）存放进上面的歌单；选「新建歌单」可先建一个歌单再上传。<br>整首音乐已经存在手机里（自己转换 / 无版权保护的下载 / 录音等）时用这里；如果歌还在别的 App 里（QQ音乐 / 酷狗 / B站 等），App 的「分享」链接不能直接导入。<br><span style="color:var(--danger-ink,#a32d2d)"><b>⚠ 文件必须是不加密的标准音频：</b>音乐 App 里下载 / 缓存的歌曲文件大多带了加密，即使扩展名是 .mp3 / .flac / .m4a 也放不出声；无损 .m4a（ALAC 编码）部分浏览器也不支持。举例：QQ音乐和网易云里下载的歌曲都是有加密的，不在QQ音乐和网易云音乐本体应用里播放是无法播放的，只能自己转格式破解后才能在别的应用和本地播放。上传后点一下播放试试，放不出来的建议转成 <b>mp3</b>（兼容性最好）再上传。</span></div>' +
 '</div>' +
 '<div class="mail-actions"><button class="cc-tool" id="sm-local-cancel">取消</button><button class="cc-tool" id="sm-local-ok">选择文件上传</button></div>');
 document.getElementById('sm-local-cancel').addEventListener('click', () => { document.getElementById('tc-mask').hidden = true; });
+try {
+if (window.mochiFilePickDoor) window.mochiFilePickDoor(document.getElementById('sm-local-ok'), {
+id: 'mochi-door-sm-local-ok', owner: 'mochi-music-local-pick',
+accept: 'audio/*,.mp3,.m4a,.aac,.ogg,.wav,.flac', multiple: true, veto: 1,
+});
+} catch (eD) {}
 document.getElementById('sm-local-ok').addEventListener('click', () => {
 resolveTargetPlSel('sm-local-pl', (pid) => {
 localPlId = pid || 'default';
@@ -1156,7 +1142,7 @@ window.openTCPanel('添加链接音乐', '' +
 '<div class="sm-fld"><label>歌手</label><input class="tc-input" id="sm-url-artist" placeholder="可留空"></div>' +
 '<div class="sm-fld"><label>网易云歌曲ID 或 链接 / 音乐直链</label><textarea class="tc-input" id="sm-url-link" rows="3" placeholder="如 2064961530&#10;或 https://music.163.com/#/song?id=xxx&#10;每行一个，支持批量"></textarea></div>' +
 '<div class="sm-fld"><label>导入到歌单</label><select class="tc-input" id="sm-target-pl">' + targetPlOptions() + '</select></div>' +
-'<div class="sm-fld-hint"><b>可填 3 类：</b>① 网易云歌曲数字 ID（如 2064961530）；② <b>完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3、分享短链 163cn.tv/xxx），都会自动识别导入，不用手动填 ID；③ <b>音频文件直链</b>（点开就是音频本身、以 .mp3 / .m4a 等结尾的 URL，需 https）。支持批量：每行一个 ID 或链接；批量时歌曲名/歌手自动识别，可不填。<br>粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx）自动导入整个歌单。<br>' + OTHER_APP_LINK_HINT + '<span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入受网络环境影响，失败可稍后重试</span></div>' +
+'<div class="sm-fld-hint">' + PLAYLIST_LINK_REMIND + '<b>可填 3 类：</b>① 网易云歌曲数字 ID（如 2064961530）；② <b>完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3、分享短链 163cn.tv/xxx），都会自动识别导入，不用手动填 ID；③ <b>音频文件直链</b>（点开就是音频本身、以 .mp3 / .m4a 等结尾的 URL，需 https）。支持批量：每行一个 ID 或链接；批量时歌曲名/歌手自动识别，可不填。<br>粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx）自动导入整个歌单。<br>' + OTHER_APP_LINK_HINT + '<span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入受网络环境影响，失败可稍后重试</span></div>' +
 '</div>' +
 '<div class="mail-actions"><button class="cc-tool" id="sm-url-cancel">取消</button><button class="cc-tool" id="sm-url-ok">确认添加</button></div>');
 document.getElementById('sm-url-cancel').addEventListener('click', () => { document.getElementById('tc-mask').hidden = true; });
@@ -1272,7 +1258,7 @@ addLinkLines(lines, isBatch);
 function openBatch() {
 if (!window.openTCPanel) return;
 window.openTCPanel('批量导入音乐', '' +
-'<div class="sm-fld-hint" style="margin-bottom:8px"><b>支持 3 种导入方式：</b><br>① <b>网易云歌单</b>：直接粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx），自动导入整个歌单；<br>② <b>网易云单曲</b>：每行一个歌曲数字 ID（如 2064961530），或<b>直接粘贴完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3），自动识别导入，不用手动填 ID；<br>③ <b>本地/直链</b>：按「歌曲名称 / 歌手 / 音乐直链URL」格式粘贴，每首歌空一行分隔（URL 栏同样支持直接贴网易云链接；直链要点开就是音频本身、以 .mp3 等结尾、需 https）。<br>' + OTHER_APP_LINK_HINT + '<br><span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入会自动移除 VIP/付费歌曲；歌单导入受网络环境影响（部分手机浏览器可能拦截），失败可稍后重试</span></div>' +
+'<div class="sm-fld-hint" style="margin-bottom:8px">' + PLAYLIST_LINK_REMIND + '<b>支持 3 种导入方式：</b><br>① <b>网易云歌单</b>：直接粘贴歌单分享链接（music.163.com/playlist?id=xxx 或 #/playlist?id=xxx），自动导入整个歌单；<br>② <b>网易云单曲</b>：每行一个歌曲数字 ID（如 2064961530），或<b>直接粘贴完整网易云链接</b>（如 music.163.com/#/song?id=xxx、song/media/outer/url?id=xxx.mp3），自动识别导入，不用手动填 ID；<br>③ <b>本地/直链</b>：按「歌曲名称 / 歌手 / 音乐直链URL」格式粘贴，每首歌空一行分隔（URL 栏同样支持直接贴网易云链接；直链要点开就是音频本身、以 .mp3 等结尾、需 https）。<br>' + OTHER_APP_LINK_HINT + '<br><span style="opacity:.75">⚠ 链接上传的 VIP/付费歌曲无法播放（仅免费歌曲可播）；歌单导入会自动移除 VIP/付费歌曲；歌单导入受网络环境影响（部分手机浏览器可能拦截），失败可稍后重试</span></div>' +
 '<textarea id="sm-batch-input" class="tc-input" rows="8" placeholder="网易云歌单链接：https://music.163.com/playlist?id=3778678&#10;网易云单曲链接：https://music.163.com/#/song?id=27538343&#10;或纯数字 ID：27538343&#10;&#10;歌曲名称：Baby&#10;歌手：EXO-K&#10;音乐直链URL：http://music.163.com/song/media/outer/url?id=27538343.mp3"></textarea>' +
 '<div class="sm-fld"><label>导入到歌单</label><select class="tc-input" id="sm-target-pl">' + targetPlOptions() + '</select></div>' +
 '<div class="mail-actions"><button class="cc-tool" id="sm-batch-cancel">取消</button><button class="cc-tool" id="sm-batch-ok">开始导入</button></div>');
@@ -3060,7 +3046,7 @@ function syncFloatToggle() {
 const cb = document.getElementById('music-float-en');
 if (cb) cb.checked = settings.floatEn;
 }
-function taMusicSys(text) { try { if (window.chatAddSystem) window.chatAddSystem(text, { silent: true, nightAllow: true }); } catch (e) {} }
+function taMusicSys(text, byUser) { try { if (window.chatAddSystem) window.chatAddSystem(text, { silent: true, rateAllow: byUser === true, nightAllow: true }); } catch (e) {} }
 function taMusicSay(text) { try { if (window.chatAddIn) window.chatAddIn(text, { silent: true }); } catch (e) {} }
 function taFavList() {
 try {
@@ -3280,6 +3266,8 @@ window.openTCPanel('管理音乐', '' +
 '<div class="sm-fld"><label>快捷操作</label><div class="sm-quick-actions">' +
 '<button class="cc-tool" id="sm-e-qnext">下一首播放</button>' +
 '<button class="cc-tool" id="sm-e-qpl">加入播放列表</button>' +
+'<button class="cc-tool" id="sm-e-ta-ask">邀请 TA 一起听</button>' +
+'<button class="cc-tool" id="sm-e-ta-inv">让 TA 邀我听这首</button>' +
 '</div></div>' +
 '<div class="sm-fld"><label>歌曲名称</label><input class="tc-input" id="sm-e-name" value="' + String(m.name || '').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '"></div>' +
 '<div class="sm-fld"><label>歌手</label><input class="tc-input" id="sm-e-artist" value="' + String(m.artist || '').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '"></div>' +
@@ -3354,6 +3342,13 @@ renderPage();
 toast('已加入播放列表');
 });
 });
+const taAsk = document.getElementById('sm-e-ta-ask');
+if (taAsk) taAsk.addEventListener('click', () => {
+document.getElementById('tc-mask').hidden = true;
+inviteTaToListen(id);
+});
+const taInv = document.getElementById('sm-e-ta-inv');
+if (taInv) taInv.addEventListener('click', () => { forceTaInviteFor(id); });
 document.getElementById('sm-e-ok').addEventListener('click', () => {
 m.name = (document.getElementById('sm-e-name').value || '').trim() || m.name;
 m.artist = (document.getElementById('sm-e-artist').value || '').trim();
@@ -3469,7 +3464,7 @@ reqData = null;
 history.push({ id: 'smh_' + Date.now(), trackId: '', trackName: '', triggerType: '拒绝了 TA 的听歌邀请《' + esc(trackName) + '》', rejected: true, ts: Date.now() });
 if (history.length > 500) history = history.slice(-500);
 saveHistory(); renderHistory();
-taMusicSys('你拒绝了 ' + name + ' 的听歌邀请');
+taMusicSys('你拒绝了 ' + name + ' 的听歌邀请', true);
 });
 yesBtn.addEventListener('click', () => {
 document.getElementById('tc-mask').hidden = true;
@@ -3486,12 +3481,80 @@ playTrack(trackId);
 addRecord(trackId, '接受了 TA 的听歌邀请');
 taMusicSys(switchNow
 ? '你接受了邀请，已切换到《' + trackName + '》'
-: '你接受了 ' + name + ' 的听歌邀请，一起听《' + trackName + '》');
+: '你接受了 ' + name + ' 的听歌邀请，一起听《' + trackName + '》', true);
 toast('开始播放');
 armInvitePlayCheck(); // #904b
 renderFloat(); // #904a：hold 藏起的小框随新播放意图立刻恢复（本地歌异步起播由 onplay 再刷新）
 });
 return true;
+}
+let myInvitePending = false; // 在飞一条＝不再收第二条（回应最远 4s 落地，落定了随时能再邀＝不是掐表不许试）
+function pendingInviteOnScreen() {
+const m = document.getElementById('tc-mask');
+return !!(reqData && m && !m.hidden && document.getElementById('sm-req-yes'));
+}
+function inviteTaToListen(trackId) {
+const track = findTrack(trackId);
+if (!track) { toast('这首已不在音乐库里'); return; }
+if (reqData && !pendingInviteOnScreen()) reqData = null; // 被别的面板顶掉的旧邀请：交还，不拿它锁门
+if (pendingInviteOnScreen()) { toast('已经有一条听歌邀请等你确认了'); return; }
+if (myInvitePending) { toast('刚才那条还在等 TA 回，先看这一条'); return; }
+myInvitePending = true;
+const myCid = window.__activeCid || 'default'; // 多桌面：回应落地时不得写到新桌面（同 #994 面板口径）
+const name = partnerName();
+const trackName = track.name || '未知歌曲';
+const artist = track.artist ? ' - ' + track.artist : '';
+taMusicSys('你邀请 ' + name + ' 一起听《' + trackName + '》' + artist);
+toast('已邀请 TA，回应会落在聊天里');
+setTimeout(function () {
+myInvitePending = false; // 四条出口共用这一行先交还：在飞标志不许有第二种持久的伪状态
+if ((window.__activeCid || 'default') !== myCid) return;
+const say = function (group, fb) {
+const pool = window.getInteractPool ? window.getInteractPool(group, fb) : fb;
+return window.pickAskCardReply ? window.pickAskCardReply(pool) : pool[Math.floor(Math.random() * pool.length)];
+};
+const accept = function (line) {
+if (line) taMusicSay(line);
+if (!findTrack(trackId)) { toast('《' + trackName + '》已不在音乐库里，无法播放'); return; }
+taActive = true;
+callHoldPlaying = false; callHoldPending = false;
+playTrack(trackId);
+taMusicSys('你邀请 ' + name + ' 一起听《' + trackName + '》' + artist + '，TA 同意了一起听', true);
+armInvitePlayCheck();
+renderFloat();
+};
+const roll = Math.random();
+if (roll < 0.6) { accept(say('音乐邀请TA·同意', ['一起听呀。', '放吧，我靠近一点。', '这首好，就听它。'])); return; }
+if (roll < 0.85) {
+taMusicSay(say('音乐邀请TA·拒绝', ['这首现在不想听嘛。', '待会儿再听好不好？']));
+taMusicSys(name + ' 这次没答应，说待会儿再听《' + trackName + '》');
+return;
+}
+taMusicSay(say('音乐邀请TA·换一首', ['这首听腻啦，换一首嘛～', '换一首行不行？']));
+const others = library.filter(x => x && x.id !== trackId);
+if (!others.length) { accept('库里就这一首嘛……那就它吧。'); return; }
+const pick = others[Math.floor(Math.random() * others.length)];
+cooldownAt = Date.now(); // 与概率路径共用冷却＝同一发不再紧接着自然弹出第二条把你这条盖掉
+if (!openMusicInvitePanel(pick.id, !!currentId)) {
+reqData = null; // 面板没画出来就别把 reqData 留成「有待确认邀请」，否则之后每次都撞上面那道闸
+toast('TA 想换的那首没能弹出邀请（曲库或弹层不可用）');
+return;
+}
+prewarmLocalAudio(pick.id);
+}, 1500 + Math.random() * 2500);
+}
+function forceTaInviteFor(trackId) {
+if (!findTrack(trackId)) { toast('这首已不在音乐库里'); return; }
+if (reqData && !pendingInviteOnScreen()) reqData = null; // 同上：被顶掉的旧邀请不许把这条路锁死
+if (pendingInviteOnScreen()) { toast('已经有一条听歌邀请等你确认了'); return; }
+cooldownAt = Date.now();
+if (!openMusicInvitePanel(trackId, !!currentId)) {
+reqData = null;
+cooldownAt = 0; // 没弹成就不该占着冷却窗，把这条自然触发的机会白白吃掉
+toast('邀请没能弹出来：音乐页弹层不可用，可去 音乐设置 → 诊断邀请 看读数');
+return;
+}
+prewarmLocalAudio(trackId);
 }
 window.maybeMusicRequest = function () {
 try {
@@ -3599,7 +3662,7 @@ try {
 if (window.dcfGet && !(Math.random() * 100 < window.dcfGet('music'))) return;
 let arr = window.getLibPool ? window.getLibPool('music', group, fallback) : (fallback || []);
 if (window.isDefaultCardOff) arr = arr.filter(c => !window.isDefaultCardOff('music', c));
-if (!arr.length) arr = (fallback || []).slice();
+if (!arr.length) arr = window.gateCardFallback ? window.gateCardFallback('music', fallback) : [];
 if (!arr.length) return;
 let m = arr[Math.floor(Math.random() * arr.length)];
 if (window.taFit) m = window.taFit(m);
@@ -3722,7 +3785,7 @@ window.openTCPanel('音乐设置', '' +
 '<div class="gs-row"><span>音乐请求触发概率</span><div class="stepper" id="sm-set-prob" data-min="0" data-max="30" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="sm-set-prob-val" readonly><button class="stp-max">+</button></div></div>' +
 '<div class="gs-row"><span>请求冷却时间</span><select class="tc-input" id="sm-set-cool" style="width:110px">' + cooldownOpts + '</select></div>' +
 '<div class="gs-row"><span>桌面小组件封面</span><select class="tc-input" id="sm-set-wcov" style="width:120px"><option value="song"' + (settings.widgetCoverMode !== 'playlist' ? ' selected' : '') + '>歌曲封面</option><option value="playlist"' + (settings.widgetCoverMode === 'playlist' ? ' selected' : '') + '>歌单封面</option></select></div>' +
-'<div class="sm-set-hint">聊天过程中 TA 会按概率请求和你一起听歌；播放时右上角出现可拖动的悬浮小框</div>' +
+'<div class="sm-set-hint">聊天过程中 TA 会按概率请求和你一起听歌；播放时右上角出现可拖动的悬浮小框。想现在就要（或换你主动邀 TA）：在音乐页那首歌按「⋯」，快捷操作里有「邀请 TA 一起听」和「让 TA 邀我听这首」——后者不走概率、不等冷却</div>' +
 '<div class="gs-row"><span>预订下一首概率</span><div class="stepper" id="sm-set-reserve" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="sm-set-reserve-val" readonly><button class="stp-max">+</button></div></div>' +
 '<div class="sm-set-hint">聊天过程中 TA 有概率「预订」下一首要播的音乐：把这首歌排进播放队列（底部播放条的「播放队列」里可见），并在聊天里发送系统消息；被预订的歌会按你排的顺序先播（设 0 = TA 从不预订下一首）</div>' +
 '<div class="gs-row"><span>歌曲播完·切下一首概率</span><div class="stepper" id="sm-set-next" data-min="0" data-max="100" data-step="5"><button class="stp-min">−</button><input class="stp-val" id="sm-set-next-val" readonly><button class="stp-max">+</button></div></div>' +
@@ -4010,6 +4073,7 @@ try {
 taActive = false;
 cooldownAt = 0;
 reqData = null;
+myInvitePending = false; // 我方那条「在飞」闸同属互动状态：旧桌面的在飞不许把新桌口的邀请挡掉
 libFilter = 'all';
 libRenderShown = LIB_RENDER_LIMIT; // 切联系人时重置窗口化渲染计数
 clearTaFavTimer();

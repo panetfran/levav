@@ -132,6 +132,21 @@ if (it) { const k = parseInt(it.getAttribute('data-pcitem'), 10); if (items[k]) 
 });
 return bar;
 }
+function mountBar(page, bar) {
+if (page.scrollHeight - page.clientHeight > 0) { page.insertBefore(bar, page.firstChild); return; }
+const all = page.querySelectorAll('*');
+for (let i = 0; i < all.length; i++) {
+const n = all[i];
+if (n === bar || (n.closest && n.closest('.pc-bar'))) continue;
+let oy = '';
+try { oy = getComputedStyle(n).overflowY; } catch (e) { continue; }
+if (!/(auto|scroll)/.test(oy)) continue;
+if (!n.firstElementChild || n.clientHeight < 120) continue;
+n.insertBefore(bar, n.firstChild);
+return;
+}
+page.insertBefore(bar, page.firstChild);
+}
 REG.forEach(function (cfg) {
 const page = document.getElementById(cfg.page);
 if (!page || !window.MutationObserver) return;
@@ -145,7 +160,7 @@ try {
 if (page.hidden || seen().indexOf(cfg.id) >= 0) return;
 if (page.querySelector('.pc-bar[data-pc="' + cfg.id + '"]')) return;
 if (typeof cfg.need === 'function' && !cfg.need()) { markSeen(cfg.id); return; }
-page.insertBefore(buildBar(cfg), page.firstChild);
+mountBar(page, buildBar(cfg));
 markSeen(cfg.id); // 「一生一次」：显示即标记，避免忽略后反复打扰；要重看走设置里的重置
 } catch (e) {}
 }, 380);

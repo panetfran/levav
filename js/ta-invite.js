@@ -60,9 +60,11 @@ changed = true;
 if (changed) d.mergedIds = merged;
 return changed;
 }
+function ckAutoHold(k) { try { return !!(window.xyBigWriteHold && window.xyBigWriteHold(store, k)); } catch (e) { return false; } }
 function tiLoad() {
 let d = null;
 try { d = JSON.parse(store.get(KEY) || 'null'); } catch (e) { d = null; }
+if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY)) store.requestBigKey(KEY); } catch (e0) {} }
 if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
 if (!d.settings || typeof d.settings !== 'object') d.settings = {};
 if (d.settings.useDefault === undefined) d.settings.useDefault = true;
@@ -74,14 +76,18 @@ nq.isPreset = true;
 return nq;
 });
 d.mergedIds = DEFAULT_QUESTIONS.map(q => q.id);
-if (!isNew) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+if (!isNew && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
 } else {
-if (tiMerge(d)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+if (tiMerge(d) && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
 }
 if (!Array.isArray(d.groups)) d.groups = [];
 return d;
 }
-function tiSave(d) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+function tiSave(d) {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY, '邀请字卡库')) return false;
+try { store.set(KEY, JSON.stringify(d)); } catch (e) {}
+return true;
+}
 function pickFrom(pool, lastId) {
 if (!pool || !pool.length) return null;
 let list = pool;
@@ -96,7 +102,8 @@ function markLast(q) { try { if (q && q.id) store.set('ti-last-id', String(q.id)
 function drawFrom(pool) { const q = pickFrom(pool, lastId()); if (q) markLast(q); return q; }
 function enabledPool(d, kinds) {
 const useDefault = (d.settings || {}).useDefault !== false;
-return d.questions.filter(q => q && q.enabled !== false && q.text && kinds.indexOf(q.kind) >= 0 && (useDefault || q.isPreset !== true));
+const pgOff = function (q) { return !!(q.isPreset === true && q.kind && window.presetGroup && window.presetGroup.isOff('ta-invite', q.kind)); };
+return d.questions.filter(q => q && q.enabled !== false && q.text && kinds.indexOf(q.kind) >= 0 && (useDefault || q.isPreset !== true) && !pgOff(q));
 }
 function gn(c, k, def) { try { const v = c ? c[k] : undefined; return (typeof v === 'number' && !isNaN(v)) ? v : def; } catch (e) { return def; } }
 function hit(p) {
@@ -163,6 +170,7 @@ hasCats.forEach(([k, label]) => {
 html += '<button class="cc-tab' + (k === tiSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + esc(label) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
 });
 html += '</div>';
+html += window.presetGroup ? window.presetGroup.catBar('ta-invite', tiSysCat, esc((CATS_TI.find(c => c[0] === tiSysCat) || [])[1] || tiSysCat)) : '';
 d.questions.forEach(q => {
 if (!(hitKw(q) && q.kind === tiSysCat)) return;
 const idx = d.questions.indexOf(q);
@@ -172,6 +180,7 @@ html += '<div class="ta-row' + (!useDefault ? ' off' : '') + '">' +
 '</div>';
 });
 container.innerHTML = html;
+if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-invite', tiSysCat, function () { renderTiSysInto(container, search); });
 container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
 t.addEventListener('click', () => { tiSysCat = t.dataset.cat; renderTiSysInto(container, search); });
 });

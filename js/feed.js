@@ -79,10 +79,21 @@ return [];
 }
 const SNAP_MEDIA_RE = /data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+-]*(?:=[^;,]*)?)*,[^\s"'<>]+/g;
 function stripMediaBody(s) { return String(s == null ? '' : s).replace(SNAP_MEDIA_RE, '[图片]'); }
+function isSnapPayload(u) { return typeof u === 'string' && u.indexOf('data:') === 0; }
 function stripPostImg(p) {
 if (!p || typeof p !== 'object') return p;
 const c = Object.assign({}, p);
-if (Array.isArray(c.imgs)) c.imgs = [];
+if (Array.isArray(c.imgs)) c.imgs = c.imgs.filter(u => !isSnapPayload(u));
+if (Array.isArray(c.stickers)) {
+c.stickers = c.stickers.reduce(function (acc, s) {
+if (!s || typeof s !== 'object') { acc.push(s); return acc; }
+if (!isSnapPayload(s.src)) { acc.push(s); return acc; }
+const s2 = Object.assign({}, s);
+s2.src = '';
+if (s2.emoji) acc.push(s2);
+return acc;
+}, []);
+}
 c.authorAv = '';
 c.taAv = '';
 if (typeof c.content === 'string') {
@@ -254,7 +265,29 @@ let feedMem = null;
 let feedAuthSeen = false;
 let feedAuthWritable = null;   // null=未探测；true=确认可写（权威键确实不存在）；false=权威仍在
 let feedAuthRetried = 0;       // 守卫拒写后的权威重读次数上限 2（间隔 10s，防病理存储下无限循环）
+let feedSyncCold = false;      // 本轮同步层交不出权威主键（见过权威之后读空＝内存副本被释放）
+let feedColdAsking = false;    // 残缺期已发起的权威重读合流标记（同场只问一次）
+function feedAskIdb() {
+if (feedColdAsking || !window.idbGet) return;
+feedColdAsking = true;
+const settleCold = () => {
+feedColdAsking = false;
+if (!feedSyncCold || typeof window.idbHasKey !== 'function') return;
+window.idbHasKey(uid + ':' + KEY).then(ok => { if (ok === false) feedSyncCold = false; }, () => {});
+};
+window.idbGet(uid + ':' + KEY).then(v => {
+if (v && typeof v === 'string' && v.length > 2) feedSyncCold = false; // 库把整包交回来了
+settleCold();
+feedMergeFromIdb(v);   // 合并/重渲染/拒写重试一律走启动那条同款链，不另起第二套口径
+try { render(); } catch (e) {}
+}, () => { settleCold(); });
+}
 function feedGuardWrite(raw) {
+if (feedSyncCold) {
+try { feedPending = mergePosts(feedPending || [], feedMem || []); } catch (e) {}
+feedAskIdb();
+return Promise.resolve(false);
+}
 if (feedAuthSeen || store.get(KEY) !== null) {
 try { store.set(KEY, raw); } catch (e) {}
 return Promise.resolve(true);
@@ -293,6 +326,24 @@ const out = [], seen = {};
 (a || []).concat(b || []).forEach(s => { if (typeof s === 'string' && !seen[s]) { seen[s] = 1; out.push(s); } });
 return out;
 }
+function stkKey(s) {
+return (s.ts || 0) + '|' + (s.role || s.owner || '') + '|' + (s.x || 0) + '|' + (s.y || 0) + '|' + (s.emoji || '');
+}
+function unionStickers(a, b) {
+if (!Array.isArray(a) && !Array.isArray(b)) return undefined;
+const byKey = {};
+const out = [];
+[a, b].forEach(function (arr) {
+(Array.isArray(arr) ? arr : []).forEach(function (s) {
+if (!s || typeof s !== 'object') return;
+const k = stkKey(s);
+const prev = byKey[k];
+if (!prev) { const o = Object.assign({}, s); byKey[k] = o; out.push(o); return; }
+if (!prev.src && s.src) prev.src = s.src;   // 载荷择优：剥空的一侧不许盖掉带图的一侧
+});
+});
+return out;
+}
 function deepMergePost(a, b) {
 const newer = (b.ts || 0) >= (a.ts || 0) ? b : a;
 const older = newer === a ? b : a;
@@ -300,6 +351,8 @@ const out = Object.assign({}, older, newer);
 const oMedia = hasMediaBody(older.content), nMedia = hasMediaBody(newer.content);
 if (oMedia !== nMedia ? oMedia : (older.content || '').length > (newer.content || '').length) out.content = older.content;
 out.imgs = (newer.imgs && newer.imgs.length) ? newer.imgs : (older.imgs || []);
+const stkUnion = unionStickers(older.stickers, newer.stickers);
+if (stkUnion) out.stickers = stkUnion;
 if (!out.authorAv && older.authorAv) out.authorAv = older.authorAv;
 if (!out.taAv && older.taAv) out.taAv = older.taAv;
 out.likes = unionStrArr(older.likes, newer.likes);
@@ -320,10 +373,14 @@ list = feedMem;
 } else {
 const raw = store.get(KEY);
 if (raw !== null) {
+feedSyncCold = false; // 这一轮同步层交出了权威副本（含清空后的 '[]'）
 try {
 const a = JSON.parse(raw);
 if (Array.isArray(a)) list = a.map(normPost);
 } catch (e) {}
+} else if (feedAuthSeen || (store.awaitingBigKey && store.awaitingBigKey(KEY))) {
+feedSyncCold = true;
+feedAskIdb();
 }
 if (!list.length) {
 try {
@@ -401,9 +458,116 @@ feedWritePending = null;
 feedWriteTimer = null;
 if (arr) { try { feedGuardWrite(JSON.stringify(arr)); scheduleSnap(arr); lastFeedWriteAt = performance.now(); } catch (e) {} }
 }
+const FEED_TOK_PAYLOAD_RE = /data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+-]*(?:=[^;,]*)?)*,[^\s"'<>]+/g;
+let _feedTokT = null, _feedTokBusy = false, _feedTokInPass = false;
+const _feedTokSig = new WeakMap();
+function feedTokSig(p) {
+const cms = Array.isArray(p.comments) ? p.comments : [];
+const stk = Array.isArray(p.stickers) ? p.stickers : [];
+const imgs = Array.isArray(p.imgs) ? p.imgs : [];
+let repN = 0, repLen = 0, cmtLen = 0;
+for (let i = 0; i < cms.length; i++) {
+const c = cms[i] || {};
+cmtLen += String(c.content || '').length;
+const rp = Array.isArray(c.replies) ? c.replies : [];
+repN += rp.length;
+for (let j = 0; j < rp.length; j++) repLen += String((rp[j] || {}).content || '').length;
+}
+return imgs.length + '|' + stk.length + '|' + cms.length + '|' + repN + '|' + String(p.content || '').length + '|' + cmtLen + '|' + repLen;
+}
+const _feedTokMemo = new Map();      // 载荷串 → 令牌（同一份表情包被 20 条动态引用也只哈希一次）
+function scheduleFeedTokPass(delay) {
+if (!window.mochiMediaTokenize || !window.mochiMediaFlush) return;
+clearTimeout(_feedTokT);
+_feedTokT = setTimeout(feedNormalizeMediaPass, delay || 1500);
+}
+async function feedNormalizeMediaPass() {
+if (_feedTokBusy) { scheduleFeedTokPass(4000); return; }
+if (!feedDbReady) { scheduleFeedTokPass(6000); return; }  // 权威还没交出来＝不改写，等下一轮
+if (!feedMem || feedMem.length === 0) { scheduleFeedTokPass(6000); return; }
+const list = feedMem;
+_feedTokBusy = true;
+let changed = 0;
+const rollback = [];               // [{o,p,v}]——写池失败时逐格退回原件
+const touched = [];                // 本轮改过的动态，回滚时把形状签名抹掉好重试
+let cur = null;
+const mark = (p) => { if (p && cur !== p) { cur = p; touched.push(p); } };
+async function tokSlot(holder, prop, p) {
+if (!holder || typeof holder[prop] !== 'string' || holder[prop].length < 1024) return;
+const raw = holder[prop];
+if (raw.indexOf('data:') !== 0) return;
+let t = _feedTokMemo.get(raw);
+if (t === undefined) {
+try { t = await window.mochiMediaTokenize(raw) || ''; } catch (e) { t = ''; }
+if (_feedTokMemo.size > 600) _feedTokMemo.clear();
+_feedTokMemo.set(raw, t);
+}
+if (!t || t === raw) return;
+rollback.push({ o: holder, p: prop, v: raw });
+holder[prop] = t; changed++; mark(p);
+}
+async function tokInStr(holder, prop, p) {
+const s = holder && holder[prop];
+if (typeof s !== 'string' || s.length < 1024 || s.indexOf('data:') < 0) return;
+let out = s, n = 0;
+const found = s.match(FEED_TOK_PAYLOAD_RE);
+if (!found) return;
+for (let i = 0; i < found.length; i++) {
+const raw = found[i];
+if (raw.length < 1024 || out.indexOf(raw) < 0) continue;
+let t = _feedTokMemo.get(raw);
+if (t === undefined) {
+try { t = await window.mochiMediaTokenize(raw) || ''; } catch (e) { t = ''; }
+if (_feedTokMemo.size > 600) _feedTokMemo.clear();
+_feedTokMemo.set(raw, t);
+}
+if (!t) continue;
+out = out.split(raw).join(t); n++;
+}
+if (!n || out === s) return;
+rollback.push({ o: holder, p: prop, v: s });
+holder[prop] = out; changed++; mark(p);
+}
+try {
+for (let i = 0; i < list.length; i++) {
+const p = list[i];
+if (!p || typeof p !== 'object') continue;
+const sg = feedTokSig(p);
+if (_feedTokSig.get(p) === sg) continue;   // 这一格形状没变＝整场扫过，不重扫（大库长任务纪律）
+_feedTokSig.set(p, sg);
+const imgs = Array.isArray(p.imgs) ? p.imgs : [];
+for (let j = 0; j < imgs.length; j++) await tokSlot(imgs, j, p);
+await tokInStr(p, 'content', p);
+const stks = Array.isArray(p.stickers) ? p.stickers : [];
+for (let j = 0; j < stks.length; j++) await tokSlot(stks[j], 'src', p);
+const cms = Array.isArray(p.comments) ? p.comments : [];
+for (let j = 0; j < cms.length; j++) {
+await tokInStr(cms[j], 'content', p);
+const rp = (cms[j] && Array.isArray(cms[j].replies)) ? cms[j].replies : [];
+for (let k = 0; k < rp.length; k++) await tokInStr(rp[k], 'content', p);
+}
+await new Promise(r => setTimeout(r, 0)); // 整包扫描让出主线程（#441 大库冻结同款纪律）
+}
+if (!changed) return;
+const okPool = await window.mochiMediaFlush(); // 池先落盘，引用后落盘（顺序不可反，#186）
+if (okPool === false) {
+for (let r = 0; r < rollback.length; r++) { try { rollback[r].o[rollback[r].p] = rollback[r].v; } catch (e) {} }
+for (let r = 0; r < touched.length; r++) { try { _feedTokSig.delete(touched[r]); } catch (e) {} }
+scheduleFeedTokPass(8000);
+return;
+}
+if (feedMem !== list) { scheduleFeedTokPass(1500); return; }
+_feedTokInPass = true;
+try { save(list); } finally { _feedTokInPass = false; }
+} catch (e) {
+for (let r = 0; r < rollback.length; r++) { try { rollback[r].o[rollback[r].p] = rollback[r].v; } catch (e2) {} }
+} finally { _feedTokBusy = false; }
+}
 function save(list) {
 const arr = list || [];
 feedMem = arr;
+if (!_feedTokInPass) scheduleFeedTokPass(); // #1363：任何一写入口带进来的巨型载荷，都在这一处闸换回引用
+if (feedSyncCold) { try { feedPending = mergePosts(feedPending || [], arr); } catch (e) {} }
 for (let i = 0; i < arr.length; i++) {
 const p = arr[i];
 if (!p || !Array.isArray(p.comments)) continue;
@@ -511,16 +675,19 @@ return fitSeg(all); // 普通网址（无附图前缀）按文本保留
 return '<img class="feed-inline-img" src="' + attrEsc(src) + '" alt="表情">';
 });
 }
-function makePicker(arr) {
+function makePicker(arr, noWrap) {
 const a = arr.slice();
 let i = a.length;
+let dealt = false; // 首发的 i=a.length 只是「还没洗过牌」的起点，不算抽过一张（i 的初值即旧语义）
 return function () {
 if (i >= a.length) {
+if (noWrap && dealt) return undefined;
 for (let j = a.length - 1; j > 0; j--) {
 const k = Math.floor(Math.random() * (j + 1));
 const t = a[j]; a[j] = a[k]; a[k] = t;
 }
 i = 0;
+dealt = true;
 }
 return a[i++];
 };
@@ -530,55 +697,68 @@ const seen = new Set(); const out = [];
 arr.forEach(x => { if (!seen.has(x)) { seen.add(x); out.push(x); } });
 return out;
 }
+function feedPresetLines(group, fallback) {
+try { if (typeof window.getPresetGroupLines === 'function') return window.getPresetGroupLines(group, fallback); } catch (e) {}
+return fallback.slice();
+}
+function feedFallbackPool() {
+return uniqArr(feedPresetLines('朋友圈·TA的点评', TA_COMMENT_POOL).concat(feedPresetLines('朋友圈·TA的回复', TA_REPLY_POOL)));
+}
 function genMixedCards(cfg, minN, maxN, opts, cid) {
 const o = opts || {};
 const pool = cardPool(cid);
-const fb = uniqArr(TA_COMMENT_POOL.concat(TA_REPLY_POOL));
+const fb = feedFallbackPool();
 const pick = {
-image: makePicker(uniqArr(pool.image)),
-sticker: makePicker(uniqArr(pool.sticker)),
-si: makePicker(uniqArr(pool.sticker.concat(pool.image))),
-emoji: makePicker(uniqArr(pool.emoji)),
-kaomoji: makePicker(uniqArr(pool.kaomoji)),
-text: makePicker(uniqArr(pool.text)),
-fb: makePicker(fb)
+image: makePicker(uniqArr(pool.image), true),
+sticker: makePicker(uniqArr(pool.sticker), true),
+si: makePicker(uniqArr(pool.sticker.concat(pool.image)), true),
+emoji: makePicker(uniqArr(pool.emoji), true),
+kaomoji: makePicker(uniqArr(pool.kaomoji), true),
+text: makePicker(uniqArr(pool.text), true),
+fb: makePicker(fb, true)
 };
-const n = minN + Math.floor(Math.random() * Math.max(1, maxN - minN + 1));
+const want = minN + Math.floor(Math.random() * Math.max(1, maxN - minN + 1));
+const room = uniqArr(pool.image.concat(pool.sticker, pool.emoji, pool.kaomoji, pool.text, fb)).length;
+const n = Math.max(1, Math.min(want, room));
 const parts = [];
 for (let i = 0; i < n; i++) {
 const r = Math.random() * 100;
 let pushed = false;
-if (o.imP > 0 && pool.image.length && r < o.imP) { parts.push(pick.image()); pushed = true; }
-if (!pushed && o.stP > 0 && pool.sticker.length && r < o.stP) { parts.push(pick.sticker()); pushed = true; }
-if (!pushed && o.imgP > 0 && (pool.sticker.length || pool.image.length) && r < o.imgP) { parts.push(pick.si()); pushed = true; }
-if (!pushed && o.emoP > 0 && pool.emoji.length && r < o.emoP) { parts.push(pick.emoji()); pushed = true; }
-if (!pushed && o.kaoP > 0 && pool.kaomoji.length && r < o.kaoP) { parts.push(pick.kaomoji()); pushed = true; }
-if (!pushed) parts.push(pool.text.length ? pick.text() : pick.fb());
+const take = (f) => { const v = f(); if (v === undefined) return false; parts.push(v); return true; };
+if (o.imP > 0 && pool.image.length && r < o.imP && take(pick.image)) pushed = true;
+if (!pushed && o.stP > 0 && pool.sticker.length && r < o.stP && take(pick.sticker)) pushed = true;
+if (!pushed && o.imgP > 0 && (pool.sticker.length || pool.image.length) && r < o.imgP && take(pick.si)) pushed = true;
+if (!pushed && o.emoP > 0 && pool.emoji.length && r < o.emoP && take(pick.emoji)) pushed = true;
+if (!pushed && o.kaoP > 0 && pool.kaomoji.length && r < o.kaoP && take(pick.kaomoji)) pushed = true;
+if (!pushed && !(take(pick.text) || take(pick.fb))) break;
 }
 const rcf = window.replyCfgFor ? window.replyCfgFor(cid) : null;
 return (window.pyJoinCards && rcf) ? window.pyJoinCards(parts, rcf, rcf['fd-punct-en'] === 1) : parts.join(' ');
 }
 function genPostContent(cfg, cid) {
 const pool = cardPool(cid);
-const fb = uniqArr(TA_COMMENT_POOL.concat(TA_REPLY_POOL));
+const fb = feedFallbackPool();
 const pick = {
-image: makePicker(uniqArr(pool.image)),
-sticker: makePicker(uniqArr(pool.sticker)),
-emoji: makePicker(uniqArr(pool.emoji)),
-kaomoji: makePicker(uniqArr(pool.kaomoji)),
-text: makePicker(uniqArr(pool.text)),
-fb: makePicker(fb)
+image: makePicker(uniqArr(pool.image), true),
+sticker: makePicker(uniqArr(pool.sticker), true),
+emoji: makePicker(uniqArr(pool.emoji), true),
+kaomoji: makePicker(uniqArr(pool.kaomoji), true),
+text: makePicker(uniqArr(pool.text), true),
+fb: makePicker(fb, true)
 };
-const n = cfg.minCardsPost + Math.floor(Math.random() * Math.max(1, cfg.maxCardsPost - cfg.minCardsPost + 1));
+const want = cfg.minCardsPost + Math.floor(Math.random() * Math.max(1, cfg.maxCardsPost - cfg.minCardsPost + 1));
+const room = uniqArr(pool.image.concat(pool.sticker, pool.emoji, pool.kaomoji, pool.text, fb)).length;
+const n = Math.max(1, Math.min(want, room));
 const textParts = [];
 const imgs = [];
 for (let i = 0; i < n; i++) {
 let pushed = false;
-if (cfg.postImage > 0 && pool.image.length && Math.random() * 100 < cfg.postImage) { imgs.push(pick.image()); pushed = true; }
-if (!pushed && cfg.postSticker > 0 && pool.sticker.length && Math.random() * 100 < cfg.postSticker) { imgs.push(pick.sticker()); pushed = true; }
-if (!pushed && cfg.postEmoji > 0 && pool.emoji.length && Math.random() * 100 < cfg.postEmoji) { textParts.push(pick.emoji()); pushed = true; }
-if (!pushed && cfg.postKaomoji > 0 && pool.kaomoji.length && Math.random() * 100 < cfg.postKaomoji) { textParts.push(pick.kaomoji()); pushed = true; }
-if (!pushed) textParts.push(pool.text.length ? pick.text() : pick.fb());
+const take = (f, to) => { const v = f(); if (v === undefined) return false; to.push(v); return true; };
+if (cfg.postImage > 0 && pool.image.length && Math.random() * 100 < cfg.postImage && take(pick.image, imgs)) pushed = true;
+if (!pushed && cfg.postSticker > 0 && pool.sticker.length && Math.random() * 100 < cfg.postSticker && take(pick.sticker, imgs)) pushed = true;
+if (!pushed && cfg.postEmoji > 0 && pool.emoji.length && Math.random() * 100 < cfg.postEmoji && take(pick.emoji, textParts)) pushed = true;
+if (!pushed && cfg.postKaomoji > 0 && pool.kaomoji.length && Math.random() * 100 < cfg.postKaomoji && take(pick.kaomoji, textParts)) pushed = true;
+if (!pushed && !(take(pick.text, textParts) || take(pick.fb, textParts))) break;
 }
 const rcf = window.replyCfgFor ? window.replyCfgFor(cid) : null;
 const body = (window.pyJoinCards && rcf) ? window.pyJoinCards(textParts, rcf, rcf['fd-punct-en'] === 1) : textParts.join(' ');
@@ -588,11 +768,13 @@ function contentHtmlFor(p) {
 let content = String(p.content || '');
 const imgs = (p.imgs && p.imgs.length) ? p.imgs.slice() : (p.img ? [p.img] : []);
 content = content.replace(/((?:sticker|image):)?(https?:\/\/[^\s"'<>]+|@@m:[0-9a-f]{32}|data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+-]*(?:=[^;,]*)?)*,[^\s"'<>]+)/g, (m, pre, u) => { if (u.indexOf('http') === 0 && pre !== 'sticker:' && pre !== 'image:') return m; imgs.push(u); return ' '; });
-let html = inlineBody(content, (p.role || p.by) === 'me' ? '' : p.owner);
+const clamp = feedLongBody(content);
+let html = '<div class="feed-body' + (clamp ? ' feed-clamp' : '') + '">' + inlineBody(content, (p.role || p.by) === 'me' ? '' : p.owner) + '</div>';
 const hasStickers = Array.isArray(p.stickers) && p.stickers.length > 0;
 if (imgs.length || hasStickers) {
 html += '<div class="feed-imgs' + (imgs.length ? '' : ' feed-imgs-blank') + '">' + imgs.map(u => '<img src="' + attrEsc(u) + '" alt="图片" loading="lazy">').join('') + feedStickersHtml(p) + '</div>';
 }
+if (clamp) html += '<button class="feed-expand" type="button" data-expand="' + esc(p.id) + '">展开全文</button>';
 return html;
 }
 function feedStickersHtml(p) {
@@ -638,6 +820,13 @@ const c = cfg || feedCfg();
 const maxN = Math.random() * 100 < c.cardProb ? Math.max(1, c.maxCards) : 1;
 return genMixedCards(c, 1, maxN, { imgP: c.imageProb, kaoP: 15, emoP: 15 }, cid);
 }
+function poolReadyFor(cid, cb) {
+const cur = window.__activeCid || 'default';
+if (cid === cur || !window.hydrateLibForCid) { cb(); return; }
+try {
+window.hydrateLibForCid(cid).then(function () { cb(); }, function () { cb(); });
+} catch (e) { cb(); }
+}
 const TA_REPLY_POOL = ['哈哈，好呀', '那你呢？', '嗯嗯，说得对', '我记住啦', '跟你分享过的', '被你发现了', '那很好呀', '我也这么觉得'];
 function safeBg(v, key, s) {
 if (v && typeof v === 'string' && v.length > 500 * 1024) {
@@ -673,32 +862,15 @@ cover.classList.add('has-bg');
 cover.style.backgroundImage = '';
 cover.classList.remove('has-bg');
 }
+armCoverLayer(cover, 'dev-feed-cover-tap', 'dev-feed-cover-bg', !!bg);
 }
 }
 function compressImage(file, cb) {
-let done = false;
-const once = (v) => { if (done) return; done = true; clearTimeout(timer); cb(v); };
-const timer = setTimeout(() => { toast('图片读取超时，请重试'); once(null); }, 20000);
-const reader = new FileReader();
-reader.onerror = () => { toast('图片读取失败'); once(null); };
-reader.onload = (ev) => {
-const img = new Image();
-img.onload = () => {
-const max = 800;
-let w = img.width, h = img.height;
-if (Math.max(w, h) > max) {
-const r = max / Math.max(w, h);
-w = Math.round(w * r); h = Math.round(h * r);
-}
-const cv = document.createElement('canvas');
-cv.width = w; cv.height = h;
-cv.getContext('2d').drawImage(img, 0, 0, w, h);
-once(cv.toDataURL('image/jpeg', 0.82));
-};
-img.onerror = () => { toast('图片读取失败'); once(null); };
-img.src = ev.target.result;
-};
-reader.readAsDataURL(file);
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); cb(null); return; }
+window.mochiImgIngest(file, { maxSide: 800, quality: 0.82, tag: 'feed-800' }).then((r) => {
+if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '图片')); cb(null); return; }
+cb(r.data);
+});
 }
 function taFeedName() { return window.activeStore().get('feed-ta-name') || store.get('feed-ta-name') || partnerName(); }
 function taFeedAv() { return window.activeStore().get('feed-ta-avatar') || store.get('feed-ta-avatar') || partnerAv(); }
@@ -735,11 +907,121 @@ return '<div class="feed-post" id="feed-post-' + p.id + '"><div class="feed-head
 '<button class="feed-act feed-fav' + (faved ? ' faved' : '') + '" data-fav="' + p.id + '"><svg viewBox="0 0 24 24" fill="' + (faved ? 'currentColor' : 'none') + '" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px"><path d="M12 2l2.4 5 5.6.8-4 4 .9 5.6-4.9-2.6-4.9 2.6.9-5.6-4-4 5.6-.8z"/></svg>收藏</button>' +
 '</div>' + likes + commentsHtmlFor(p, name) + '</div>';
 }
+const FEED_WEEK_LABEL = '本周';
+const FEED_CLAMP_LINES = 6, FEED_CLAMP_CHARS = 120;
+let feedRangeKey = 'week';
+let feedRangeBuckets = [];
+let feedMainPosts = [];
+function feedMainPostEl(pid) {
+const l = document.getElementById('feed-list');
+return l ? l.querySelector('[id="feed-post-' + pid + '"]') : null;
+}
+function feedWeekStart(now) {
+const d = new Date(now);
+d.setHours(0, 0, 0, 0);
+d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // getDay() 0＝周日，把周一当一周的第一天
+return d.getTime();
+}
+function feedMonthKeyOf(ts) {
+const d = new Date(ts);
+return d.getFullYear() + '-' + (d.getMonth() + 1);
+}
+function feedBucketKeyFor(ts) {
+const t = Number(ts) || 0;
+if (!t) return 'none'; // #1416：没有 ts 的老动态不猜日期（下面分桶同口径，归「更早」）
+return t >= feedWeekStart(Date.now()) ? 'week' : feedMonthKeyOf(t);
+}
+function feedBuckets(posts) {
+const ws = feedWeekStart(Date.now());
+const nowY = new Date().getFullYear();
+const week = [];
+const months = {};
+for (let i = 0; i < posts.length; i++) {
+const p = posts[i];
+const ts = Number(p && p.ts) || 0;
+if (ts && ts >= ws) { week.push(p); continue; }
+const k = ts ? feedMonthKeyOf(ts) : 'none';
+if (!months[k]) {
+const d = ts ? new Date(ts) : null;
+months[k] = { key: k, y: d ? d.getFullYear() : 0, m: d ? d.getMonth() + 1 : 0, unknown: !d, items: [] };
+}
+months[k].items.push(p);
+}
+const out = [{ key: 'week', label: FEED_WEEK_LABEL, items: week }];
+const keys = Object.keys(months);
+keys.sort((a, b) => (months[b].y - months[a].y) || (months[b].m - months[a].m));
+for (let i = 0; i < keys.length; i++) {
+const b = months[keys[i]];
+out.push({ key: b.key, items: b.items, label: b.unknown ? '更早' : (b.y === nowY ? '' : b.y + '年') + b.m + '月' });
+}
+return out;
+}
+function feedLongBody(s) {
+const str = String(s || '');
+if (str.length > FEED_CLAMP_CHARS) return true;
+let lines = 1;
+for (let i = 0; i < str.length; i++) {
+if (str.charCodeAt(i) !== 10) continue;
+lines++;
+if (lines > FEED_CLAMP_LINES) return true;
+}
+return false;
+}
+function feedSetRange(key) {
+if (!key || key === feedRangeKey) return;
+feedRangeKey = key;
+render();
+const sc = document.querySelector('#page-feed .cal-scroll');
+if (sc) sc.scrollTop = 0; // 换页从本页第一行看起，别留着上一页的滚动深度
+}
+function feedRangeBar() {
+const listEl = document.getElementById('feed-list');
+if (!listEl || !listEl.parentNode) return null;
+let bar = document.getElementById('feed-range-bar');
+if (!bar) {
+bar = document.createElement('div');
+bar.id = 'feed-range-bar';
+bar.className = 'feed-range-bar glass';
+listEl.parentNode.insertBefore(bar, listEl);
+bar.addEventListener('click', (e) => {
+if (!e.target || !e.target.closest) return;
+const pill = e.target.closest('[data-range]');
+if (pill) { feedSetRange(pill.getAttribute('data-range')); return; }
+const nav = e.target.closest('[data-range-nav]');
+if (!nav || nav.disabled) return;
+const step = nav.getAttribute('data-range-nav') === 'older' ? 1 : -1;
+let idx = -1;
+for (let i = 0; i < feedRangeBuckets.length; i++) { if (feedRangeBuckets[i].key === feedRangeKey) { idx = i; break; } }
+if (idx < 0) return;
+const next = Math.min(feedRangeBuckets.length - 1, Math.max(0, idx + step));
+if (next !== idx) feedSetRange(feedRangeBuckets[next].key);
+});
+}
+return bar;
+}
+function feedRenderRangeBar(buckets) {
+feedRangeBuckets = buckets;
+const bar = feedRangeBar();
+if (!bar) return;
+if (buckets.length <= 1) { bar.hidden = true; bar.innerHTML = ''; return; }
+let active = 0;
+for (let i = 0; i < buckets.length; i++) { if (buckets[i].key === feedRangeKey) { active = i; break; } }
+const nav = (dir) => '<button class="feed-range-nav" type="button" data-range-nav="' + (dir < 0 ? 'newer' : 'older') + '"' +
+(dir < 0 ? (active <= 0 ? ' disabled' : '') : (active >= buckets.length - 1 ? ' disabled' : '')) +
+' title="' + (dir < 0 ? '更新' : '更早') + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="' + (dir < 0 ? 'M15 18l-6-6 6-6' : 'M9 18l6-6-6-6') + '"/></svg></button>';
+bar.innerHTML = nav(-1) + '<div class="feed-range-pills">' + buckets.map((b, i) =>
+'<button class="feed-range-pill' + (i === active ? ' on' : '') + '" type="button" data-range="' + esc(b.key) + '">' +
+esc(b.label) + '<span class="feed-range-n">' + b.items.length + '</span></button>'
+).join('') + '</div>' + nav(1);
+const wrap = bar.querySelector('.feed-range-pills');
+const on = bar.querySelector('.feed-range-pill.on');
+if (wrap && on) { try { wrap.scrollLeft = on.offsetLeft - (wrap.clientWidth - on.clientWidth) / 2; } catch (e) {} }
+}
 const FEED_RENDER_MAX = 200, FEED_LOAD_STEP = 100;
 let feedShownMain = 0, feedShownAll = 0;
 let feedRenderSig = '';
-function feedRenderSignature(posts, shown, name, memId) {
-const parts = [window.activePrefix(), window.mochiDataPending ? (window.mochiDataPending() ? 'L' : 'F') : 'F', shown, name, memId, posts.length];
+function feedRenderSignature(posts, shown, name, memId, rangeKey) {
+const parts = [window.activePrefix(), window.mochiDataPending ? (window.mochiDataPending() ? 'L' : 'F') : 'F', shown, name, memId, rangeKey, posts.length];
 for (let i = 0; i < shown; i++) {
 const p = posts[i];
 if (!p) { parts.push('-'); continue; }
@@ -757,7 +1039,7 @@ const moreBtn = listEl.querySelector('.feed-more-btn');
 if (!moreBtn) return;
 moreBtn.addEventListener('click', () => {
 const isAll = listEl.id === 'feed-all-list';
-let posts = feedSortedAll();
+let posts = isAll ? feedSortedAll() : feedMainPosts;
 if (isAll) posts = posts.filter(p => (p.owner || 'default') === feedAllCid);
 const shown = isAll ? feedShownAll : feedShownMain;
 const end = Math.min(posts.length, shown + FEED_LOAD_STEP);
@@ -780,24 +1062,33 @@ if (isAll) feedShownAll = end; else feedShownMain = end;
 });
 }
 function feedSortedAll() { return load().slice().sort((a, b) => b.ts - a.ts); }
-function render() {
+function render(keepShown) {
 renderCover();
 const listEl = document.getElementById('feed-list');
 if (!listEl) return;
 const posts = feedSortedAll();
-feedShownMain = Math.min(posts.length, FEED_RENDER_MAX);
+const buckets = feedBuckets(posts);
+let bucket = buckets[0];
+for (let i = 0; i < buckets.length; i++) { if (buckets[i].key === feedRangeKey) { bucket = buckets[i]; break; } }
+feedRangeKey = bucket.key; // 翻到的那个月被删空了就回第一页（本周），不留悬空选择
+feedMainPosts = bucket.items;
+const wantShown = Math.max(FEED_RENDER_MAX, parseInt(keepShown, 10) || 0);
+feedShownMain = Math.min(feedMainPosts.length, wantShown);
 const name = partnerName();
 const memPost = feedMemoryPost();
-const memShown = !!(memPost && !feedMemDismissed());
+const memShown = !!(memPost && !feedMemDismissed()) && bucket.key === 'week';
 const memHtml = memShown ? feedMemBannerHtml(memPost) : '';
-const sig = feedRenderSignature(posts, feedShownMain, name, memShown ? memPost.id : '');
+const sig = feedRenderSignature(feedMainPosts, feedShownMain, name, memShown ? memPost.id : '', bucket.label);
 if (sig === feedRenderSig && listEl.firstChild) return;
-listEl.innerHTML = memHtml + (posts.length
-? posts.slice(0, feedShownMain).map(p => postCardHtml(p, name)).join('') +
-(posts.length > feedShownMain ? feedMoreBtnHtml(posts.length - feedShownMain) : '')
-: ((window.mochiDataPending && window.mochiDataPending())
+listEl.innerHTML = memHtml + (feedMainPosts.length
+? feedMainPosts.slice(0, feedShownMain).map(p => postCardHtml(p, name)).join('') +
+(feedMainPosts.length > feedShownMain ? feedMoreBtnHtml(feedMainPosts.length - feedShownMain) : '')
+: (posts.length
+? '<div class="ta-empty">' + esc(bucket.label) + '还没有动态<br><span style="font-size:12px">点上面那条胶囊翻更早的月份</span></div>'
+: ((feedSyncCold || (window.mochiDataPending && window.mochiDataPending()))
 ? window.mochiLoadingHtml('朋友圈内容')
-: '<div class="ta-empty">还没有动态，TA 会不定期分享生活<br><button class="memo-send-btn" id="feed-empty-pub" style="margin-top:8px">我来发第一条</button></div>'));
+: '<div class="ta-empty">还没有动态，TA 会不定期分享生活<br><button class="memo-send-btn" id="feed-empty-pub" style="margin-top:8px">我来发第一条</button></div>')));
+feedRenderRangeBar(buckets);
 feedRenderSig = sig;
 const clearBtn = document.getElementById('feed-head-clear');
 if (clearBtn) clearBtn.hidden = !posts.length;
@@ -1183,13 +1474,14 @@ const list = load();
 const p = list.find(x => x.id === pid);
 if (!p) { toast('这条动态不存在了'); return; }
 p.stickers = Array.isArray(p.stickers) ? p.stickers : [];
-if (p.stickers.length >= 5) { toast('这条动态上贴纸够多啦（最多 5 张）'); return; }
 const pos = (st && Number.isFinite(Number(st.x)) && Number.isFinite(Number(st.y)))
 ? { x: Math.min(92, Math.max(0, Math.round(Number(st.x)))), y: Math.min(92, Math.max(0, Math.round(Number(st.y)))) }
 : feedRandStickerPos();
-p.stickers.push({ src: st.src || '', emoji: st.emoji || '', x: pos.x, y: pos.y, ts: Date.now(), role: 'me', owner: 'me', authorName: feedUserName() });
+const rec = { src: (st && st.src) || '', emoji: (st && st.emoji) || '', x: pos.x, y: pos.y, ts: Date.now(), role: 'me', owner: 'me', authorName: feedUserName() };
+p.stickers.push(rec);
 save(list);
 refreshPostCard(pid);
+feedStickerTokUpgrade(pid, rec);
 const cid = p.owner || 'default';
 const cfg = feedCfgFor(cid);
 if (Math.random() * 100 < cfg.commentProb) {
@@ -1198,16 +1490,31 @@ const l2 = load();
 const p2 = l2.find(x => x.id === pid);
 if (!p2) return;
 p2.stickers = Array.isArray(p2.stickers) ? p2.stickers : [];
-if (p2.stickers.length >= 5) return;
 const taSt = feedTaPickSticker();
 const pos2 = feedRandStickerPos();
 const nm = p2.taName || taFeedNameFor(cid);
-p2.stickers.push({ src: taSt.src || '', emoji: taSt.emoji || '', x: pos2.x, y: pos2.y, ts: Date.now(), role: 'ta', owner: cid, authorName: nm });
+const rec2 = { src: taSt.src || '', emoji: taSt.emoji || '', x: pos2.x, y: pos2.y, ts: Date.now(), role: 'ta', owner: cid, authorName: nm };
+p2.stickers.push(rec2);
 save(l2);
 refreshPostCard(pid);
+feedStickerTokUpgrade(pid, rec2);
 addNotice('comment', pid, nm + ' 在配图上贴了一张贴纸', cid);
 }, (cfg.commentSpeedMin + Math.random() * Math.max(1, cfg.commentSpeedMax - cfg.commentSpeedMin)) * 1000);
 }
+}
+function feedStickerTokUpgrade(pid, rec) {
+if (!rec || !isSnapPayload(rec.src)) return;
+const inline = rec.src;
+feedTokImgs([inline]).then(function (tk) {
+const t = tk && tk[0];
+if (!t || t === inline || rec.src !== inline) return;
+rec.src = t;
+try {
+const l = load();
+const p = l.find(function (x) { return x.id === pid; });
+if (p) { save(l); refreshPostCard(pid); }
+} catch (e) {}
+}).catch(function () {});
 }
 function feedTaPickSticker() {
 const saved = comStickerTab;
@@ -1256,14 +1563,16 @@ return '<div class="feed-mem-card glass" id="feed-mem-card" data-pid="' + esc(p.
 '<button class="feed-mem-dismiss" type="button">✕</button></div>';
 }
 function revealFeedPost(pid) {
-const posts = feedSortedAll();
+const all = feedSortedAll();
+const hit = all.find(p => p.id === pid);
+if (!hit) return;
+feedRangeKey = feedBucketKeyFor(hit.ts);
+render();
+const posts = feedMainPosts;
 const idx = posts.findIndex(p => p.id === pid);
 if (idx < 0) return;
-if (idx >= feedShownMain) {
-feedShownMain = Math.min(posts.length, idx + 20);
-render();
-}
-const el = document.getElementById('feed-post-' + pid);
+if (idx >= feedShownMain) render(idx + 20);
+const el = feedMainPostEl(pid); // #1406：只在主列表里找，别命中隐藏的同名卡片
 if (!el) return;
 try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { try { el.scrollIntoView(); } catch (e2) {} }
 el.classList.add('feed-hl');
@@ -1297,6 +1606,14 @@ bindFeedImageClicks(listEl);
 listEl.querySelectorAll('.feed-del').forEach(b => b.addEventListener('click', (e) => {
 e.stopPropagation();
 deletePostConfirm(b.dataset.id);
+}));
+listEl.querySelectorAll('.feed-expand').forEach(b => b.addEventListener('click', (e) => {
+e.stopPropagation();
+const body = b.parentNode ? b.parentNode.querySelector('.feed-body') : null;
+if (!body) return;
+const clamped = body.classList.toggle('feed-clamp');
+body.classList.toggle('feed-open', !clamped);
+b.textContent = clamped ? '展开全文' : '收起';
 }));
 listEl.querySelectorAll('.feed-act[data-like]').forEach(b => b.addEventListener('click', () => {
 const list = load();
@@ -1469,23 +1786,9 @@ renderComPv();
 const panel = document.getElementById('feed-comment-panel');
 if (panel) panel.hidden = true;
 }
-function compressCommentImg(dataUrl, maxSide) {
-return new Promise((resolve) => {
-const img = new Image();
-img.onload = () => {
-try {
-const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-const w = Math.max(1, Math.round(img.width * scale));
-const h = Math.max(1, Math.round(img.height * scale));
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-c.getContext('2d').drawImage(img, 0, 0, w, h);
-resolve(c.toDataURL('image/png'));
-} catch (e) { resolve(dataUrl); }
-};
-img.onerror = () => resolve(dataUrl);
-img.src = dataUrl;
-});
+function compressCommentImg(src, maxSide) {
+if (!window.mochiImgCompressTo) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return Promise.resolve(null); }
+return window.mochiImgCompressTo(src, { maxSide: maxSide, mime: 'image/png', tag: 'feed-cmt' });
 }
 let comStickerPanel = null;
 let comStickerTab = 'ta';   // 'ta' | 'mine'
@@ -1690,6 +1993,7 @@ const tcfg = feedCfgFor(tcOwner);
 if (Math.random() * 100 < tcfg.replyProb) {
 const cfg = tcfg;
 setTimeout(() => {
+poolReadyFor(tcOwner, function () { try {
 const list2 = load();
 const p2 = list2.find(x => x.id === pid);
 if (!p2 || !p2.comments || !p2.comments[replyCi]) return;
@@ -1705,6 +2009,7 @@ replies.push(stampAuthor({ content: replyText, ts: Date.now(), to: myToName }, t
 save(list2);
 refreshPostCard(pid);
 addNotice('comment', p2.id, taFeedNameFor(tcOwner) + ' 回复了你：' + noticeTextClean(replyText), tcOwner, { ci: replyCi, ri: replies.length - 1 });
+} catch (eR) {} });
 }, (cfg.replySpeedMin + Math.random() * Math.max(1, cfg.replySpeedMax - cfg.replySpeedMin)) * 1000);
 }
 return;
@@ -1719,18 +2024,20 @@ refreshPostCard(pid);
 if (Math.random() * 100 < pcfg.commentProb) {
 const cfg = pcfg;
 setTimeout(() => {
+poolReadyFor(p.owner || 'default', function () { try {
 const list2 = load();
-const p2 = list2.find(x => x.id === pid);
-if (!p2) return;
-p2.comments = p2.comments || [];
-const taText = pickReplyContent(cfg, p2.owner || 'default');
-p2.comments.push(stampAuthor({ content: taText, ts: Date.now(), replies: [] }, taAuthorOf(p2)));
+const p2b = list2.find(x => x.id === pid);
+if (!p2b) return;
+p2b.comments = p2b.comments || [];
+const taText = pickReplyContent(cfg, p2b.owner || 'default');
+p2b.comments.push(stampAuthor({ content: taText, ts: Date.now(), replies: [] }, taAuthorOf(p2b)));
 save(list2);
 refreshPostCard(pid);
-const taName2 = p2.taName || taFeedNameFor(p2.owner || 'default');
-const loc = { ci: p2.comments.length - 1 };
-if ((p2.role || p2.by) === 'me') addNotice('comment', p2.id, taName2 + ' 评论了你的动态：' + noticeTextClean(taText), p2.owner || 'default', loc);
-else addNotice('comment', p2.id, taName2 + ' 回复了你的评论：' + noticeTextClean(taText), p2.owner || 'default', loc);
+const taName2 = p2b.taName || taFeedNameFor(p2b.owner || 'default');
+const loc = { ci: p2b.comments.length - 1 };
+if ((p2b.role || p2.by) === 'me') addNotice('comment', p2b.id, taName2 + ' 评论了你的动态：' + noticeTextClean(taText), p2b.owner || 'default', loc);
+else addNotice('comment', p2b.id, taName2 + ' 回复了你的评论：' + noticeTextClean(taText), p2b.owner || 'default', loc);
+} catch (eC) {} });
 }, (cfg.commentSpeedMin + Math.random() * Math.max(1, cfg.commentSpeedMax - cfg.commentSpeedMin)) * 1000);
 }
 }
@@ -1749,6 +2056,7 @@ return el && !el.hidden;
 }
 function openFeedPage() {
 clearFeedAppUnread();
+feedRangeKey = 'week'; // #1406：从桌面进朋友圈先落回「本周」那一页（翻去几个月前是临时的）
 render();
 renderNoticeBadge();
 document.querySelectorAll('.page').forEach(p => p.hidden = true);
@@ -1767,7 +2075,7 @@ try { store.set('feed-app-unread', String(feedAppUnread() + 1)); } catch (e) {}
 renderNoticeBadge();
 if (window.showDeskPopup && !feedPageVisible()) {
 const av = owner ? taAvFor(owner) : '';
-window.showDeskPopup({ name: '朋友圈', text: (window.taFit ? window.taFit(noticeTextClean(text), owner) : noticeTextClean(text)), av: av, avFixed: true, onClick: openFeedPage, isHidden: document.visibilityState === 'hidden' });
+window.showDeskPopup({ name: '朋友圈', notifyKind: 'feed', text: (window.taFit ? window.taFit(noticeTextClean(text), owner) : noticeTextClean(text)), av: av, avFixed: true, onClick: openFeedPage, isHidden: document.visibilityState === 'hidden' });
 } else if (feedPageVisible() && document.visibilityState !== 'hidden') {
 let nt = noticeTextClean(text);
 if (nt.length > 40) nt = nt.slice(0, 40) + '…';
@@ -1798,7 +2106,11 @@ ab.textContent = appN > 99 ? '99+' : String(appN);
 }
 }
 function jumpToPost(pid, ci, ri) {
-const el = feedPostEl(pid);
+let el = feedMainPostEl(pid);
+if (!el) {
+const hit = feedSortedAll().find(p => p.id === pid);
+if (hit) { feedRangeKey = feedBucketKeyFor(hit.ts); render(); el = feedMainPostEl(pid); }
+}
 if (!el) return;
 let target = el;
 if (ci != null && ci !== '') {
@@ -1926,6 +2238,14 @@ toast('朋友圈背景已更新');
 }
 });
 }
+function armCoverLayer(el, layerId, ownerId, hasBg) {
+if (!el || !window.mochiFilePickSurface) return;
+var layer = null;
+try { layer = window.mochiFilePickSurface(el, { id: layerId, accept: 'image/*', owner: ownerId }); } catch (e) {}
+if (!layer) return;
+try { if (layer.parentNode === el && el.firstChild !== layer) el.insertBefore(layer, el.firstChild); } catch (e) {}
+try { layer.style.pointerEvents = hasBg ? 'none' : 'auto'; } catch (e) {}
+}
 if (coverEl) {
 coverEl.addEventListener('click', (e) => {
 if (e.target === coverAvEl || coverAvEl && coverAvEl.contains(e.target)) return;
@@ -1951,26 +2271,13 @@ feedAvPickInput.onchange = () => {
 const f = feedAvPickInput.files && feedAvPickInput.files[0];
 feedAvPickInput.value = ''; // 允许重选同一文件
 if (!f) return;
-const reader = new FileReader();
-reader.onload = () => {
-const img = new Image();
-img.onload = () => {
-try {
-const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-const c = document.createElement('canvas');
-c.width = Math.max(1, Math.round(img.width * scale));
-c.height = Math.max(1, Math.round(img.height * scale));
-c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-window.activeStore().set('feed-user-avatar', c.toDataURL('image/jpeg', 0.85));
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'feed-av' }).then((r) => {
+if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '头像')); return; }
+window.activeStore().set('feed-user-avatar', r.data);
 renderCover();
 toast('朋友圈头像已更新');
-} catch (err) { toast('图片处理失败'); }
-};
-img.onerror = () => toast('图片读取失败');
-img.src = reader.result;
-};
-reader.onerror = () => toast('图片读取失败');
-reader.readAsDataURL(f);
+});
 };
 if (coverAvEl) {
 if (window.mochiFilePickLabel) window.mochiFilePickLabel(coverAvEl, feedAvPickInput);
@@ -2000,22 +2307,45 @@ toast('朋友圈昵称已更新');
 }
 });
 }
-function publish() {
+async function feedTokImgs(arr) {
+const raw = (arr || []).slice();
+if (!raw.length || !window.mochiMediaTokenize) return raw;
+const out = [];
+let tok = 0;
+for (let i = 0; i < raw.length; i++) {
+const u = typeof raw[i] === 'string' ? raw[i].trim() : '';
+let t = null;
+if (u.indexOf('data:') === 0) { try { t = await window.mochiMediaTokenize(u); } catch (e) {} }
+if (t) { tok++; out.push(t); } else out.push(raw[i]);
+}
+if (!tok) return raw;
+let ok = false;
+try { ok = await window.mochiMediaFlush(); } catch (e) {}
+return ok ? out : raw; // 池未持久＝引用绝不先落库，退回内联原件
+}
+let _feedPubBusy = false;
+async function publish() {
 const input = document.getElementById('feed-input');
 const content = input ? input.value.trim() : '';
 if (!content && !pickedImgs.length) { toast('写点什么再发布吧'); return; }
+if (_feedPubBusy) return;
+_feedPubBusy = true;
+const rawImgs = pickedImgs.slice();
+pickedImgs = [];
+renderPreview();
+if (input) input.value = '';
+let imgsArr = rawImgs;
+try { imgsArr = await feedTokImgs(rawImgs); } catch (e) {}
+_feedPubBusy = false;
 const list = load();
 const id = 'f_' + Date.now();
 const me = activeMe();
 const cs = window.activeStore();
 const taName = cs.get('lbl-partner') || 'TA';
 const taAv = cs.get('avatar-partner') || '';
-const post = { id: id, role: 'me', owner: me.owner, authorName: me.authorName, authorAv: '', taName: taName, taAv: '', content: content, imgs: pickedImgs.slice(), ts: Date.now(), likes: [], comments: [] };
+const post = { id: id, role: 'me', owner: me.owner, authorName: me.authorName, authorAv: '', taName: taName, taAv: '', content: content, imgs: imgsArr, ts: Date.now(), likes: [], comments: [] };
 list.unshift(post);
 save(list);
-pickedImgs = [];
-renderPreview();
-if (input) input.value = '';
 renderVisible();
 if (!document.getElementById('feed-post-' + id)) {
 feedGuardWrite(JSON.stringify(list));
@@ -2043,6 +2373,7 @@ addNotice('like', p2.id, nm + ' 赞了你的动态', cid);
 }
 if (Math.random() * 100 < ccfg.commentProb) {
 setTimeout(() => {
+poolReadyFor(cid, function () { try {
 const list2 = load();
 const p2 = list2.find(x => x.id === id);
 if (!p2) return;
@@ -2051,6 +2382,7 @@ p2.comments.push(stampAuthor({ content: pickReplyContent(ccfg, cid), ts: Date.no
 save(list2);
 refreshPostCard(id);
 addNotice('comment', p2.id, taFeedNameFor(cid) + ' 评论了你的动态', cid);
+} catch (eF) {} });
 }, (ccfg.commentSpeedMin + Math.random() * Math.max(1, ccfg.commentSpeedMax - ccfg.commentSpeedMin)) * 1000);
 }
 });
@@ -2065,6 +2397,7 @@ if (!mine.length) return;
 const pick = mine[Math.floor(Math.random() * mine.length)];
 const f = { kind: 'feed', text: pick.content || '', imgs: (pick.imgs || []).slice(), ts: pick.ts || Date.now() };
 const s = window.storeFor(cid);
+if (window.xyBigWriteHold(s, 'fav-msgs')) return;
 let fav = [];
 try { fav = JSON.parse(s.get('fav-msgs') || '[]'); } catch (e) { fav = []; }
 if (!Array.isArray(fav)) fav = [];
@@ -2166,6 +2499,7 @@ if (Math.random() * 100 >= cfg.postProb) {
 cs.set('feed-next', String(cfg.minInterval + Math.random() * Math.max(1, cfg.maxInterval - cfg.minInterval)));
 return;
 }
+const buildPost = function () {
 const g = genPostContent(cfg, cid);
 const taName = cs.get('lbl-partner') || 'TA';
 const taAv = cs.get('avatar-partner') || '';
@@ -2179,6 +2513,8 @@ cs.set('feed-day-count', JSON.stringify({ t: today, n: dayCount.n + 1 }));
 notifyFeedPostToChat(cid, taName);
 addNotice('post', post.id, taName + ' 发布了一条新动态', cid);
 renderVisible();
+};
+poolReadyFor(cid, function () { try { buildPost(); } catch (eB) {} });
 } catch (e) {}
 }
 function maybeAutoPost() {
@@ -2212,6 +2548,7 @@ if (!cover) return;
 const bg = feedAllBg();
 if (bg) { cover.style.backgroundImage = 'url("' + bg + '")'; cover.classList.add('has-bg'); }
 else { cover.style.backgroundImage = ''; cover.classList.remove('has-bg'); }
+armCoverLayer(cover, 'dev-feed-all-cover-tap', 'mochi-feed-cover-pick', !!bg);
 if (feedAllWho === 'me') {
 if (avEl) { const mav = feedUserAv(); avEl.innerHTML = mav ? '<img src="' + attrEsc(mav) + '" alt="">' : ''; }
 if (nameEl) nameEl.textContent = feedUserName();
@@ -2268,10 +2605,11 @@ title.textContent = (c.name || feedAllCid) + ' 的全部朋友圈';
 }
 const posts = load().filter(inPage).sort((a, b) => b.ts - a.ts);
 feedShownAll = Math.min(posts.length, FEED_RENDER_MAX);
+const allCold = feedSyncCold || !!(window.mochiDataPending && window.mochiDataPending());
 listEl.innerHTML = posts.length
 ? posts.slice(0, feedShownAll).map(p => postCardHtmlAll(p)).join('') +
 (posts.length > feedShownAll ? feedMoreBtnHtml(posts.length - feedShownAll) : '')
-: ((window.mochiDataPending && window.mochiDataPending())
+: (allCold
 ? window.mochiLoadingHtml(isMePage ? '我的动态' : '该联系人的动态')
 : '<div class="ta-empty">还没有动态</div>');
 bindEvents(listEl);
@@ -2339,26 +2677,13 @@ id: 'mochi-feed-allav-pick', accept: 'image/*',
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) { toast('没有取到图片，请再选一次'); return; }
-const reader = new FileReader();
-reader.onload = () => {
-const img = new Image();
-img.onload = () => {
-try {
-const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-const c = document.createElement('canvas');
-c.width = Math.max(1, Math.round(img.width * scale));
-c.height = Math.max(1, Math.round(img.height * scale));
-c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-feedAllStore().set(key, c.toDataURL('image/jpeg', 0.85));
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'feed-all-av' }).then((r) => {
+if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '头像')); return; }
+feedAllStore().set(key, r.data);
 renderFeedAllCover();
 toast('头像已更新');
-} catch (err) { toast('图片处理失败'); }
-};
-img.onerror = () => toast('图片读取失败');
-img.src = reader.result;
-};
-reader.onerror = () => toast('图片读取失败');
-reader.readAsDataURL(f);
+});
 }
 });
 });
@@ -2394,26 +2719,13 @@ id: 'mochi-feed-av-pick', accept: 'image/*',
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) { toast('没有取到图片，请再选一次'); return; }
-const reader = new FileReader();
-reader.onload = () => {
-const img = new Image();
-img.onload = () => {
-try {
-const scale = Math.min(1, 256 / Math.max(img.width, img.height));
-const c = document.createElement('canvas');
-c.width = Math.max(1, Math.round(img.width * scale));
-c.height = Math.max(1, Math.round(img.height * scale));
-c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-st.set(key, c.toDataURL('image/jpeg', 0.85));
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+window.mochiImgIngest(f, { maxSide: 256, quality: 0.85, tag: 'feed-friend-av' }).then((r) => {
+if (!r || r.st !== 'ok') { toast(window.mochiImgIngestMiss(r, '头像')); return; }
+st.set(key, r.data);
 renderFeedFriends();
 toast('朋友圈头像已更新');
-} catch (err) { toast('图片处理失败'); }
-};
-img.onerror = () => toast('图片读取失败');
-img.src = reader.result;
-};
-reader.onerror = () => toast('图片读取失败');
-reader.readAsDataURL(f);
+});
 }
 });
 }
@@ -2627,6 +2939,8 @@ const merged = mergePosts(base, mergePosts(cur, pending));
 if (!merged.length) { if (authOk && feedPending === pending) feedPending = null; return; }
 const degraded = !authOk && curFromSnap;
 if (!degraded) feedMem = merged;
+if (!degraded && feedWritePending) feedWritePending = merged;
+if (!degraded) scheduleFeedTokPass(2500);
 feedGuardWrite(JSON.stringify(merged)).then(written => {
 if (written) {
 if (feedPending === pending) feedPending = null;
@@ -2707,15 +3021,12 @@ const p = cardPool(cid);
 return { text: p.text.indexOf(s) >= 0, kaomoji: p.kaomoji.indexOf(s) >= 0, emoji: p.emoji.indexOf(s) >= 0 };
 } catch (e) { return null; }
 };
-window.__cardSearchFns = window.__cardSearchFns || [];
-window.__cardSearchFns.push({ name: '朋友圈互动', fn: function (kw) {
-const out = [];
+window.feedGenProbe = function (cid) {
 try {
-TA_COMMENT_POOL.forEach(c => { if (String(c).toLowerCase().indexOf(kw) >= 0) out.push({ t: String(c), cat: 'TA评论' }); });
-TA_REPLY_POOL.forEach(c => { if (String(c).toLowerCase().indexOf(kw) >= 0) out.push({ t: String(c), cat: 'TA回应回复' }); });
-} catch (e) {}
-return out;
-} });
+const g = genPostContent(feedCfgFor(cid), cid);
+return { content: String(g.content || ''), imgN: (g.imgs || []).length };
+} catch (e) { return null; }
+};
 })();
 if (window.__mochiLoaded) window.__mochiLoaded.push("feed.js");
 } catch (__e) { if (window.__mochiErrLoaded) window.__mochiErrLoaded.push("feed.js"); try { console.error("[JS] feed.js", __e && __e.message || __e); } catch (x) {} if (window.__jsErrors) window.__jsErrors.push("[feed.js] " + String(__e && __e.message || __e)); } })();

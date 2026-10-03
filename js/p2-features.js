@@ -462,7 +462,11 @@ if (Array.isArray(v) && v.length) return v;
 } catch (e) {}
 return def.slice();
 }
-function ckSaveList(k, list) { store.set('checkin-cards-' + k, JSON.stringify(list)); }
+function ckSaveList(k, list) {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'checkin-cards-' + k, '寻踪字卡库')) return false;
+store.set('checkin-cards-' + k, JSON.stringify(list));
+return true;
+}
 function ckCustomList(k) {
 try {
 const v = JSON.parse(store.get('checkin-cards-' + k) || 'null');
@@ -477,7 +481,11 @@ if (Array.isArray(v)) return v.map(x => typeof x === 'string' ? { t: x } : (x &&
 } catch (e) {}
 return [];
 }
-function ckSaveItems(k, items) { store.set('checkin-cards-' + k, JSON.stringify(items)); }
+function ckSaveItems(k, items) {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'checkin-cards-' + k, '寻踪字卡库')) return false;
+store.set('checkin-cards-' + k, JSON.stringify(items));
+return true;
+}
 function ckGroups(k) {
 try {
 const v = JSON.parse(store.get('checkin-cards-groups-' + k) || 'null');
@@ -485,8 +493,17 @@ if (Array.isArray(v)) return v;
 } catch (e) {}
 return [];
 }
-function ckSaveGroups(k, groups) { store.set('checkin-cards-groups-' + k, JSON.stringify(groups)); }
-function isCkCardOff(k, x) { return store.get('ck-off-' + k + ':' + x) === '1'; }
+function ckSaveGroups(k, groups) {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'checkin-cards-groups-' + k, '寻踪字卡分组')) return false;
+store.set('checkin-cards-groups-' + k, JSON.stringify(groups));
+return true;
+}
+const CK_DEF_LIST = { place: DEF_PLACES, action: DEF_ACTIONS, msg: DEF_CHECK_MSGS };
+function isCkCardOff(k, x) {
+if (!CK_DEF_LIST[k]) return false; // #1520：k 不属于三类（防御：旧写法会静默拼出 ck-off-undefined 键）
+if (CK_DEF_LIST[k].indexOf(x) < 0) return false; // #1519a：不是预设卡 ⇒ 预设开关一律不认
+return store.get('ck-off-' + k + ':' + x) === '1' || !!(window.presetGroup && window.presetGroup.isOff('cck', k));
+}
 function setCkCardOff(k, x, off) { store.set('ck-off-' + k + ':' + x, off ? '1' : '0'); }
 const CK_EN_KEY = 'checkin-en';
 function ckEn() {
@@ -496,7 +513,7 @@ return v === null ? true : v === '1';
 } catch (e) { return true; }
 }
 window.checkinEnabled = ckEn;
-window.checkinDeskOff = function () { return !ckEn(); };
+window.checkinDeskOff = function () { return false; };
 function ckMergeDef(custom, def) {
 const seen = {};
 return def.map(function (t) { return { t: t }; }).concat(custom).filter(function (x) {
@@ -522,12 +539,18 @@ let place = useDefault ? places.filter(p => !isCkCardOff('place', p.t)) : places
 let action = useDefault ? actions.filter(a => !isCkCardOff('action', a.t)) : actions.filter(a => DEF_ACTIONS.indexOf(a.t) < 0 && !isCkCardOff('action', a.t));
 let msg = useDefault ? msgs.filter(m => !isCkCardOff('msg', m.t)) : msgs.filter(m => DEF_CHECK_MSGS.indexOf(m.t) < 0 && !isCkCardOff('msg', m.t));
 if (!place.length && !action.length && !msg.length) {
-place = places; action = actions; msg = msgs;
+place = places.filter(p => !isCkCardOff('place', p.t));
+action = actions.filter(a => !isCkCardOff('action', a.t));
+msg = msgs.filter(m => !isCkCardOff('msg', m.t));
 }
 if (place.length) out.place = place[Math.floor(Math.random() * place.length)].t;
 if (action.length) out.action = action[Math.floor(Math.random() * action.length)].t;
 if (msg.length) out.msg = msg[Math.floor(Math.random() * msg.length)].t;
 return out;
+}
+function ckHistRow(x, i) {
+const parts = [x.t, x.place, x.action].filter(Boolean);
+return '<div class="ck-location"><div class="ck-value" style="font-size:13px">' + window.mochiHistDel('i' + i, parts.join(' · ')) + parts.join(' · ') + '</div><div class="ck-label">' + (x.msg || '') + '</div></div>';
 }
 function renderCheckinHistory() {
 const histEl = document.getElementById('ck-history');
@@ -535,15 +558,28 @@ if (!histEl) return;
 try {
 let h = [];
 try { h = JSON.parse(store.get('checkin-history') || '[]'); } catch (e) { h = []; }
-const valid = (Array.isArray(h) ? h : []).filter(x => x && (x.place || x.action));
-histEl.innerHTML = valid.length
-? valid.slice().reverse().map(x => {
-const parts = [x.t, x.place, x.action].filter(Boolean);
-return '<div class="ck-location"><div class="ck-value" style="font-size:13px">' + parts.join(' · ') + '</div><div class="ck-label">' + (x.msg || '') + '</div></div>';
-}).join('')
-: '<div class="div-result-empty">暂无寻踪记录</div>';
+const valid = (Array.isArray(h) ? h : []).map((x, i) => ({ x, i })).filter(o => o.x && (o.x.place || o.x.action));
+histEl.innerHTML = window.mochiHistFold(valid.map(o => ({ ts: Number(o.x.ts) || 0, html: ckHistRow(o.x, o.i) })), {
+key: 'checkin-hist',
+empty: '<div class="div-result-empty">暂无寻踪记录</div>',
+todayEmpty: '<div class="dc-h-day-empty">今天暂无寻踪记录</div>'
+});
 } catch (e) {}
 }
+function delCheckinHistory(key) { if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'checkin-history', '寻踪记录')) return; // #1493 删除也是读改写：读不全先按住
+let h = [];
+try { h = JSON.parse(store.get('checkin-history') || '[]'); } catch (e) { return; }
+const i = parseInt(String(key).replace(/^i/, ''), 10);
+if (!(i >= 0) || !(i < h.length)) return;
+h.splice(i, 1);
+try {
+store.set('checkin-history', JSON.stringify(h));
+if (window.idbSet) window.idbSet(window.activePrefix() + ':checkin-history', JSON.stringify(h));
+} catch (e) {}
+renderCheckinHistory();
+if (typeof window.toast === 'function') window.toast('已删除这条寻踪记录');
+}
+window.mochiHistDelBind(document.getElementById('ck-history'), { onDel: delCheckinHistory, title: '删除这条寻踪记录？' });
 (function () {
 if (window.idbGet) {
 const myPrefix = window.activePrefix();
@@ -566,8 +602,22 @@ try {
 if (!checkinApp) return;
 let man = false;
 try { man = (JSON.parse(store.get('hidden-icons') || '[]')).indexOf('checkin') >= 0; } catch (e) {}
-checkinApp.style.display = (ckEn() && !man) ? '' : 'none';
+checkinApp.style.display = man ? 'none' : '';
 } catch (e) {}
+}
+function ckDisabledBanner() {
+const card = document.getElementById('ck-card');
+if (!card) return;
+let el = document.getElementById('ck-off-tip');
+if (!ckEn()) {
+if (!el) {
+el = document.createElement('div');
+el.id = 'ck-off-tip';
+el.setAttribute('style', 'margin:0 0 10px;padding:8px 10px;border-radius:10px;font-size:12.5px;line-height:1.55;border:1px solid rgba(128,128,128,.34);opacity:.82');
+card.insertBefore(el, card.firstChild);
+}
+el.textContent = '已禁用：联系人无法再触发更新日常。下面是关闭前的最后一次日常；「TA在身边 · 位置感知」不受影响，照常可用。重新开启：设置 → 工具 → 寻踪（TA 的日常）。';
+} else if (el) el.remove();
 }
 function syncCkSwitchUI() {
 const on = ckEn();
@@ -576,11 +626,12 @@ if (a && a.checked !== on) a.checked = on;
 const b = document.getElementById('ck-fe-en');
 if (b && b.checked !== on) b.checked = on;
 const sub = document.getElementById('sf-checkin-sub');
-if (sub) sub.textContent = on ? 'TA 的日常随机刷新，桌面/聊天里都能寻踪' : '已关闭：入口已收起、不再自动更新（已有记录保留，重新开启即恢复）';
+if (sub) sub.textContent = on ? 'TA 的日常随机刷新，桌面/聊天里都能寻踪' : '已禁用：联系人无法再触发更新日常（桌面【寻踪】仍可进入，页内「TA在身边 · 位置感知」照常用）';
+ckDisabledBanner();
 }
 function ckToast(on) {
 if (typeof window.toast !== 'function') return;
-window.toast(on ? '寻踪已开启：桌面与聊天入口恢复、日常继续更新' : '寻踪已关闭：入口全部收起、不再自动更新，已有记录保留');
+window.toast(on ? '寻踪已开启：日常继续更新、聊天入口恢复' : '已禁用：联系人无法再触发更新日常（桌面【寻踪】仍可进入，「TA在身边 · 位置感知」照常用）');
 }
 window.setCheckinEnabled = function (on) {
 try { store.set(CK_EN_KEY, on ? '1' : '0'); } catch (e) {}
@@ -617,7 +668,7 @@ grp.className = 'set-group glass';
 grp.setAttribute('style', 'margin:10px 12px 0');
 grp.innerHTML =
 '<div class="gs-row"><span>启用寻踪（TA 的日常）</span><label class="toggle"><input type="checkbox" id="ck-fe-en"><span class="tk"></span></label></div>' +
-'<div class="gs-sub">关闭后桌面【寻踪】图标、聊天「更多功能」里的寻踪、点 TA 头像的寻踪半框一并收起，日常也不再自动更新与推送（下面那个「发送到聊天」概率与已有寻踪记录都不受影响，重新开启即恢复）。设置 → 工具 里有同一个开关。</div>';
+'<div class="gs-sub">关闭后日常不再自动更新、不再推送到聊天、不再写新记录，聊天「更多功能」里的寻踪与点 TA 头像的寻踪半框一并收起。桌面【寻踪】图标仍在（点进去看得到「已禁用」说明，页里的「TA在身边 · 位置感知」是独立功能、照常可用）。下面那个「发送到聊天」概率与已有寻踪记录都不受影响，重新开启即恢复。设置 → 工具 里有同一个开关。</div>';
 box.parentNode.insertBefore(grp, box);
 bindCkSwitch(document.getElementById('ck-fe-en'));
 })();
@@ -640,7 +691,7 @@ if (action) action.textContent = ck.action || '';
 if (msg) msg.textContent = ck.msg || '';
 if (status) status.textContent = name + ' 的日常';
 }
-function recordCheckin(ck) {
+function recordCheckin(ck) { if (window.xyBigWriteHold && window.xyBigWriteHold(store, 'checkin-history')) return; // #1493 读不全先让路（#1403 已给这页折叠＋单删，这里补大键化后的顶库闸）
 const entry = { t: fmtTime(Date.now()), place: ck.place, action: ck.action, msg: ck.msg, ts: Date.now() };
 try {
 const h = JSON.parse(store.get('checkin-history') || '[]');
@@ -650,8 +701,38 @@ if (window.idbSet) window.idbSet(window.activePrefix() + ':checkin-history', JSO
 } catch (e) {}
 renderCheckinHistory();
 }
+let ckBigPending = 0, ckBigSeq = 0, ckBigBypass = false;
 function doCheckin() {
 if (!ckEn()) return; // #823a 关闭即全静默：生成/推送/记录/重置计时一并停
+const blind = ['place', 'action', 'msg'].filter(function (k) {
+try { return typeof store.awaitingBigKey === 'function' && store.awaitingBigKey('checkin-cards-' + k); } catch (e) { return false; }
+});
+if (blind.length && !ckBigBypass) {
+if (ckBigPending) return; // 已在等库：60 秒轮询/连点刷新不叠加第二发
+ckBigPending = blind.length;
+const seq = ++ckBigSeq;
+blind.forEach(function (k) { try { store.requestBigKey('checkin-cards-' + k); } catch (e2) {} });
+blind.forEach(function (k) {
+let done = false;
+try {
+store.whenBigKeyBack('checkin-cards-' + k, function () {
+if (seq !== ckBigSeq || done) return;
+done = true;
+if (--ckBigPending > 0) return;
+doCheckin(); // 取齐了＝用完整池子生成（含开关开启时的合并与关闭时的只抽自定义）
+});
+} catch (e3) { if (!done) { done = true; ckBigPending--; } }
+});
+setTimeout(function () {
+if (seq !== ckBigSeq || !ckBigPending) return;
+ckBigSeq++; // 作废在途回调＝保底路径后不会再触发第二次生成
+ckBigPending = 0;
+ckBigBypass = true; // #1520：这一发按可读到的生成，且**不再重新武装一轮闸**——原先保底后
+doCheckin(); // 4 秒保底：IDB 挂死也照旧按可读到的生成（宁可残缺不可静默停更）
+}, 4000);
+return;
+}
+ckBigBypass = false; // #1520：保底放行的这一发用掉即清，下一发觉回填落地后照常走闸
 const ck = genCheckin();
 store.set('checkin-current', JSON.stringify(ck));
 renderCheckinUI(ck);
@@ -758,16 +839,13 @@ document.addEventListener('mochi-restore-done', bootCheckin);
 setTimeout(bootCheckin, 3000);
 window.openCheckinPage = function () {
 if (!checkinPage) return;
-if (!ckEn()) { // #823c 关闭后寻踪页不再打开（桌面图标/更多功能入口已收起，剩功能大全这类程序化跳转）
-if (typeof window.toast === 'function') window.toast('寻踪已关闭：设置 → 工具 → 寻踪 可重新开启');
-return;
-}
 document.querySelectorAll('.page').forEach(p => p.hidden = true);
 checkinPage.hidden = false;
 let cur = null;
 try { cur = JSON.parse(store.get('checkin-current') || 'null'); } catch (e) {}
 if (cur && cur.place) renderCheckinUI(cur);
-else doCheckin();
+else if (ckEn()) doCheckin();
+ckDisabledBanner();
 renderCheckinHistory();
 };
 if (checkinApp && checkinPage) {
@@ -799,6 +877,7 @@ ckRefresh.addEventListener('click', () => {
 const now = Date.now();
 if (now - ckLastRefresh < 5000) { toast('刷新太频繁，稍后再试'); return; }
 ckLastRefresh = now;
+if (!ckEn()) { toast('寻踪已禁用：设置 → 工具 → 寻踪 重新开启后才能刷新日常'); return; }
 doCheckin();
 });
 }
@@ -850,6 +929,15 @@ tip.textContent = '系统预设字卡已关闭（寻踪只从「我的添加」�
 listEl.appendChild(tip);
 return;
 }
+if (window.presetGroup) {
+const barBox = document.createElement('div');
+barBox.innerHTML = window.presetGroup.catBar('cck', ckTab, CK_LABEL[ckTab] || ckTab);
+const bar = barBox.firstElementChild;
+if (bar) {
+listEl.appendChild(bar);
+window.presetGroup.bindBar(bar, 'cck', ckTab, function () { renderCkSysList(); updateCkCount(); });
+}
+}
 def.forEach(x => {
 const off = isCkCardOff(ckTab, x);
 const row = document.createElement('div');
@@ -879,6 +967,15 @@ const groups = ckGroups(ckTab);
 let html = '';
 html += '<div class="mg-grp-row"><button class="cc-tool mg-grp-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>新建分组</button></div>';
 if (!custom.length && !groups.length) {
+let blindTab = false;
+try { blindTab = typeof store.awaitingBigKey === 'function' && store.awaitingBigKey('checkin-cards-' + ckTab); } catch (e0) {}
+if (blindTab) {
+try { store.requestBigKey('checkin-cards-' + ckTab); } catch (e1) {}
+try { store.whenBigKeyBack('checkin-cards-' + ckTab, function () { renderCheckinCards(); }); } catch (e2) {}
+listEl.innerHTML = html + '<div class="ta-empty">字卡库正在取回（内容较多，几秒内自动出现）…</div>';
+bindCkGroupOps();
+return;
+}
 listEl.innerHTML = html + '<div class="ta-empty">暂未添加自定义字卡，可在上方批量输入（每行一个）。</div>';
 bindCkGroupOps();
 return;
@@ -902,7 +999,7 @@ listEl.querySelectorAll('.ta-del').forEach(b => {
 b.addEventListener('click', () => {
 const l = ckItems(ckTab);
 l.splice(Number(b.dataset.idx), 1);
-ckSaveItems(ckTab, l);
+if (ckSaveItems(ckTab, l) === false) return; // #1520：没读全＝这一发没落笔，别报成功
 renderCkMineList();
 updateCkCount();
 toast('已删除');
@@ -920,7 +1017,7 @@ if (!val) { toast('内容不能为空'); return; }
 if (val === item.t) return;
 if (l.some((x, xi) => xi !== idx && x.t === val)) { toast('已有相同内容'); return; }
 l[idx].t = val;
-ckSaveItems(ckTab, l);
+if (ckSaveItems(ckTab, l) === false) return; // #1520：同上
 renderCkMineList();
 toast('已更新');
 });
@@ -937,7 +1034,7 @@ const opts = [{ label: '未分组', value: '' }].concat(groups.map(g => ({ label
 window.openModal('移动到分组', '', (v) => {
 if (v == null) return;
 l[idx].grp = v || '';
-ckSaveItems(ckTab, l);
+if (ckSaveItems(ckTab, l) === false) return; // #1520：同上
 renderCkMineList();
 const tgt = v ? (groups.find(g => g.id === v) || {}).name : '未分组';
 toast('已移动到「' + tgt + '」');
@@ -1149,7 +1246,7 @@ const x = { t: it };
 if (parsed.grp) x.grp = parsed.grp;
 list.push(x);
 });
-ckSaveItems(ckTab, list);
+if (ckSaveItems(ckTab, list) === false) return; // #1520：拦下＝输入框原样保留，等库回填后再点一次
 if (ta) ta.value = '';
 renderCkMineList();
 updateCkCount();
@@ -1390,7 +1487,7 @@ const EGG_COOLDOWN = 7 * 24 * 3600 * 1000;
 function loadCur() { try { return JSON.parse(store.get('loc-current') || 'null'); } catch (e) { return null; } }
 function saveCur(v) { store.set('loc-current', v ? JSON.stringify(v) : ''); }
 function loadHist() { try { return JSON.parse(store.get('loc-history') || '[]'); } catch (e) { return []; } }
-function saveHist(list) {
+function saveHist(list) { if (window.xyBigWriteHold && window.xyBigWriteHold(store, 'loc-history')) return; // #1493 读不全先让路：这一格大键化后冷读空＝拿空账追加＝顶掉整本位置历史
 const s = JSON.stringify(list);
 store.set('loc-history', s);
 try { if (window.idbSet) window.idbSet(window.activePrefix() + ':loc-history', s); } catch (e) {}
@@ -1450,7 +1547,7 @@ if (type === 'egg' && eggUsed()) {
 toast('彩蛋「在你心里」一周只能用一次');
 return;
 }
-if (window.chatAddIn) window.chatAddIn(text);
+if (window.chatAddIn) window.chatAddIn(text, { rateAllow: true });
 saveCur({ text: text, type: type, ts: ts });
 const hist = loadHist();
 hist.unshift({ text: text, type: type, ts: ts });
@@ -1481,7 +1578,7 @@ let pendingDir = null;
 function sendComboCard(dirText, distText) {
 const ts = Date.now();
 const text = dirText + ' ' + distText;
-if (window.chatAddIn) window.chatAddIn(text);
+if (window.chatAddIn) window.chatAddIn(text, { rateAllow: true });
 saveCur({ text: text, type: 'combo', ts: ts });
 const hist = loadHist();
 hist.unshift({ text: text, type: 'combo', ts: ts });
@@ -1566,7 +1663,7 @@ if (dayHist.length) {
 html += '<div class="loc-timeline">' + dayHist.map(h => {
 const tag = LOC_LABEL[h.type] || '';
 const auto = h.auto ? '<span class="loc-tl-auto">TA</span>' : '';
-return '<div class="loc-tl-item"><span class="loc-tl-time">' + fmtT(h.ts) + '</span><span class="loc-tl-text">' + esc(h.text) + '</span><span class="loc-tl-tag">' + esc(tag) + '</span>' + auto + '</div>';
+return '<div class="loc-tl-item"><span class="loc-tl-time">' + fmtT(h.ts) + '</span><span class="loc-tl-text">' + esc(h.text) + '</span><span class="loc-tl-tag">' + esc(tag) + '</span>' + auto + window.mochiHistDel('k|' + (Number(h.ts) || 0) + '|' + esc(h.text), (LOC_LABEL[h.type] || '位置卡') + ' · ' + esc(h.text)) + '</div>'; // #1493 单条删除
 }).join('') + '</div>';
 html += '<div class="loc-day-count">共 ' + dayHist.length + ' 条</div>';
 } else {
@@ -1579,9 +1676,24 @@ html += '<div class="set-group glass" style="margin:14px 2px 0">'
 + '<div class="gs-row"><span>换位提醒弹窗</span><label class="toggle"><input type="checkbox" id="loc-bubble-tg"' + (store.get('loc-bubble') === '0' ? '' : ' checked') + '><span class="tk"></span></label></div>'
 + '<div class="gs-row"><span>换位发到聊天</span><label class="toggle"><input type="checkbox" id="loc-chat-tg"' + (store.get('loc-chat') === '0' ? '' : ' checked') + '><span class="tk"></span></label></div>'
 + '</div>'
-+ '<div class="gs-sub" style="padding:0 2px 10px">TA 自动换位：开启后每 2～6 小时随机换一次位置（关掉后到点也不换；「问 TA 一声」不受影响）。换位内容 70% 是陪伴卡（在你身边／一直没走远等），30% 从字卡库启用的位置卡里随机；每次换位都会记进「位置时间线」，换位内容与上一次不同时才算「换了位置」才弹提醒。<br>换位提醒弹窗：TA 自动换位置时顶部弹的黑色轻提示。<br>换位发到聊天：关掉后 TA 自动换位只记进「位置时间线」，不再发进聊天记录。</div>';
++ '<div class="gs-sub" style="padding:0 2px 10px">TA 自动换位：开启后每 2～6 小时随机换一次位置（关掉后到点也不换；「问 TA 一声」不受影响）。换位内容 70% 是陪伴卡（在你身边／一直没走远等），30% 从字卡库启用的位置卡里随机；每次换位都会记进「位置时间线」，换位内容与上一次不同时才算「换了位置」才弹提醒。<br>换位提醒弹窗：TA 自动换位置时顶部弹的黑色轻提示。<br>换位发到聊天：关掉后 TA 自动换位只记进「位置时间线」，不再发进聊天记录。<br>方位感知的【感知一下】：点了就先让 TA 当场换一次位置、再按新位置报方位，不用等那发 2～6 小时（不用打开任何开关，点了就是换）；它不受「TA 自动换位」总开关与夜间静默管（那两枚管的是 TA 自己到点来打扰），发进聊天与弹提醒仍照上面两枚开关。</div>';
 html += '<button class="loc-ask-btn" id="loc-ask-btn">问 TA 一声「你在哪？」</button>';
 body.innerHTML = html;
+window.mochiHistDelBind(body, {
+title: '删除这条位置记录？',
+onDel: function (k) {
+const p = String(k).split('|');
+const ts = Number(p[1]) || 0, tx = p.slice(2).join('|');
+const arr = loadHist();
+const i = arr.findIndex(function (x) { return x && (Number(x.ts) || 0) === ts && String(x.text || '') === tx; });
+if (i < 0) { if (typeof window.toast === 'function') window.toast('这条已经变了，没有删掉任何内容'); return; }
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, 'loc-history', '位置记录')) return;
+arr.splice(i, 1);
+saveHist(arr);
+renderLocPanel();
+if (typeof window.toast === 'function') window.toast('已删除这条位置记录');
+}
+});
 const askBtn = document.getElementById('loc-ask-btn');
 if (askBtn) askBtn.addEventListener('click', askWhere);
 const bindLocTg = function (id, key) {
@@ -1639,27 +1751,42 @@ function doLocAuto() {
 if (window.nightModeActive && window.nightModeActive()) return;
 if (document.hidden || Date.now() < locWakeAt || !window.__mochiDataReady) return;
 if (store.get('loc-auto') === '0') return; // 设置「TA 自动换位」关：到点也不发（拦设置后仍残留的当次定时器）
-const companion = ['在你身边', '一直没走远', '隔着世界在你身边', '隐约在你身旁', '在你看不到的地方'];
+emitLocChange(null);
+}
+function emitLocChange(avoidText) {
+const companion = ['在你身边', '一直没走远', '隔着世界在你身边', '隐约在你身旁', '在你看不到的地方']
+.filter(function (t) { return !(window.locLibTextOff && window.locLibTextOff(t)); });
 let text;
-if (Math.random() < 0.7) {
+for (let retry = 0, tries = avoidText ? 3 : 1; retry < tries; retry++) {
+if (companion.length && Math.random() < 0.7) {
 text = companion[Math.floor(Math.random() * companion.length)];
 } else {
 const all = (window.locLibAllEnabled ? window.locLibAllEnabled() : []).slice();
-if (!all.length) all.push('在你身边');
+if (!all.length) return false;
 text = all[Math.floor(Math.random() * all.length)];
 }
-if (!text) return;
+if (!avoidText || text !== avoidText) break;
+}
+if (!text) return false;
 const type = locTypeOf(text);
 const ts = Date.now();
 const oldCur = loadCur();
-if (store.get('loc-chat') !== '0' && window.chatAddIn) window.chatAddIn(text); // 设置「换位发到聊天」关：只记时间线＋弹提醒，不发进聊天
+if (store.get('loc-chat') !== '0' && window.chatAddIn) window.chatAddIn(text, { rateAllow: true });
 saveCur({ text: text, type: type, ts: ts, auto: true });
 const hist = loadHist();
 hist.unshift({ text: text, type: type, ts: ts, auto: true });
 saveHist(hist);
 playLocFx(text, type);
+locViewDate = dayStr(new Date());
+renderLocPanel(); // #1436 换位落地必重画（旧写法＝只写库不重画，面板开着时「位置时间线」停在上一张＝用户看到「没记录」）
+if (window.refreshSense) window.refreshSense();
 if (oldCur && oldCur.text !== text) showLocChangeBubble(text);
+return true;
 }
+window.locShiftNow = function () {
+const c = loadCur();
+return emitLocChange(c && c.text ? c.text : null);
+};
 function scheduleLocAuto() {
 clearTimeout(locAutoTimer);
 if (store.get('loc-auto') === '0') { locAutoTimer = setTimeout(scheduleLocAuto, 60000); return; }
@@ -1771,7 +1898,7 @@ s.dir = fixedDir;
 s.nextDirAt = now + (15 + Math.floor(Math.random() * 31)) * 60000; // 15~45 分钟
 dirty = true;
 }
-} else if (!s.dir || (s.nextDirAt && now >= s.nextDirAt)) {
+} else if (!s.dir || (s.nextDirAt && now >= s.nextDirAt) || force) {
 s.dir = rollDir();
 s.nextDirAt = now + (15 + Math.floor(Math.random() * 31)) * 60000; // 15~45 分钟
 dirty = true;
@@ -1853,6 +1980,7 @@ const now = Date.now();
 if (now < perceiveCdUntil) return;
 perceiveCdUntil = now + 4000;
 if (btn) { btn.classList.add('busy'); btn.disabled = true; }
+if (window.locShiftNow) window.locShiftNow();
 const s = getSense(true);
 const touched = maybeTouch(s);
 const result = document.getElementById('fw-result');
@@ -2002,8 +2130,9 @@ function editingNow() { return Array.from(document.querySelectorAll('.app-grid')
 function libPool(cat, group, fallback) {
 let arr = (window.getLibPool ? window.getLibPool(cat, group, fallback) : (fallback || [])).slice();
 if (window.isDefaultCardOff) arr = arr.filter(c => !window.isDefaultCardOff(cat, c));
-return arr.length ? arr.slice() : (fallback || []).slice();
+return arr.length ? arr.slice() : (window.gateCardFallback ? window.gateCardFallback(cat, fallback) : (fallback || []).slice());
 }
+window.__p2LibPoolProbe = libPool; // #1515 只读探针（行为尺用，不参与业务）
 function dcfP(cat, def) { try { if (window.dcfGet) return window.dcfGet(cat); } catch (e) {} return def; }
 function dcfHit(cat) { return Math.random() * 100 < dcfP(cat, 100); }
 function toast(msg) {
@@ -2109,9 +2238,9 @@ function tpPool() {
 const s = curStore(); let pool = libPool('sync', 'TA 此刻', DEF_STATUS);
 try { const a = JSON.parse((s && s.get('tongpin-status')) || '[]'); if (Array.isArray(a) && a.length) pool = a.slice(); } catch (e) {}
 try { const a = JSON.parse((s && s.get('checkin-cards-action')) || '[]'); if (Array.isArray(a)) a.forEach(x => { const t = typeof x === 'string' ? x : (x && x.t); if (t && pool.indexOf(t) < 0) pool.push(t); }); } catch (e) {}
-return pool.length ? pool : DEF_STATUS.slice();
+return pool.length ? pool : (window.gateCardFallback ? window.gateCardFallback('sync', DEF_STATUS) : DEF_STATUS.slice()); // #1515 尾行裸兜底同收口
 }
-function tpPick() { const a = tpPool(); const el = document.getElementById('tp-status'); if (el) el.textContent = a[Math.floor(Math.random() * a.length)]; }
+function tpPick() { const a = tpPool(); const el = document.getElementById('tp-status'); if (el && a.length) el.textContent = a[Math.floor(Math.random() * a.length)]; } // #1515 空池不改字
 let knock = 0, knockTimer = null;
 function tpResetKnock() { knock = 0; document.querySelectorAll('#tp-knock .tp-dot').forEach(d => d.classList.remove('on')); }
 function tpKnock() {
@@ -2129,12 +2258,12 @@ vibrate([40, 60, 40, 60, 40]);
 if (area) area.classList.add('flash');
 setTimeout(() => { if (area) area.classList.remove('flash'); }, 700);
 const r = pool[Math.floor(Math.random() * pool.length)];
-if (hint) hint.textContent = window.taFit ? window.taFit('他回你了 · ' + r) : ('他回你了 · ' + r);
-if (tpSendOn() && window.chatAddIn) { try { window.chatAddIn(r); } catch (e) {} }
+if (r && hint) hint.textContent = window.taFit ? window.taFit('他回你了 · ' + r) : ('他回你了 · ' + r); // #1515 空池＝不回话不进聊天
+if (r && tpSendOn() && window.chatAddIn) { try { window.chatAddIn(r); } catch (e) {} }
 } else {
 if (Math.random() < 0.4) {
 const miss = libPool('sync', '没接住回应', ['…没听到', '没接住', '好像走开了']);
-if (hint) hint.textContent = miss[Math.floor(Math.random() * miss.length)];
+if (hint && miss.length) hint.textContent = miss[Math.floor(Math.random() * miss.length)]; // #1515 空池不改字
 } else {
 if (hint) hint.textContent = '没接住 · 过会儿再敲';
 }
@@ -2190,9 +2319,9 @@ const txt = cards[Math.floor(Math.random() * cards.length)];
 vibrate(feel.vib);
 if (glow) { glow.classList.add('on'); glow.classList.add(feel.cls); }
 if (hint) hint.textContent = '摸到了 · ' + feel.label;
-const res = document.getElementById('ss-result'); if (res) { res.textContent = feel.label + ' · \u201c' + txt + '\u201d'; res.className = 'ss-result reach'; }
+const res = document.getElementById('ss-result'); if (res && txt != null) { res.textContent = feel.label + ' · \u201c' + txt + '\u201d'; res.className = 'ss-result reach'; } // #1515 空池不出字
 ssSetCount(ssCount() + 1); ssRenderCount();
-if (ssSendOn() && window.chatAddIn) { try { window.chatAddIn(txt); } catch (e) {} }
+if (txt != null && ssSendOn() && window.chatAddIn) { try { window.chatAddIn(txt); } catch (e) {} } // #1515 空池不进聊天
 setTimeout(() => { if (glow) { glow.classList.remove('on'); glow.classList.remove(feel.cls); } }, 1400);
 } else {
 if (glow) glow.classList.add('dim');
@@ -2215,7 +2344,7 @@ vibrate(30);
 const area = document.getElementById('ss-area');
 if (area) { const tr = document.createElement('div'); tr.className = 'ss-trace'; area.appendChild(tr); setTimeout(() => { try { tr.remove(); } catch (e) {} }, 1600); }
 const hint = document.getElementById('ss-hint'); if (hint) hint.textContent = window.taFit ? window.taFit('他刚才碰了你一下') : '他刚才碰了你一下';
-const res = document.getElementById('ss-result'); if (res) { res.textContent = '\u201c' + txt + '\u201d'; res.className = 'ss-result reach'; }
+const res = document.getElementById('ss-result'); if (res && txt != null) { res.textContent = '\u201c' + txt + '\u201d'; res.className = 'ss-result reach'; } // #1515 空池不出字
 }
 if (ssApp) ssApp.addEventListener('click', () => { if (editingNow()) return; openPage(ssPage); ssRenderCount(); ssMaybePassive(); });
 document.getElementById('ss-back').addEventListener('click', () => backHome(ssPage));
@@ -2340,6 +2469,7 @@ const t = waterToday(); const g = waterGoal();
 const done = waterChatDone();
 const pool = libPool('water', done ? '喝够夸奖' : '梦角催喝水', done ? DEF_WATER_PRAISE : DEF_WATER_CHAT_REMIND);
 const m = pool[Math.floor(Math.random() * pool.length)];
+if (!m) return false; // #1515 全关＝不发（真停用，不再回落同文兜底）
 const tail = (!done && g && t.count > 0 && t.count < g) ? '（还差 ' + (g - t.count) + ' 杯）' : '';
 const text = window.taFit ? window.taFit(m + tail) : (m + tail);
 try { if (window.chatAddIn) { window.chatAddIn(text, { tag: '喝水提醒' }); return true; } } catch (e) {}
@@ -2365,14 +2495,14 @@ let last = 0; try { last = parseInt(s.get('water-last-visit') || '0', 10) || 0; 
 try { s.set('water-last-visit', '' + Date.now()); } catch (e) {}
 const t = waterToday(); const g = waterGoal();
 if (t.count < g && Date.now() - last > 2 * 3600000) {
-if (window.taChimeAllow && window.taChimeAllow('water-ta', { cooldown: 30 * 60 * 1000, dailyMax: 3 }) && dcfHit('water') && Math.random() < 0.5) {
-window.taChimeUse('water-ta');
-const gentle = libPool('water', 'ta视角温柔提醒', DEF_WATER_TA_GENTLE);
+const gentle = libPool('water', 'ta视角温柔提醒', DEF_WATER_TA_GENTLE); // #1515 全关＝不烧冷却不浮层
 const m = gentle[Math.floor(Math.random() * gentle.length)];
+if (m && window.taChimeAllow && window.taChimeAllow('water-ta', { cooldown: 30 * 60 * 1000, dailyMax: 3 }) && dcfHit('water') && Math.random() < 0.5) {
+window.taChimeUse('water-ta');
 const miss = Math.random() < 0.2 ? '（字卡有限，他想说的比这张多）' : null;
 if (window.taChimeShow) window.taChimeShow(m, { miss: miss });
 }
-const msgs = waterMsgs(); waterShowMsg(msgs[Math.floor(Math.random() * msgs.length)]);
+const msgs = waterMsgs(); if (msgs.length) waterShowMsg(msgs[Math.floor(Math.random() * msgs.length)]); // #1515 空池不出声
 }
 if (Date.now() - last > 2 * 3600000) {
 const wp = waterChatDone() ? 0.09 : 0.35;
@@ -2402,9 +2532,9 @@ if (justDone) {
 vibrate([60, 40, 60]);
 const card = document.querySelector('#page-water .water-card');
 if (card) { card.classList.add('done'); setTimeout(() => card.classList.remove('done'), 900); }
-const p = libPool('water', '喝够夸奖', DEF_WATER_PRAISE); waterShowMsg(p[Math.floor(Math.random() * p.length)]);
+const p = libPool('water', '喝够夸奖', DEF_WATER_PRAISE); if (p.length) waterShowMsg(p[Math.floor(Math.random() * p.length)]); // #1515 空池不出声
 }
-else if (Math.random() < 0.2) { const e = libPool('water', '继续鼓励', DEF_WATER_ENCOURAGE); waterShowMsg(e[Math.floor(Math.random() * e.length)]); }
+else if (Math.random() < 0.2) { const e = libPool('water', '继续鼓励', DEF_WATER_ENCOURAGE); if (e.length) waterShowMsg(e[Math.floor(Math.random() * e.length)]); } // #1515 空池不出声
 });
 document.getElementById('water-minus').addEventListener('click', () => {
 if (editingNow()) return;
@@ -2416,7 +2546,7 @@ const t = waterToday(); const g = waterGoal(); const sz = waterSize();
 const done = t.count >= g;
 const base = '你今天喝了 ' + t.count + ' / ' + g + ' 杯（' + (t.count * sz) + 'ml）';
 const praise = libPool('water', '喝够夸奖', DEF_WATER_PRAISE);
-const tail = done ? '，' + praise[Math.floor(Math.random() * praise.length)] : '，还差 ' + (g - t.count) + ' 杯';
+const tail = done ? (praise.length ? '，' + praise[Math.floor(Math.random() * praise.length)] : '') : '，还差 ' + (g - t.count) + ' 杯'; // #1515 全关＝不带夸奖尾（账目照发）
 if (window.chatAddIn) { try { window.chatAddIn(base + tail); } catch (e) {} }
 toast('已发送');
 });
@@ -2425,6 +2555,7 @@ if (editingNow()) return;
 const t = waterToday(); const g = waterGoal();
 const m = waterMsgs()[Math.floor(Math.random() * waterMsgs().length)];
 const taFmt = libPool('water', 'TA 提醒句式', DEF_WATER_TA);
+if (!taFmt.length || !m) return; // #1515 全关＝不出声（不再回落同文兜底）
 const fmt = taFmt[Math.floor(Math.random() * taFmt.length)].replace('{m}', m);
 const tail = t.count < g ? '（还差 ' + (g - t.count) + ' 杯）' : '（今天喝够啦）';
 const shown = window.taFit ? window.taFit(fmt + tail) : (fmt + tail);
@@ -3236,9 +3367,9 @@ return;
 }
 }
 }
-piggyShowMsg(piggyPick(piggyInPool()));
+{ const _in = piggyInPool(); if (_in.length) piggyShowMsg(piggyPick(_in)); } // #1515 空池不出声
 } else {
-piggyShowMsg(piggyPick(libPool('piggy', '取款回应', DEF_PIGGY_OUT)));
+const _out = libPool('piggy', '取款回应', DEF_PIGGY_OUT); if (_out.length) piggyShowMsg(piggyPick(_out)); // #1515 空池不出声
 piggyAskCare();
 }
 }
@@ -3246,7 +3377,7 @@ function piggyAskCare() {
 const box = document.getElementById('piggy-reply');
 if (!box) return;
 const q = document.getElementById('piggy-reply-q');
-if (q) { var care = libPool('piggy', '取款关心', PIGGY_CARE); var careTxt = 'TA：' + care[Math.floor(Math.random() * care.length)]; q.textContent = window.taFit ? window.taFit(careTxt) : careTxt; }
+if (q) { var care = libPool('piggy', '取款关心', PIGGY_CARE); if (care.length) { var careTxt = 'TA：' + care[Math.floor(Math.random() * care.length)]; q.textContent = window.taFit ? window.taFit(careTxt) : careTxt; } } // #1515 空池不追问
 const inp = document.getElementById('piggy-reply-in'); if (inp) inp.value = '';
 box.hidden = false;
 }
@@ -3261,6 +3392,7 @@ if (Math.random() >= prob) return;
 const amt = PIGGY_TA_COINS[Math.floor(Math.random() * PIGGY_TA_COINS.length)];
 const notes = libPool('piggy', '塞硬币悄悄话', PIGGY_TA_NOTES);
 const note = notes[Math.floor(Math.random() * notes.length)];
+if (!note) return; // #1515 全关＝彩蛋静默
 vibrate([20, 60, 20]);
 setTimeout(() => { piggyShowMsg(window.taFit ? window.taFit(note + ' ¥' + piggyFmt(amt) + ' · 替TA存进去？') : (note + ' ¥' + piggyFmt(amt) + ' · 替TA存进去？')); }, 400);
 }
@@ -3591,7 +3723,7 @@ const fen = Math.round(amt * 100);
 try { if (window.giftWalletChange) window.giftWalletChange(-fen, 0); } catch (e) {}
 const log = piggyCoinLog(); log.push({ t: Date.now(), type: 'in', amt: amt, note: note || '' });
 piggySaveCoinLog(log); piggyCoinRender();
-if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true }); } catch (e) {} }
+if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true, rateAllow: true }); } catch (e) {} }
 const st = piggyCoinGoalState(); const bal = piggyCoinBal(log);
 if (st.act.g && !st.act.g.done) {
 if (bal >= st.act.g.a) {
@@ -3610,7 +3742,7 @@ const fen = Math.round(amt * 100);
 try { if (window.giftWalletChange) window.giftWalletChange(fen, 0); } catch (e) {}
 const log = piggyCoinLog(); log.push({ t: Date.now(), type: 'out', amt: amt, note: note || '' });
 piggySaveCoinLog(log); piggyCoinRender();
-if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我从存钱罐取了 ¥' + piggyFmt(amt), { nightAllow: true }); } catch (e) {} }
+if (piggyCoinIsCurrent()) { try { if (window.chatAddSystem) window.chatAddSystem('我从存钱罐取了 ¥' + piggyFmt(amt), { nightAllow: true, rateAllow: true }); } catch (e) {} }
 piggyCoinShowMsg(piggyPick(COIN_OUT_MSG));
 }
 function piggyCoinProbGet() {
@@ -3640,7 +3772,7 @@ piggySaveCoinLog(log); piggyCoinRender();
 vibrate([20, 40, 20]);
 try {
 const who = (window.chatPartnerName ? window.chatPartnerName() : '') || 'TA';
-if (window.chatAddSystem) window.chatAddSystem(who + ' 往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true });
+if (window.chatAddSystem) window.chatAddSystem(who + ' 往存钱罐存了 ¥' + piggyFmt(amt), { nightAllow: true, rateAllow: true });
 } catch (e) {}
 setTimeout(function () { piggyCoinShowMsg((window.taFit ? window.taFit(note) : note) + ' ¥' + piggyFmt(amt)); }, 300);
 }
@@ -4080,8 +4212,9 @@ const CATCH_REPLIES = [
 function fishPool(name, fallback) {
 let arr = (window.getFishPool ? window.getFishPool(name, fallback) : fallback).slice();
 if (window.isDefaultCardOff) arr = arr.filter(c => !window.isDefaultCardOff('fish', c));
-return arr.length ? arr : fallback.slice();
+return arr.length ? arr : (window.gateCardFallback ? window.gateCardFallback('fish', fallback) : fallback.slice());
 }
+window.__p2FishPoolProbe = fishPool; // #1515 只读探针（行为尺用，不参与业务）
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 function dcfPFish(def) { try { if (window.dcfGet) return window.dcfGet('fish'); } catch (e) {} return def; }
 const GAME_PANEL_IDS = ['chat-snake-panel', 'chat-pong-panel', 'chat-brick-panel', 'chat-rps-panel', 'chat-c4-panel',
@@ -4108,9 +4241,10 @@ let cur = 0; try { cur = parseInt(s.get('fish-total-ta') || '0', 10) || 0; } cat
 if (lastTa === null) { lastTa = cur; settledTa = cur; return; }
 const delta = cur - lastTa;
 if (delta > 0 && Math.random() * 100 < dcfPFish(35) && window.taChimeAllow && window.taChimeAllow('fish-ta-note', { cooldown: 45 * 60 * 1000, dailyMax: 12 })) {
+const note = pick(fishPool('摸鱼浮字', FISH_NOTE_FALLBACK));
+if (!note) { lastTa = cur; return; } // #1515 全关＝不浮字不吃冷却（lastTa 照常推进）
 window.taChimeUse('fish-ta-note');
 if (window.taChimeShow) {
-const note = pick(fishPool('摸鱼浮字', FISH_NOTE_FALLBACK));
 window.taChimeShow(note, {
 dur: 6000,
 onClick: function () {
@@ -4128,8 +4262,8 @@ if (window.addFishCatchRecord) {
 try { window.addFishCatchRecord('me', '抓包成功！双方摸鱼值 +' + bonus); } catch (e) {}
 }
 if (window.toast) window.toast(window.taFit ? window.taFit('抓包成功！双方摸鱼值 +' + bonus) : ('抓包成功！双方摸鱼值 +' + bonus));
-if (window.chatAddIn) {
 const r = pick(fishPool('抓包回应', CATCH_REPLIES));
+if (r && window.chatAddIn) { // #1515 全关＝不接话（抓包结算照常）
 setTimeout(() => { try { window.chatAddIn(window.taFit ? window.taFit(r) : r, { mood: [{ tag: '摸鱼抓包', label: '' }] }); } catch (e) {} }, 900);
 }
 } catch (e) {}

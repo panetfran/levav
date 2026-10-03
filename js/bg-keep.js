@@ -32,9 +32,11 @@ function kaCustomOn() { try { return gGet('__ka-audio-on') === '1'; } catch (e) 
 function kaAudioLabel() { return (kaCustomAudio || kaCustomOn()) ? '自定义音频' : '默认静音音频'; }
 function kaApplyCustomAudio() {
 if (!kaCustomAudio || !keepAudio || !keepAudio.el) return;
+if (keepAudio.mode === KA_MODE_WA) { kaSwapTransducer(); return; }
 try {
 if (keepAudio.el.src !== kaCustomAudio) {
 keepAudio.el.src = kaCustomAudio;
+kaApplyToneVolume();
 if (!musicNowPlaying()) {
 const p = keepAudio.el.play();
 if (p && p.catch) p.catch(function () {});
@@ -65,11 +67,7 @@ window.xyStore(GNS).remove('__ka-audio-on');
 window.xyStore(GNS).remove('__ka-audio-name');
 } catch (e) {}
 if (keepEnabled && keepAudio && keepAudio.el) {
-try {
-keepAudio.el.src = ensureKeepAudioDataUrl();
-keepAudio.el.volume = KA_VOL_BASE; // #724：与启动档同源（原硬编码 0.05）
-if (!musicNowPlaying()) { const p = keepAudio.el.play(); if (p && p.catch) p.catch(function () {}); }
-} catch (e) {}
+try { kaSwapTransducer(true); } catch (e) {}
 }
 syncKaAudioUI();
 toast('已恢复默认静音音频');
@@ -92,7 +90,7 @@ window.xyStore(GNS).set('__ka-audio-on', '1');
 window.xyStore(GNS).set('__ka-audio-name', kaCustomAudioName);
 } catch (e) {}
 if (keepEnabled && keepAudio && keepAudio.el) {
-try { keepAudio.el.volume = 1; } catch (e) {}
+try { kaApplyToneVolume(); } catch (e) {}
 kaApplyCustomAudio();
 }
 syncKaAudioUI();
@@ -112,7 +110,7 @@ const pills = [
 if (kaCustomAudio || kaCustomOn()) pills.push({ label: '清除自定义', value: 'clear' });
 const hasCustom = !!(kaCustomAudio || kaCustomOn());
 const cur = kaAudioLabel() + (hasCustom && kaCustomAudioName ? '（' + kaCustomAudioName + '）' : '');
-const txt = '后台保活需要在后台持续播放一段音频来让页面保持运行。\n\n· 默认静音音频：内置生成、近乎无声，推荐。\n· 自定义音频：上传自己的音频（白噪音 / 助眠声，或更彻底的静音文件），按原音量循环播放。\n\n注意：任何持续播放的音频都会占用手机音频通道，可能影响其他 App 的声音（详见「后台保活」功能说明）。\n当前：' + cur;
+const txt = '后台保活需要在后台持续播放一段音频来让页面保持运行。\n\n· 默认静音音频：内置生成、近乎无声，推荐。\n· 自定义音频：上传自己的音频（白噪音 / 助眠声，或更彻底的静音文件），按原音量循环播放。\n\n注意：默认静音音频走「不抢其他 App 的声音」那条通道（见 设置→系统 同名开关），不再把别的 App 的音量压低；但上传自定义音频是要出声的，它仍会占用手机音频通道，可能影响其他 App 的声音（详见「后台保活」功能说明）。\n当前：' + cur;
 window.openModal('【保活音频】', '', function (v) {
 if (v === 'default' || v === 'clear') kaSetDefaultAudio();
 else if (v === 'upload') kaPickCustomAudio();
@@ -123,6 +121,143 @@ let keepInterval = null;
 let keepEnabled = false;
 let keepUserTouched = false; // v3.26.x #88：本会话用户手动动过保活开关 → 回填后不重读覆盖
 let wakeSentinel = null; // v3.5.131：模块级，供 stopKeepAlive 释放
+const KA_MODE_MEDIA = '媒体元素(占媒体通道)', KA_MODE_WA = 'WebAudio(不占媒体通道)';
+function kaNoDuckSaved() { try { const v = gGet('__ka-noduck'); return v === null ? true : v === '1'; } catch (e) { return true; } }
+function kaCustomWanted() { return !!kaCustomAudio || kaCustomOn(); }
+let kaWaBroken = false; // #1489：本会话 WebAudio 路失败过（无 ctx／解码被拒）→ 不再反复试，留在媒体元素
+function kaNoDuckNow() { return kaNoDuckSaved() && !kaCustomWanted() && !kaWaBroken; }
+function kaOnPlayEdge() { kaMarkPlayed(); }
+function kaOnPauseEdge() {
+if (!keepEnabled || !keepAudio || !keepAudio.el || musicNowPlaying()) return;
+if (kaTimer) return; // 已在退避轨道
+if (kaYieldStealFocus()) return; // #924：隐藏期被外部抢走焦点＝用户正在听歌/看视频，不回抢
+kaSchedule(); // 连击计数由 kaSchedule 内部递增
+}
+let kaWaCtx = null, kaWaGain = null, kaWaSrc = null, kaWaBuf = null, kaWaVol = 0, kaWaPaused = true, kaWaErr = '';
+function kaWaDecode(cb) {
+if (kaWaBuf) { cb(true); return; }
+if (!kaWaCtx || !KEEP_AUDIO_WAV) { kaWaErr = 'no wav/ctx'; cb(false); return; }
+let done = false;
+const fin = function (ok) { if (done) return; done = true; cb(!!ok); };
+try {
+if (!kaWaGain) { kaWaGain = kaWaCtx.createGain(); kaWaGain.connect(kaWaCtx.destination); }
+const ab = KEEP_AUDIO_WAV.slice(0);
+const p = kaWaCtx.decodeAudioData(ab, function (b) { if (b) kaWaBuf = b; fin(!!b); },
+function () { kaWaErr = 'decode rejected'; fin(false); });
+if (p && p.then) p.then(function (b) { if (b) kaWaBuf = b; fin(!!b); }, function () { kaWaErr = 'decode threw'; fin(false); });
+} catch (e) { kaWaErr = String((e && e.message) || e); fin(false); }
+}
+function kaWaStopSrc() {
+try { if (kaWaSrc) { kaWaSrc.onended = null; kaWaSrc.stop(); } } catch (e) {}
+try { if (kaWaSrc) kaWaSrc.disconnect(); } catch (e) {}
+kaWaSrc = null;
+}
+function kaWaStart() {
+return new Promise(function (res, rej) {
+if (!keepEnabled) { rej(new Error('keep off')); return; }
+if (musicNowPlaying()) { res(); return; } // v3.10.x 让位语义与 playIt 的早退一致（不抢，等收回）
+const run = function () {
+try {
+if (kaWaCtx.state !== 'running') { rej(new Error('ctx ' + kaWaCtx.state)); return; } // 自动播放策略未解锁＝如实报错，交给既有退避／首次交互补播
+kaWaStopSrc();
+const s = kaWaCtx.createBufferSource();
+s.buffer = kaWaBuf; s.loop = true; s.connect(kaWaGain); s.start(0);
+kaWaSrc = s; kaWaPaused = false;
+kaApplyToneVolume(); // #1374a：转子换完仍由唯一落点档位说了算（前台＝0）
+kaOnPlayEdge();
+res();
+} catch (e) { rej(e); }
+};
+kaWaDecode(function (ok) {
+if (!ok) { kaWaBroken = true; kaFallbackToMedia(); rej(new Error(kaWaErr || 'decode fail')); return; } // #1489④：解码路不通＝本会话不再试，并当场换回媒体元素（保活绝不因新档而死）
+try {
+const rp = kaWaCtx.state === 'running' ? null : kaWaCtx.resume();
+if (rp && rp.then) rp.then(function () { run(); }, function () { run(); });
+else run();
+} catch (e) { run(); }
+});
+});
+}
+function kaFallbackToMedia() {
+if (!keepEnabled || !keepAudio || keepAudio.mode !== KA_MODE_WA) return;
+if (!kaBuildTransducer(kaToneLevel)) return;
+setKeepMediaSession();
+if (!musicNowPlaying()) { try { const p = keepAudio.el.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {} }
+}
+function kaWaKill() {
+kaWaStopSrc();
+try { if (kaWaCtx && kaWaCtx.close) kaWaCtx.close(); } catch (e) {}
+kaWaCtx = null; kaWaGain = null; kaWaBuf = null; kaWaPaused = true;
+}
+function kaMakeWebAudioKeep() {
+const AC = window.AudioContext || window.webkitAudioContext;
+if (!AC) return null;
+if (!kaWaCtx) { try { kaWaCtx = new AC(); } catch (e) { return null; } }
+const el = {
+loop: true,
+get paused() { return kaWaPaused; },
+set paused(v) { kaWaPaused = !!v; },
+get volume() { return kaWaVol; },
+set volume(v) { kaWaVol = v; try { if (kaWaGain) kaWaGain.gain.value = v; } catch (e) {} },
+get src() { return 'webaudio:' + (kaWaBuf ? 'decoded' : 'pending'); },
+set src(_v) {}, // 自定义音频绝不吃这条通道（#1489④ 由 kaCustomWanted 把转子换成媒体元素）
+play: function () { return kaWaStart(); },
+pause: function () { if (kaWaSrc || !kaWaPaused) { kaWaStopSrc(); kaWaPaused = true; kaOnPauseEdge(); } },
+removeAttribute: function () {}, load: function () {}, setAttribute: function () {}, addEventListener: function () {}
+};
+return { el: el, mode: KA_MODE_WA, arm: function () {}, kill: kaWaKill };
+}
+function kaMakeMediaKeep() {
+const keepEl = document.createElement('audio');
+keepEl.loop = true;
+keepEl.setAttribute('playsinline', '');
+keepEl.addEventListener('play', function () { kaOnPlayEdge(); });
+keepEl.addEventListener('pause', function () { kaOnPauseEdge(); });
+return { el: keepEl, mode: KA_MODE_MEDIA, arm: function (s) { keepEl.src = s; }, kill: null };
+}
+function kaTeardownTransducer() {
+const old = keepAudio; keepAudio = null; // 先摘在册：换通道那一刻的 pause 边沿不该排补播
+if (!old) return;
+try { if (old.el && old.el.pause) old.el.pause(); } catch (e) {}
+try { if (old.kill) old.kill(); } catch (e) {}
+}
+function kaBuildTransducer(level) {
+kaTeardownTransducer();
+const src = kaCustomAudio || ensureKeepAudioDataUrl();
+if (!src) return false;
+let t = kaNoDuckNow() ? kaMakeWebAudioKeep() : kaMakeMediaKeep();
+if (!t) { kaWaBroken = true; t = kaMakeMediaKeep(); } // #1489④ 环境不支持＝静默回落，保活不因新档而死
+keepAudio = t;
+kaSetToneLevel(level || KA_VOL_BASE); // #1374a：档位只有一个写入方；#724 基础档＋#1374b visible⇒0／hidden⇒该档
+t.arm(src);
+return true;
+}
+function kaSwapTransducer(resetBase) {
+if (!keepEnabled) return;
+if (!kaBuildTransducer(resetBase ? KA_VOL_BASE : kaToneLevel)) return;
+if (kaNoDuckNow()) kaReleaseKeepMediaSession(); else setKeepMediaSession(); // #1489③
+if (!musicNowPlaying()) { try { const p = keepAudio.el.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {} }
+}
+function kaReleaseKeepMediaSession() {
+try {
+if (window.__musicPlaying || musicIntentPlaying()) return; // 歌曲在播／还想播＝那条是 music-player 自己的，不摘
+if (!('mediaSession' in navigator) || !navigator.mediaSession) return;
+const md = navigator.mediaSession.metadata;
+if (md && String(md.title) !== 'Mochi 后台保活') return; // 不是我们的条，不摘
+} catch (e) { return; }
+kaClearKeepMediaSession();
+}
+function kaClearKeepMediaSession() {
+if (window.__musicPlaying) return;
+try {
+if ('mediaSession' in navigator && navigator.mediaSession) {
+try { navigator.mediaSession.playbackState = 'paused'; } catch (e2) {}
+navigator.mediaSession.metadata = null;
+try { navigator.mediaSession.setActionHandler('play', null); } catch (e) {}
+try { navigator.mediaSession.setActionHandler('pause', null); } catch (e) {}
+}
+} catch (e) {}
+}
 let kaTimer = null;     // 排中的退避补播定时器
 let kaDelay = 0;        // 下一次补播间隔 ms；0=不在退避轨道
 let kaPauseStreak = 0;  // 连续被打断次数（稳定播放一段时间后清零）
@@ -166,13 +301,12 @@ function kaStopTimer() { if (kaTimer) { clearTimeout(kaTimer); kaTimer = null; }
 function kaResetBackoff() { kaStopTimer(); kaPauseStreak = 0; kaPlayFailStreak = 0; }
 function kaMarkPlayed() { kaLastPlayAt = Date.now(); }
 function musicNowPlaying() {
-try { if (!window.__musicPlaying) return false; } catch (e) { return false; }
 try {
 const m = window.__mochiMusic;
 if (m && m.el && m.el.paused === false) return true;
 if (m && m.el && m.el.paused === true) return false;
 } catch (e) {}
-return true;
+try { return !!window.__musicPlaying; } catch (e) { return false; }
 }
 function syncKeepForMusic() {
 if (!keepAudio || !keepAudio.el) return;
@@ -183,7 +317,10 @@ if (!keepAudio.el.paused) keepAudio.el.pause(); // 让位：音乐在播，保�
 if (kaTimer || kaDelay) return;
 try {
 const m = window.__mochiMusic;
-if (window.__musicPlaying && m && m.el && m.el.paused && m.want && m.want()) m.el.unpause();
+if (window.__musicPlaying && m && m.el && m.el.paused && m.want && m.want()) {
+const pr = m.el.play();
+if (pr && pr.catch) pr.catch(function () {});
+}
 } catch (e) {}
 const p = keepAudio.el.play();
 if (p && p.catch) p.catch(function () {});
@@ -207,7 +344,17 @@ setTimeout(syncKeepForMusic, 0);
 } catch (e) {}
 })();
 const KA_VOL_BASE = 0.2, KA_VOL_MAX = 0.35;
-let KEEP_AUDIO_DATAURL = '';
+let KEEP_AUDIO_DATAURL = '', KEEP_AUDIO_WAV = null;
+let kaToneLevel = KA_VOL_BASE; // #724 分级读数：断流命中一次升 KA_VOL_MAX，本会话不回改
+function kaVisibleNow() { try { return document.visibilityState === 'visible'; } catch (e) { return false; } }
+function kaApplyToneVolume() {
+try {
+if (!keepAudio || !keepAudio.el) return;
+keepAudio.el.volume = kaCustomAudio ? 1 : (kaVisibleNow() ? 0 : kaToneLevel);
+} catch (e) {}
+}
+function kaSetToneLevel(v) { kaToneLevel = v; kaApplyToneVolume(); }
+document.addEventListener('visibilitychange', function () { kaApplyToneVolume(); });
 function kaIsIOS() {
 try { return !!(window.mochiDevice || {}).isIOS; } catch (e) {}
 return false;
@@ -233,10 +380,11 @@ const v = Math.sin(2 * Math.PI * freq * (i / sr)) * amp;
 dv.setInt16(44 + i * 2, Math.round(v * 32767), true);
 }
 const bytes = new Uint8Array(buf);
+KEEP_AUDIO_WAV = buf; // #1489：WebAudio 转子要 ArrayBuffer 本体（媒体元素那份走 dataURL）
 let bin = '';
 for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
 KEEP_AUDIO_DATAURL = 'data:audio/wav;base64,' + btoa(bin);
-} catch (e) { KEEP_AUDIO_DATAURL = ''; }
+} catch (e) { KEEP_AUDIO_DATAURL = ''; KEEP_AUDIO_WAV = null; }
 return KEEP_AUDIO_DATAURL;
 }
 function musicIntentPlaying() { try { return !!window.__musicWantPlay; } catch (e) { return false; } }
@@ -245,6 +393,7 @@ try {
 if (!('mediaSession' in navigator) || !navigator.mediaSession || !window.MediaMetadata) return;
 if (window.__musicPlaying) return; // 音乐在播，保留音乐的媒体条
 if (musicIntentPlaying()) return; // 音乐还想播（瞬断暂停中），不覆盖歌曲媒体条
+if (kaNoDuckNow()) { kaReleaseKeepMediaSession(); return; }
 navigator.mediaSession.metadata = new window.MediaMetadata({
 title: 'Mochi 后台保活',
 artist: 'mochi',
@@ -413,7 +562,7 @@ if (kaHb) {
 kaHb.resumed = Date.now();
 if (kaHb.ts && kaHb.resumed - kaHb.ts > 90000) {
 kaEv.stall++; kaEvSave();
-try { if (keepAudio && keepAudio.el && !kaCustomAudio) keepAudio.el.volume = KA_VOL_MAX; } catch (e) {}
+try { if (keepAudio && keepAudio.el && !kaCustomAudio) kaSetToneLevel(KA_VOL_MAX); } catch (e) {}
 if (kaHb.hid && kaHb.resumed - kaHb.hid >= 600000) {
 toast('⚠ 挂后台太久，保活被系统冻结截断过\n这段时间的后台消息/后台弹窗可能失效（回本页已自动恢复）\n经常失效：彻底关闭网页重新打开，再把「后台保活」「后台弹窗」开关重新打开', 6000);
 }
@@ -589,6 +738,10 @@ return {
 keep: keepEnabled,
 notify: notifyEnabled,
 perm: ('Notification' in window) ? Notification.permission : 'unsupported',
+anchor: keepAudio ? (keepAudio.mode || '?') : null,
+noduck: kaNoDuckNow(),
+duckIn: { saved: kaNoDuckSaved(), custom: kaCustomWanted(), broken: kaWaBroken },
+waErr: kaWaBroken ? (kaWaErr || 'webaudio unavailable') : '',
 audio: audio,
 ms: ms,
 music: music,
@@ -603,27 +756,13 @@ ev: { stall: kaEv.stall, died: kaEv.died }
 function startKeepAlive(showToast) {
 if (keepAudio) return;
 try {
-const src = kaCustomAudio || ensureKeepAudioDataUrl();
-if (!src) { if (showToast) toast('后台保活启动失败（无法生成保活音频）'); return; }
-const keepEl = document.createElement('audio');
-keepEl.loop = true;
-keepEl.volume = kaCustomAudio ? 1 : KA_VOL_BASE;
-keepEl.src = src;
-keepEl.setAttribute('playsinline', '');
-keepEl.addEventListener('play', function () { kaMarkPlayed(); });
-keepEl.addEventListener('pause', function () {
-if (!keepEnabled || !keepAudio || !keepAudio.el || musicNowPlaying()) return;
-if (kaTimer) return; // 已在退避轨道
-if (kaYieldStealFocus()) return;
-kaSchedule(); // 连击计数由 kaSchedule 内部递增
-});
+if (!kaBuildTransducer(KA_VOL_BASE)) { if (showToast) toast('后台保活启动失败（无法生成保活音频）'); return; }
 const playIt = function () {
 if (musicNowPlaying()) return; // v3.10.x：音乐在播，让位不抢音频（由 syncKeepForMusic 收回）
-const p = keepEl.play();
+const p = keepAudio.el.play();
 if (p && p.catch) p.catch(function () {});
 };
 playIt();
-keepAudio = { el: keepEl };
 setKeepMediaSession();
 kaWebrtcDeferredStart(10000);
 const resumeOnInteraction = function () {
@@ -645,7 +784,7 @@ if (!keepAudio.el.paused) keepAudio.el.pause();
 return;
 }
 if (!keepAudio.el.paused) {
-let hold = true;
+let hold = !kaNoDuckNow(); // #1489③：新档下这条心跳不再把 playbackState 按回 'playing'（那正是抢媒体焦点的那一手）
 try {
 if (document.visibilityState === 'hidden') {
 const md = navigator.mediaSession && navigator.mediaSession.metadata;
@@ -697,16 +836,8 @@ toast(ok
 }
 function stopKeepAlive(showToast) {
 try { if (keepAudio && keepAudio.el) { keepAudio.el.pause(); keepAudio.el.removeAttribute('src'); try { keepAudio.el.load(); } catch (e2) {} } } catch (e) {}
-if (!window.__musicPlaying) {
-try {
-if ('mediaSession' in navigator && navigator.mediaSession) {
-try { navigator.mediaSession.playbackState = 'paused'; } catch (e2) {}
-navigator.mediaSession.metadata = null;
-try { navigator.mediaSession.setActionHandler('play', null); } catch (e) {}
-try { navigator.mediaSession.setActionHandler('pause', null); } catch (e) {}
-}
-} catch (e) {}
-}
+try { if (keepAudio && keepAudio.kill) keepAudio.kill(); } catch (e) {}
+kaClearKeepMediaSession();
 try { if (wakeSentinel) { wakeSentinel.release(); } } catch (e) {}
 wakeSentinel = null;
 kaStopTimer();
@@ -796,7 +927,7 @@ if (typeof window.openModal !== 'function') return;
 window.openModal('后台保活已开启 · 三条必知', '', function () {}, {
 noInput: true, pillSubmit: true,
 pills: [{ label: '知道了', value: 'ok' }],
-staticText: '保活＝页面在后台持续播放一段近无声音频，让系统不冻结本页。有两条硬限制（手机/浏览器限制，不是网站故障）：\n\n① 别的 App 会把保活截断：刷视频、听歌等会占用手机音频通道，保活音频被暂停＝保活失效，回到本页才自动恢复；被截断期间后台消息收不到、后台弹窗不弹。\n\n② 后台挂久了会失效：系统省电/内存策略会把挂久的页面冻结甚至丢弃重载（Edge「睡眠标签页」/Chrome「内存节省程序」约 30 分钟就会丢）。失效后请彻底关闭网页重新打开，再把「后台保活」「后台弹窗」开关重新打开。\n\n③ 开着它时页面不会在后台自动换新版（换版要重载页面、会把后台运行打断）：顶部出现「检测到新版本」条时，你自己挑时间点「刷新使用新版」即可；不点也不影响使用，下次彻底关闭网页重开会自然换到新版。'
+staticText: '保活＝页面在后台持续播放一段近无声音频，让系统不冻结本页。有两条硬限制（手机/浏览器限制，不是网站故障）：\n\n① 别的 App 会把保活截断：刷视频、听歌等会占用手机音频通道，保活音频被暂停＝保活失效，回到本页才自动恢复；被截断期间后台消息收不到、后台弹窗不弹。（反过来也一样：老路会把你正在听的音乐压低——现在默认静音音频改走「不抢其他 App 的声音」那条通道，切进切出不再忽响忽轻，代价是通知栏那条「Mochi 后台保活」不再出现；想要回到老路（占住音频通道、通知栏有媒体条）就把 设置→系统→「保活不抢其他 App 的声音」关掉。）\n\n② 后台挂久了会失效：系统省电/内存策略会把挂久的页面冻结甚至丢弃重载（Edge「睡眠标签页」/Chrome「内存节省程序」约 30 分钟就会丢）。失效后请彻底关闭网页重新打开，再把「后台保活」「后台弹窗」开关重新打开。\n\n③ 开着它时页面不会在后台自动换新版（换版要重载页面、会把后台运行打断）：顶部出现「检测到新版本」条时，你自己挑时间点「刷新使用新版」即可；不点也不影响使用，下次彻底关闭网页重开会自然换到新版。'
 });
 } catch (e) {}
 }
@@ -831,6 +962,20 @@ if (keepEnabled) { startKeepAlive(true); kaOpenEnableHints(); }
 else stopKeepAlive(true);
 });
 }
+const kaNoduckBtn = document.getElementById('bg-keep-noduck');
+function syncKaNoduckUI() { try { if (kaNoduckBtn) kaNoduckBtn.checked = kaNoDuckSaved(); } catch (e) {} }
+function kaApplyNoduckPref(on) {
+gSet('__ka-noduck', on ? '1' : '0');
+syncKaNoduckUI();
+try { if (window.__mochiPhase) window.__mochiPhase('ka-noduck'); } catch (e) {}
+kaSwapTransducer();
+}
+window.__kaNoduckSet = kaApplyNoduckPref;
+if (kaNoduckBtn) kaNoduckBtn.addEventListener('change', function (e) {
+if (!kaUserGesture(e)) { syncKaNoduckUI(); return; }
+kaApplyNoduckPref(!!(e.target && e.target.checked));
+});
+syncKaNoduckUI();
 (function () {
 let saved = gGet('bg-keepalive');
 if (saved === null) {
@@ -924,7 +1069,7 @@ finish();
 function kaWithTimeout(p, ms) {
 return new Promise(function (resolve, reject) {
 let done = false;
-const t = setTimeout(function () { if (!done) { done = true; reject(new Error('ka-timeout')); } }, ms);
+const t = setTimeout(function () { if (!done) { done = true; const te = new Error('ka-timeout'); te.kaTimeout = true; reject(te); } }, ms);
 try {
 const pr = (typeof p === 'function') ? p() : p;
 Promise.resolve(pr).then(function (v) { if (!done) { done = true; clearTimeout(t); resolve(v); } },
@@ -949,6 +1094,8 @@ return kaWithTimeout(start(), 5000).catch(function () { return null; });
 }
 let lastNotifyChannel = '';   // 'sw' | 'page' | 'none'：最近一次实际通道
 window.bgNotifyLastChannel = function () { return lastNotifyChannel; };
+let notifyUnsettled = 0;      // FIX 2026-09-25 #1241：本会话「通知已交出、内核回执未落地」的次数（诊断点名用）
+window.bgNotifyUnsettled = function () { return notifyUnsettled; };
 let swLaterQueue = [];        // FIX 2026-09-20 #921：待补发队列——原单发闸在等待窗内只收第一条，
 let swLaterTimer = null;      // 「就绪即补发」等待窗（同时只挂一个定时器，到点统一 flush）
 function swNotifyNote(ch, chanOut) {
@@ -958,6 +1105,11 @@ if (typeof chanOut === 'function') { try { chanOut(ch); } catch (e) {} }
 function swLaterFlush(reg) {
 if (!swLaterTimer) return; // 已 flush 过（ready 与 60s 到点谁先到都只跑一次）
 clearTimeout(swLaterTimer); swLaterTimer = null;
+if (document.visibilityState !== 'hidden') {
+for (let i = 0; i < swLaterQueue.length; i++) swNotifyNote('none', swLaterQueue[i].chanOut);
+swLaterQueue = [];
+return;
+}
 const q = swLaterQueue; swLaterQueue = [];
 if (!reg) {
 for (let i = 0; i < q.length; i++) swNotifyNote('none', q[i].chanOut);
@@ -1034,7 +1186,7 @@ const swOpts = Object.assign({}, opts);
 if (!swOpts.urgency) swOpts.urgency = 'high';
 if (!swOpts.badge) swOpts.badge = BADGE_DATAURL || NOTIFY_ICON || undefined;
 kaSWReady().then(function (reg) {
-if (!reg) { if (hidden) swNotifyLater(title, opts, chanOut); pageFallback(); return; }
+if (!reg) { if (hidden) { swNotifyLater(title, opts, chanOut); note('none'); resolve(false); } else { pageFallback(); } return; }
 const STRIP_LADDER = [[], ['image'], ['image', 'badge'], ['image', 'badge', 'icon']];
 let ladderIdx = 0;
 const tryNext = function () {
@@ -1043,7 +1195,10 @@ const attempt = Object.assign({}, swOpts);
 STRIP_LADDER[ladderIdx++].forEach(function (k) { delete attempt[k]; });
 prepMediaBlobs(attempt, function () {
 kaWithTimeout(function () { return reg.showNotification(title, attempt); }, 4000)
-.then(function () { note('sw'); resolve(true); }, tryNext);
+.then(function () { note('sw'); resolve(true); }, function (e) {
+if (e && e.kaTimeout) { notifyUnsettled++; note('sw'); resolve(true); return; } // #1241 回执未落地＝按已挂出收手，绝不重发（旧写法退回 tryNext＝四级阶梯弹四条）
+tryNext();
+});
 });
 };
 tryNext();
@@ -1061,7 +1216,7 @@ const fail = function (why) { if (failCb) failCb(why); };
 if (!('Notification' in window)) {
 const _isIOS = !!(window.mochiDevice || {}).isIOS;
 say(_isIOS
-? 'iPhone / iPad 的网页拿不到系统通知\n（添加到主屏幕也不保证）请用「桌面消息弹窗」'
+? 'iPhone / iPad 在 Safari 标签页里没有系统通知能力\n请到 Safari「添加到主屏幕」，之后从桌面图标打开本站再开这个开关；期间可先用「桌面消息弹窗」'
 : '当前浏览器不支持系统通知\n请改用 Chrome/Edge 打开本站（安卓或电脑都行）');
 fail('unsupported');
 return;
@@ -1154,7 +1309,7 @@ function nbPermWarnText() {
 const p = nbPermState();
 if (p === 'unsupported') {
 return (window.mochiDevice || {}).isIOS
-? '⚠ 本机拿不到系统通知（iPhone / iPad 平台限制，添加到主屏幕也不保证）：请用「桌面消息弹窗」的应用内横幅'
+? '⚠ 本机没有网页通知能力（iPhone / iPad 的能力只在「Safari → 添加到主屏幕」后的独立应用形态里，Safari 标签页里没有）：装过去再回来开这个开关；期间请靠「桌面消息弹窗」的应用内横幅'
 : '⚠ 本机浏览器没有通知能力（小米 / vivo / OPPO 自带浏览器、UC、夸克、Via 常见如此）：请改用 Chrome / Edge 打开本站';
 }
 if (!notifyEnabled) return '';
@@ -1435,10 +1590,11 @@ toast(phase2 ? '✓ 后台弹窗链路全通：切后台（锁屏）也能弹横
 return;
 }
 if (choice !== 'miss') return;
-const MARKS = ['①', '②', '③', '④'];
+const MARKS = ['①', '②', '③', '④', '⑤', '⑥'];
 const steps = [];
 const push = function (s) { steps.push(MARKS[steps.length] + ' ' + s); };
 if (verStale) push('先升级：本页是旧版本包——彻底关闭浏览器再重开（或点顶部「刷新使用新版」），旧包＝「没改任何东西弹窗突然全没」的头号原因');
+push('先关勿扰/免打扰：手机系统的「勿扰/免打扰」（iPhone 叫「专注模式」：勿扰·睡眠·驾驶·工作）会把所有应用的通知静默收进通知栏——屏幕上方不弹横幅，而网页读不到它的状态，所以体检全绿你也可能什么都没看到。先看下拉通知栏里有没有刚才那条测试通知：有＝被系统压住了，不是链路坏了，去系统设置关掉勿扰（或在勿扰里把本浏览器/桌面上的 Mochi 加进「允许的应用/例外」）；顺手确认这条通知没被长按成「静默/减少干扰」、浏览器「网站通知」那一类没单独关掉、iPhone 没开「定时推送摘要」');
 push('重置浏览器通知权限：浏览器设置 → 网站设置 → 通知 → 把本站「关闭」再「允许」，然后强杀浏览器重开（「权限明明开着、通知却消失好几天」多数被这一步救活——JS 读到的一直是 granted，坏的是浏览器内部那条通道）');
 push('系统通知设置：系统设置 → 通知管理 → 本浏览器 → 总开关打开、「允许横幅通知/在屏幕上方显示」打开、通知重要性选「提醒」；国产 ROM（vivo/OPPO/小米/华为）每项可能各自独立');
 push('省电限制：允许本浏览器后台运行/关闭对它的省电优化（否则挂后台时整页被冻结，消息与通知都无从产生）；Edge 的「睡眠标签页」/Chrome 的「内存节省程序」默认把挂后台约 30 分钟的页面丢弃重载（表现＝回来时页面自动刷新、保活/通知可能被重置）——浏览器设置里把本站加入「永不睡眠/始终保持活动」名单');
@@ -1560,8 +1716,8 @@ pushLine('原因：' + location.protocol + '//' + location.host + ' 不是安全
 pushLine('解决：用 https:// 部署访问（GitHub Pages 即是 HTTPS）');
 } else if (kaIsIOS()) {
 pushLine('✗ 当前浏览器不支持 Notification API');
-pushLine('原因：iPhone / iPad 的网页拿不到系统通知（添加到主屏幕也不保证）');
-pushLine('解决：改用 设置 → 系统 →「桌面消息弹窗」的应用内横幅');
+pushLine('原因：iPhone / iPad 的网页通知能力只在「Safari → 添加到主屏幕」后的独立应用形态里提供，Safari 标签页里没有');
+pushLine('解决：到 Safari 分享菜单「添加到主屏幕」，之后从桌面图标打开本站再开这个开关；期间可先用 设置 → 系统 →「桌面消息弹窗」的应用内横幅');
 } else {
 pushLine('✗ 当前浏览器不支持 Notification API');
 pushLine('原因：本机浏览器没有通知能力（小米 / vivo / OPPO 等自带浏览器、UC、夸克、Via 常见如此）');
@@ -1592,8 +1748,91 @@ return;
 runTest(my);
 });
 }
-let hiddenSentCount = 0;
+const NOTIFY_KIND_LABEL = {
+msg: '条新消息', checkin: '次查岗', chatreq: '次求聊天', ask: '条提问',
+invite: '个申请', call: '次来电', mail: '封来信', feed: '条动态', wish: '个心愿', other: '条提醒'
+};
+let hiddenSent = {};
+let hiddenSentCount = 0; // 总条数：只用来判「这一场后台发过没有」，文案不再拿它冒充消息数
 let hiddenSentName = '';
+const sentAdd = function (kind) {
+hiddenSentCount++;
+hiddenSent[kind] = (hiddenSent[kind] || 0) + 1;
+};
+const sentReset = function () { hiddenSent = {}; hiddenSentCount = 0; hiddenSentName = ''; };
+const sentSummaryText = function () {
+const order = ['msg', 'checkin', 'chatreq', 'ask', 'invite', 'call', 'mail', 'feed', 'wish', 'other'];
+const parts = [];
+order.forEach(function (k) { if (hiddenSent[k]) parts.push(hiddenSent[k] + ' ' + NOTIFY_KIND_LABEL[k]); });
+if (!parts.length) return '你不在的时候有 ' + hiddenSentCount + ' 条提醒';
+return '你不在的时候收到 ' + parts.join(' · ');
+};
+const notifyKind = function (extra) {
+const k = extra && extra.kind;
+return NOTIFY_KIND_LABEL[k] ? k : 'other';
+};
+const NOTIFY_LEDGER_KEY = '__notify-ledger';
+function notifyLedger() {
+try {
+const raw = window.xyStore('xy-home-v2').get(NOTIFY_LEDGER_KEY);
+if (!raw) return [];
+const a = JSON.parse(raw);
+return Array.isArray(a) ? a : [];
+} catch (e) { return []; }
+}
+function notifyLedgerPush(entry) {
+try {
+const s = window.xyStore('xy-home-v2');
+const list = notifyLedger().filter(function (x) { return x && x.ts > Date.now() - 6 * 3600 * 1000; });
+list.push(entry);
+while (list.length > 12) list.shift();
+s.set(NOTIFY_LEDGER_KEY, JSON.stringify(list));
+} catch (e) {}
+}
+function notifyConsume(tag) {
+try {
+const list = notifyLedger();
+let hit = null;
+for (let i = list.length - 1; i >= 0; i--) {
+if (list[i] && list[i].tag === tag) { hit = list[i]; list.splice(i, 1); break; }
+}
+if (hit) window.xyStore('xy-home-v2').set(NOTIFY_LEDGER_KEY, JSON.stringify(list));
+return hit;
+} catch (e) { return null; }
+}
+function notifyEntryFromTag(tag) {
+try {
+const p = String(tag || '').split('|');
+if (p[0] !== 'nk' || p.length < 4) return null;
+return { kind: p[1], cid: p[2], tag: String(tag) };
+} catch (e) { return null; }
+}
+function notifyRoute(entry) {
+try {
+if (entry && entry.cid && window.setActiveContact && entry.cid !== (window.__activeCid || 'default')) {
+window.setActiveContact(entry.cid);
+}
+} catch (e) {}
+try {
+if (entry && entry.kind === 'mail' && typeof window.openMailPage === 'function') { window.openMailPage(); return true; }
+if (typeof window.enterChat === 'function') { window.enterChat(); return true; }
+} catch (x) {}
+return false;
+}
+window.xyPendingNotifyClick = function () { return new Promise(function (res) { try { notifyPendingClick(res); } catch (e) { res(null); } }); };
+function notifyPendingClick(cb) {
+try {
+if (!window.idbGet) { cb(null); return; }
+Promise.resolve(window.idbGet('xy-home-v2:__notify-click')).then(function (raw) {
+if (!raw) { cb(null); return; }
+try { if (window.idbDelete) window.idbDelete('xy-home-v2:__notify-click'); } catch (e0) {}
+let o = raw;
+try { if (typeof raw === 'string') o = JSON.parse(raw); } catch (e1) { cb(null); return; }
+if (!o || !o.tag || !o.ts || Date.now() - o.ts > 3 * 60000) { cb(null); return; }
+cb(notifyConsume(String(o.tag)) || notifyEntryFromTag(String(o.tag)));
+}, function () { cb(null); });
+} catch (e) { cb(null); }
+}
 document.addEventListener('visibilitychange', function () {
 const vis = document.visibilityState;
 if (vis === 'hidden') {
@@ -1617,17 +1856,17 @@ const chatPage = document.getElementById('page-chat');
 const inChat = chatPage && !chatPage.hidden;
 const n = hiddenSentCount;
 const who = hiddenSentName || store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
-hiddenSentCount = 0;
-hiddenSentName = '';
+const summaryText = sentSummaryText(); // #1443d：先按类别拼好话，再清账（清早了就没得报）
+sentReset();
 if (!inChat && n > 0 && window.showDeskPopup) {
-window.showDeskPopup({ name: who, text: '你不在的时候收到 ' + n + ' 条新消息', isHidden: false });
+window.showDeskPopup({ name: who, text: summaryText, isHidden: false });
 const now = Date.now();
 if (saved === '1' && 'Notification' in window && Notification.permission === 'granted' &&
 (!lastResumeNotifyAt || now - lastResumeNotifyAt > 30000)) {
 lastResumeNotifyAt = now;
 const notiIcon = (store.get('cs-avatar-partner') || store.get('avatar-partner') || '');
 const sendNoti = function (iconVal) {
-const o = { body: '你不在的时候收到 ' + n + ' 条新消息' };
+const o = { body: summaryText };
 if (iconVal) o.icon = iconVal;
 showSysNotification(who, o);
 };
@@ -1801,7 +2040,7 @@ recentChatDup(nkey, ts, NOTIFY_FRESH_CHAT_DUP_MS)) { gateStats.tooFresh++; retur
 if (!force && !bgNoDedup() && (notifiedDup(nkey) || seenDup(nkey))) { gateStats.dup++; return; }
 if (!force && !bgNoDedup() && recentChatDup(nkey, ts)) { gateStats.dup++; return; }
 gateStats.sent++; markNotified(nkey);
-hiddenSentCount++;
+sentAdd(notifyKind(extra)); // #1443d：按类别记账，未登记的一律算「提醒」
 hiddenSentName = extra.name || store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
 const name = extra.name || store.get('lbl-partner') || (window.taWord ? window.taWord() : 'TA');
 let t = '';
@@ -1815,6 +2054,12 @@ const body = String(text || '收到一条新消息')
 .replace(/\|\|\|.*$/, '');
 const bodyFitted = window.taFit ? window.taFit(body) : body;
 const opts = { body: (t ? t + '  ' : '') + (bodyFitted && bodyFitted.length > 40 ? bodyFitted.slice(0, 40) + '…' : bodyFitted) };
+if (extra.callAlert) {
+opts.vibrate = [700, 300, 700, 300, 700, 300, 700, 300, 700];
+opts.requireInteraction = true;
+opts.tag = 'mochi-call-' + (extra.callTag || 'call');
+opts.renotify = true;
+}
 let bigIcon = '';   // 右侧大图标：联系人头像；无头像时兜底 mochi 字母图标（见下）
 let previewImg = ''; // 展开大图：消息图片
 const avatar = extra.avFixed
@@ -1827,6 +2072,15 @@ const cropAvatarToSquare = makeAvatarThumb;
 const sendFinal = function (iconVal) {
 if (iconVal) opts.icon = iconVal;
 if (previewImg) opts.image = previewImg;
+const nk = notifyKind(extra);
+const ncid = String(extra.cid || window.__activeCid || 'default');
+let ntag = '';
+try { ntag = String(opts.tag || ''); } catch (eT0) { ntag = ''; }
+if (!ntag) {
+ntag = 'nk|' + nk + '|' + ncid + '|' + Date.now().toString(36);
+try { opts.tag = ntag; } catch (eT) {}
+}
+notifyLedgerPush({ tag: ntag, kind: nk, cid: ncid, ts: Date.now() });
 showSysNotification(name, opts).then(function (ok) {
 if (ok) {
 try { if (extra.msgTs && window.__mochiMsgNotified) window.__mochiMsgNotified(extra.msgTs, 'in'); } catch (e) {}
@@ -2070,8 +2324,15 @@ try {
 if ('serviceWorker' in navigator && navigator.serviceWorker) {
 navigator.serviceWorker.addEventListener('message', function (e) {
 if (!e || !e.data || e.data.type !== 'MOCHI_NOTIFY_CLICK') return;
-try { if (typeof window.enterChat === 'function') window.enterChat(); } catch (x) {}
+let entry = null;
+try { entry = notifyConsume(String(e.data.tag || '')) || notifyEntryFromTag(String(e.data.tag || '')); } catch (x) {}
+notifyRoute(entry);
 });
+try {
+const bootRoute = function () { try { notifyPendingClick(function (en) { if (en) notifyRoute(en); }); } catch (e0) {} };
+if (window.mochiOnDataReady) window.mochiOnDataReady(bootRoute);
+else document.addEventListener('mochi-restore-done', bootRoute);
+} catch (e1) {}
 }
 } catch (e) {}
 })();

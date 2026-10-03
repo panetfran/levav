@@ -28,7 +28,7 @@ function rand(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
 function pick(arr) { return arr && arr.length ? arr[Math.floor(Math.random() * arr.length)] : ''; }
 function todayKey() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function fenToStr(fen) { const y = fen / 100; return y.toFixed(y >= 100 ? 0 : 2); }
-function pickPool(name, fb) { try { if (window.getInteractPool) { const p = window.getInteractPool(name, fb); if (p && p.length) return p; } } catch (e) {} return fb; }
+function pickPool(name, fb) { try { if (window.getInteractPool) { const p = window.getInteractPool(name, fb); if (p && p.length) return p; } } catch (e) {} return window.gateCardFallback ? window.gateCardFallback('interact', fb) : fb; } // #1515 兜底也过闸（全关＝空池，消费方不出声）
 let audioCtx = null, soundOn = true;
 function setSoundOn(on, persist) {
 soundOn = !!on;
@@ -121,7 +121,7 @@ flower: ['这朵花给你。', 'TA 把花递给你。', '捞起一朵花，觉�
 function giftNoteFor(item) {
 const builtin = GIFT_NOTES[item.giftNote || item.id] || ['这个给你。', '想把这份小惊喜留给你。'];
 const pool = pickPool('游戏胜利·回应', builtin);
-return pool && pool.length ? pick(pool) : pick(builtin);
+return pool && pool.length ? pick(pool) : ''; // #1515 全关＝无寄语（不再回落未过闸兜底）
 }
 const _jsonCache = {};
 function _cacheNs(key) { try { return (window.activePrefix ? window.activePrefix() : '') + '|' + key; } catch (e) { return '|' + key; } }
@@ -358,7 +358,7 @@ saveGifts(g);
 sfxGift();
 const note = giftNoteFor(item);
 statusText(taWord() + ' 钓到了 ' + item.icon + ' ' + item.name + '，并把它送给了你。');
-sendTaLine(fit('TA：') + note, true);
+if (note) sendTaLine(fit('TA：') + note, true); // #1515 空寄语＝不发言（赠送照常）
 } else {
 const t = loadToday();
 t.ta[item.id] = (t.ta[item.id] || 0) + 1; saveToday(t);
@@ -367,7 +367,7 @@ statusText(taWord() + ' 钓到了 ' + item.icon + ' ' + item.name);
 maybeTaCook(item.id);
 if (item.giftNote === 'flower' && Math.random() < 0.5) {
 const note = giftNoteFor(item);
-setTimeout(function () { sendTaLine(fit('TA：') + note, false); }, 700);
+setTimeout(function () { if (note) sendTaLine(fit('TA：') + note, false); }, 700); // #1515 空寄语＝不发言
 } else if (item.r >= 4 && Math.random() < 0.5) {
 setTimeout(function () { sendTaLine(fit('TA：') + pick(TA_PROUD), false); }, 600);
 } else if (Math.random() < 0.3) {

@@ -81,6 +81,34 @@ function setEnabled(k, v) { ls.set('mh-' + k, v ? '1' : '0'); }
 window.moodSystemState = { enabled, setEnabled };
 function isCardOff(k, c) { return ls.get(k + ':' + c) === '1'; }
 function setCardOff(k, c, off) { ls.set(k + ':' + c, off ? '1' : '0'); }
+const PG_ID_MC = { mood: 'mc:mood', heart: 'mc:heart', intent: 'mc:intent' };
+let pgIdx = null;   // 内容 -> [分组名,…]：预设数据静态，索引只建一次
+function pgGroupsOf(type, content) {
+if (!pgIdx) {
+pgIdx = {};
+['mood', 'heart', 'intent'].forEach(function (k) {
+const list = k === 'heart' ? (DATA.heart || []).concat(DATA.specialHeart || [])
+: k === 'intent' ? (DATA.intent || []) : (DATA.mood || []);
+list.forEach(function (g) {
+(g.cards || []).forEach(function (c) {
+const id = PG_ID_MC[k] + '\u0000' + c.content;
+if (!pgIdx[id]) pgIdx[id] = [];
+if (pgIdx[id].indexOf(g.group) < 0) pgIdx[id].push(g.group);
+});
+});
+});
+}
+return pgIdx[PG_ID_MC[type] + '\u0000' + content] || null;
+}
+function pgOff(type, content) {
+const pg = window.presetGroup;
+if (!pg) return false;
+const gs = pgGroupsOf(type, content);
+if (!gs) return false;
+for (let i = 0; i < gs.length; i++) { if (pg.isOff(PG_ID_MC[type], gs[i])) return true; }
+return false;
+}
+function rcOff(cat, t) { return isCardOff('rc-off-' + cat, t) || !!(window.presetGroup && window.presetGroup.isOff('rc', cat)); }
 const OFF_KEY = { mood: 'mc-off-mood', heart: 'mc-off-heart', intent: 'mc-off-intent' };
 function hasMoodCard(c) {
 for (const g of (DATA.mood || [])) {
@@ -89,6 +117,7 @@ for (const card of g.cards) if (card.content === c) return true;
 return false;
 }
 function typeOff(type, content) {
+if (pgOff(type, content)) return true;   // #1315：分组闸先判——单卡「重新打开」也不许越过整组停用
 const own = ls.get(OFF_KEY[type] + ':' + content);
 if (own !== null && own !== '') return own === '1';
 if (type !== 'mood' && !hasMoodCard(content) && ls.get('mc-off-mood:' + content) === '1') return true;
@@ -109,6 +138,7 @@ const _ratio = (_ref > 0 && streakMap[_lvl] !== undefined) ? (streakMap[_lvl] / 
 let prob = Math.max(0, Math.min(100, _mBase * _ratio));
 if (Math.random() * 100 > prob) return null;
 const groups = (DATA.mood || [])
+.filter(g => !(window.presetGroup && window.presetGroup.isOff(PG_ID_MC.mood, g.group)))   // #1315 整组停用：组直接不进候选
 .map(g => ({ ...g, cards: g.cards.filter(c => !isCardOff('mc-off-mood', c.content)) }))
 .filter(g => g.cards && g.cards.length);
 let moodGroups = groups;
@@ -220,6 +250,7 @@ ls.set('chat-count', String((Number(ls.get('chat-count') || 0)) + 1));
 };
 window.resetEmotionStreak = function () { emotionStreak = 0; };
 const rcList = document.getElementById('rc-list');
+if (rcList) rcList.classList.add('preset-list'); // #1315 分组开关样式锚（与 #926 那四个列表同一份 .preset-list 规则）
 const rcEnabled = document.getElementById('rc-enabled');
 if (rcList && rcEnabled) {
 rcEnabled.checked = (ls.get('rc-enabled') === null) ? true : ls.get('rc-enabled') === '1';
@@ -263,11 +294,18 @@ let arr = followup[key] || [];
 if (rcQ) arr = arr.filter(t => t.indexOf(rcQ) >= 0);
 if (rcQ && !arr.length) return;
 const h = document.createElement('div');
-h.className = 'cc-group-header';
-h.innerHTML = '<span class="ccg-name">' + name + '</span><span class="ccg-count">' + arr.length + '</span>';
+const rcGOff = !!(window.presetGroup && window.presetGroup.isOff('rc', key));
+h.className = 'cc-group-header' + (rcGOff ? ' off' : '');
+h.innerHTML = window.presetGroup
+? window.presetGroup.headerHTML('rc', key, name, arr.length)
+: '<span class="ccg-name">' + name + '</span><span class="ccg-count">' + arr.length + '</span>';
 rcList.appendChild(h);
+if (window.presetGroup) window.presetGroup.bind(h, 'rc', key, function (nowOff) {
+renderReply();
+toast(nowOff ? '已停用分组：' + name + '（本组 ' + arr.length + ' 张字卡不再使用）' : '已启用分组：' + name);
+});
 arr.forEach(t => {
-const off = isCardOff('rc-off-' + key, t);
+const off = rcOff(key, t);
 const d = document.createElement('div');
 d.className = 'cc-item glass' + (off ? ' off' : '');
 d.innerHTML = '<div class="cc-txt"><div class="t">' + t + ' <span class="tc-known">系统</span></div></div>' +
@@ -312,6 +350,7 @@ if (home) home.hidden = false;
 }
 }
 const mcList = document.getElementById('mc-list');
+if (mcList) mcList.classList.add('preset-list'); // #1315 分组开关样式锚（与 #926 那四个列表同一份 .preset-list 规则）
 const mcEnabled = document.getElementById('mc-enabled');
 if (mcList && mcEnabled) {
 mcEnabled.checked = (ls.get('mc-enabled') === null) ? true : ls.get('mc-enabled') === '1';
@@ -386,11 +425,21 @@ mcList.innerHTML = '';
 if (!shown.length) { mcList.innerHTML = '<div class="cc-empty">暂无字卡</div>'; return; }
 shown.forEach(g => {
 const h = document.createElement('div');
-h.className = 'cc-group-header';
-h.innerHTML = '<span class="ccg-name">' + g.group + '</span><span class="ccg-count">' + g.cards.length + '</span>' +
+const mcId = PG_ID_MC[g.type || mcType] || 'mc:mood';
+const mcGOff = !!(window.presetGroup && window.presetGroup.isOff(mcId, g.group));
+h.className = 'cc-group-header' + (mcGOff ? ' off' : '');
+h.innerHTML = window.presetGroup
+? window.presetGroup.headerHTML(mcId, g.group, g.group, g.cards.length,
+(g.weight ? '<span class="ccg-count" style="background:rgba(0,0,0,.03)">权重 ' + g.weight + '</span>' : '') +
+(g.special ? '<span class="ccg-count" style="background:rgba(0,0,0,.03)">特殊</span>' : ''))
+: '<span class="ccg-name">' + g.group + '</span><span class="ccg-count">' + g.cards.length + '</span>' +
 (g.weight ? '<span class="ccg-count" style="background:rgba(0,0,0,.03)">权重 ' + g.weight + '</span>' : '') +
 (g.special ? '<span class="ccg-count" style="background:rgba(0,0,0,.03)">特殊</span>' : '');
 mcList.appendChild(h);
+if (window.presetGroup) window.presetGroup.bind(h, mcId, g.group, function (nowOff) {
+renderMood();
+toast(nowOff ? '已停用分组：' + g.group + '（本组 ' + g.cards.length + ' 张字卡不再使用）' : '已启用分组：' + g.group);
+});
 g.cards.forEach(c => {
 const off = typeOff(g.type || mcType, c.content);
 const d = document.createElement('div');
@@ -442,10 +491,10 @@ window.getReplyCard = function () {
 if (ls.get('rc-enabled') !== null && ls.get('rc-enabled') !== '1') return '';
 if (Math.random() * 100 >= (window.dcpEff ? window.dcpEff(rcardProb()) : rcardProb())) return ''; // #518 套总档
 const followup = DATA.followup || {};
-const cats = Object.keys(followup).filter(k => followup[k] && followup[k].some(t => !isCardOff('rc-off-' + k, t)));
+const cats = Object.keys(followup).filter(k => followup[k] && followup[k].some(t => !rcOff(k, t)));
 if (!cats.length) return '';
 const cat = cats[Math.floor(Math.random() * cats.length)];
-const pool = followup[cat].filter(t => !isCardOff('rc-off-' + cat, t));
+const pool = followup[cat].filter(t => !rcOff(cat, t));
 return pool[Math.floor(Math.random() * pool.length)];
 };
 window.getFollowupWord = function (reply) {
@@ -457,8 +506,8 @@ else if (reply.length <= 4) cat = 'echo';
 else if (/[。.]/.test(reply.slice(-1)) && reply.length > 8) cat = Math.random() < 0.5 ? 'bridge' : 'shift';
 else if (reply.length > 10) cat = Math.random() < 0.5 ? 'keep' : 'probe';
 else cat = Math.random() < 0.5 ? 'echo' : 'confirm';
-let pool = (followup[cat] || []).filter(t => !isCardOff('rc-off-' + cat, t));
-if (!pool.length && cat !== 'echo') pool = (followup['echo'] || []).filter(t => !isCardOff('rc-off-echo', t));
+let pool = (followup[cat] || []).filter(t => !rcOff(cat, t));
+if (!pool.length && cat !== 'echo') pool = (followup['echo'] || []).filter(t => !rcOff('echo', t));
 if (!pool.length) return '';
 return pool[Math.floor(Math.random() * pool.length)];
 };

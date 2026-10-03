@@ -54,10 +54,8 @@ function sayLine(group, fallbackKey, noFit) {
 try { if (window.dcfGet && !(Math.random() * 100 < window.dcfGet('room'))) return ''; } catch (e) {}
 let arr = null;
 try { arr = window.getLibPool ? window.getLibPool('room', GRP[group] || group, FB[fallbackKey] || []) : null; } catch (e) {}
-if (!arr || !arr.length) arr = FB[fallbackKey] || [];
-else {
-try { if (window.isDefaultCardOff) { const f = arr.filter(c => !window.isDefaultCardOff('room', c)); if (f.length) arr = f; } } catch (e) {}
-}
+if (!arr || !arr.length) arr = (window.gateCardFallback ? window.gateCardFallback('room', FB[fallbackKey] || []) : (FB[fallbackKey] || []));
+try { if (window.isDefaultCardOff) arr = arr.filter(c => !window.isDefaultCardOff('room', c)); } catch (e) {}
 if (!arr.length) return '';
 let t = String(rnd(arr)).replace(/\{n\}/g, pn());
 if (!noFit) { try { if (window.taFit) t = window.taFit(t); } catch (e) {} }

@@ -4,6 +4,7 @@ const store = window.activeStore();
 const KEY = 'mail-letters';
 const SNAP_KEY = 'mail-letters-snap';
 const LS_BIG_LIMIT = 200 * 1024;
+const HOLD_KEY = 'mail-letters-hold';
 const TITLES = ['好久不见', '最近还好吗', '想你了', '给你写了封信', '深夜随想', '一些想说的话'];
 let mtab = 'in';
 let viewLetter = null;
@@ -24,6 +25,28 @@ t._timer = setTimeout(() => { t.className = 'cc-toast'; }, 2000);
 function csFor(cid) { return cid ? window.storeFor(cid) : store; }
 function prefixFor(cid) { return cid ? ('xy-home-v2:' + cid) : window.activePrefix(); }
 function snapKey(cid) { return prefixFor(cid) + ':' + SNAP_KEY; }
+function snapStore(cid) { return cid ? window.xyStore(prefixFor(cid)) : store; }
+const MAIL_DATAURL_SRC = '[Dd][Aa][Tt][Aa]:[a-zA-Z0-9.+-]*(?:\\/[a-zA-Z0-9.+-]+)?(?:;[^,]*)?,[^\\s"\'<>]+';
+const MAIL_PAYLOAD_RE = new RegExp(MAIL_DATAURL_SRC + '|@@m:[0-9a-f]{32}', 'g');
+const MAIL_IMGREF_RE = new RegExp(MAIL_DATAURL_SRC, 'g');
+const MAIL_DESC_SLICE_RE = new RegExp('(?:sticker:|image:)?' + MAIL_DATAURL_SRC + '|(?:sticker:|image:)?@@m:[0-9a-f]{32}', 'g');
+function mailIsImgRef(s) {
+if (window.chatIsImgSrcLike) return window.chatIsImgSrcLike(s);
+return (window.mochiMediaIsToken && window.mochiMediaIsToken(s)) || /^data:image\//i.test(String(s || ''));
+}
+function mailCanonPayload(s) {
+if (typeof s !== 'string' || !/[dD][aA][tT][aA]:/.test(s)) return s;
+return s.replace(new RegExp(MAIL_DATAURL_SRC, 'g'), function (m) {
+const comma = m.indexOf(',');
+if (comma < 0) return m;
+const head = m.slice(0, comma);
+if (/^data:;/i.test(head) && window.chatFixNoMimeImg) {
+const fixed = window.chatFixNoMimeImg(m);
+if (fixed) return fixed;
+}
+return head.toLowerCase() + m.slice(comma);
+});
+}
 const _loadCache = new Map();
 function cachedParse(k, raw) {
 let list;
@@ -41,7 +64,7 @@ return list.map(x => (x && typeof x === 'object') ? Object.assign({}, x) : x);
 function loadSnap(cid) {
 try {
 const k = snapKey(cid);
-const v = localStorage.getItem(k);
+const v = snapStore(cid).get(SNAP_KEY);
 if (v) return cachedParse(k, v);
 } catch (e) {}
 return [];
@@ -49,23 +72,34 @@ return [];
 function stripLetterImg(l) {
 if (!l || typeof l !== 'object') return l;
 const c = Object.assign({}, l);
-const strip = (s) => { if (typeof s !== 'string') return s; let t = s.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '[图片]'); t = mailCleanDisplay(t); if (t.length > 8192) t = t.slice(0, 8192) + '…'; return t; };
+const strip = (s) => { if (typeof s !== 'string') return s; let t = s.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '[图片]'); t = mailCleanDisplay(t); t = t.replace(MAIL_IMGREF_RE, '[图片]'); if (t.length > 8192) t = t.slice(0, 8192) + '…'; return t; };
 c.content = strip(c.content);
 if (c.myReply) { c.myReply = Object.assign({}, c.myReply); c.myReply.content = strip(c.myReply.content); }
 if (c.partnerReply) { c.partnerReply = Object.assign({}, c.partnerReply); c.partnerReply.content = strip(c.partnerReply.content); }
 return c;
 }
 function writeSnap(list, cid) {
-if (!list || !list.length) { try { localStorage.removeItem(snapKey(cid)); } catch (e) {} return; }
-try { const snap = JSON.stringify(list.map(stripLetterImg)); if (snap.length <= LS_BIG_LIMIT) localStorage.setItem(snapKey(cid), snap); } catch (e) {}
+const ss = snapStore(cid);
+if (!list || !list.length) { try { ss.remove(SNAP_KEY); } catch (e) {} return; }
+try { const snap = JSON.stringify(list.map(stripLetterImg)); if (snap.length <= LS_BIG_LIMIT) ss.set(SNAP_KEY, snap); } catch (e) {}
 }
 function load(cid) {
 const cs = csFor(cid);
 let list = [];
 const raw = cs.get(KEY);
 if (raw !== null) list = cachedParse(prefixFor(cid) + ':' + KEY, raw);
-if (!list.length) { try { const v = loadSnap(cid); if (v.length) list = v; } catch (e) {} }
-if (!cid && !mailDbReady && mailPending && mailPending.length) {
+if (raw === null && !cid && cs.awaitingBigKey && cs.awaitingBigKey(KEY)) {
+mailSyncCold = true;
+try { if (cs.whenBigKeyBack) cs.whenBigKeyBack(KEY, function () { try { render(); updateBadge(); } catch (e0) {} }); } catch (e) {}
+} else if (raw !== null || !cid) mailSyncCold = false; // #1469s 现证不成立就复位：旧写法只在「读得到值」时复位＝主键真不在库里（raw 恒 null）时这一位永远留着，于是 save() 永远走残缺分支、#1469 的「按住」也永远抬不起来（新尺丁7 实测连按 8 轮全是那句提示，而四条证据当场都已不成立）
+if (mailStaleLs(cid)) { mailSyncCold = true; mailRescueArm(cid); }
+if (!list.length && !mailLocalAuthored) { try { const v = loadSnap(cid); if (v.length) list = v; } catch (e) {} }
+try {
+if (mailLocalAuthored) { /* #1469p 本场已权威落过整包＝这一本旁路账不再认（清空那一发落的是空整包，回灌＝把用户刚删掉的又端回屏上） */ }
+else if (!cid && !mailPending) { const h0 = mailHoldLoad(); if (h0) { mailPending = h0; mailRescueArm(cid); } }
+else if (!cid && mailPending.length && !mailRescueFlight) mailRescueArm(cid); // #1469n 攥着暂存＝问到库并回为止（无在飞才补踢，不叠发）
+} catch (eR) {}
+if (!cid && mailPending && mailPending.length) {
 const map = {};
 list.forEach(x => { if (x && x.id) map[x.id] = x; });
 mailPending.forEach(x => { if (x && x.id) map[x.id] = x; });
@@ -115,16 +149,188 @@ return Object.keys(map).map(k => map[k]).sort((x, y) => (y.tm || 0) - (x.tm || 0
 }
 let mailDbReady = false;
 let mailPending = null;
+let mailAuthOk = false;   // 权威真回过话：读到值 / count 探针证实库里没有 / 重试预算耗尽按旧语义放行
+let mailAuthTries = 0;
+const MAIL_AUTH_BACKOFF = [600, 1500, 4000, 9000, 20000];
+function mailWriteOpen() { return mailDbReady && mailAuthOk; }
+let mailSyncCold = false;
+function mailEmptyIsLie() { if (mailSyncCold) return true; return !mailAuthOk || !!(window.mochiDataPending && window.mochiDataPending()); }
+function mailFuseFlush(cb) {
+if (mailAuthOk || !window.idbHasKey) { cb(); return; }
+try {
+window.idbHasKey(window.activePrefix() + ':' + KEY).then(function (exists) {
+if (exists === true) { try { render(); updateBadge(); } catch (e) {} return; }
+cb();
+});
+} catch (e) { cb(); }
+}
+let mailLibMerged = false; // 本会话已从库里合过一次：合过之后内存那份即权威，旧 LS 不再作数
+let mailLocalAuthored = false;
+let mailClearedThisSession = false;
+let mailBlindCleared = false;
+function mailStaleLs(cid) {
+if (cid || mailLibMerged) return false;
+try {
+const cs = csFor(cid);
+return !!(cs.lsStale && cs.lsStale(KEY));
+} catch (e) { return false; }
+}
+function mailReadIncomplete(cid) { return (!cid && mailSyncCold) || mailStaleLs(cid); }
+let mailRescueFlight = null;
+let mailRescueNextAt = 0;
+function mailRescueRun(cid, cb) {
+const done = function (r) { try { if (cb) cb(r); } catch (e) {} };
+if (mailRescueFlight) { mailRescueFlight.push(done); return; }
+if (!window.idbGet) { done({ ok: false, why: 'noidb' }); return; }
+mailRescueFlight = [done]; // 先占飞行位再读屏上封数：load 会重进本函数，靠这一位挡住第二发
+let before = 0;
+try { before = (load(cid) || []).length; } catch (e) {}
+const finish = function (r) {
+const f = mailRescueFlight || [];
+mailRescueFlight = null;
+f.forEach(function (fn) { fn(r); });
+};
+const info = {};
+try {
+Promise.resolve(window.idbGet(prefixFor(cid) + ':' + KEY, info)).then(function (v) {
+if (typeof v !== 'string' || v.length <= 2) { finish({ ok: false, why: info.ambiguous ? 'ambiguous' : 'absent' }); return; }
+try { mailMergeFromIdb(v, cid); } catch (e) {}
+mailLibMerged = true;
+mailSyncCold = false;
+let after = 0, rp = 0;
+try {
+const arr = load(cid) || [];
+after = arr.length;
+arr.forEach(function (x) { if (x && x.type === 'received' && x.partnerReply) rp++; });
+} catch (e) {}
+try { render(); updateBadge(); } catch (e) {}
+finish({ ok: true, before: before, after: after, rp: rp });
+}, function () { finish({ ok: false, why: 'fail' }); });
+} catch (e) { finish({ ok: false, why: 'throw' }); }
+}
+function mailRescueArm(cid) {
+if (mailRescueFlight) return;
+const now = Date.now();
+if (now < mailRescueNextAt) return;
+mailRescueNextAt = now + 8000;
+mailRescueRun(cid);
+}
+function mailRescueClick() {
+if (mailRescueFlight) { toast('正在从本地库读取…'); return; }
+toast('正在从本地库找回…');
+mailRescueRun(undefined, function (r) {
+if (r && r.ok) toast('已从本地库合并：屏上 ' + r.before + ' → ' + r.after + ' 封' + (r.rp ? '（带 TA 回信 ' + r.rp + ' 封）' : ''));
+else if (r && r.why === 'absent') toast('本地库里没有这一格（可能从未落地）');
+else if (r && r.why === 'noidb') toast('这台设备没有可用的本地库');
+else toast('本地库这次没读出来（存储正忙）：过几秒再点一次');
+});
+}
+window.mailRescueRun = mailRescueRun; // #1417：别的入口（诊断页等）要复用时走这一条，别再写第二套口径
+function mailRescueStrip() {
+if (!mailReadIncomplete(undefined)) return '';
+return '<div class="mail-rescue-tip"><span class="mail-rescue-txt">这次没读全（本地存储正忙），可能有信没显示出来</span>' +
+'<button class="cc-tool" id="mail-rescue">从本地库找回</button></div>';
+}
+function mailAuthAsk(cid, guard, after) {
+if (!window.idbGet) { mailAuthOk = true; mailDbReady = true; after(); return; }
+const myPrefix = window.activePrefix();
+const info = {};
+const stale = function () { return (guard && guard() === false) || window.activePrefix() !== myPrefix; };
+const answered = function (v) {
+if (stale()) return;
+if (!info.ambiguous) {
+mailAuthOk = true;
+mailMergeFromIdb(v, cid);
+mailDbReady = true;
+after();
+return;
+}
+if (!window.idbHasKey) { mailAuthDelay(cid, guard, after); return; }
+window.idbHasKey(myPrefix + ':' + KEY).then(function (exists) {
+if (stale()) return;
+if (exists === false) { mailAuthOk = true; mailDbReady = true; after(); return; }
+mailAuthDelay(cid, guard, after);
+});
+};
+try {
+Promise.resolve(window.idbGet(myPrefix + ':' + KEY, info)).then(answered, function () {
+if (!stale()) mailAuthDelay(cid, guard, after);
+});
+} catch (e) { mailAuthOk = true; mailDbReady = true; after(); }
+}
+function mailAuthDelay(cid, guard, after) {
+if (mailAuthTries >= MAIL_AUTH_BACKOFF.length) {
+mailRescueRun(cid, function () { mailAuthOk = true; mailDbReady = true; after(); });
+return;
+}
+const wait = MAIL_AUTH_BACKOFF[mailAuthTries++];
+try { if (window.__mochiPhase) window.__mochiPhase('mail-auth-retry:' + mailAuthTries); } catch (e) {}
+setTimeout(function () { mailAuthAsk(cid, guard, after); }, wait);
+}
+function mailBlindRead(cid) { if (!cid && mailBlindCleared) return false; return !!window.xyBigWriteHold(csFor(cid), KEY); } // #1469r
+function mailHoldSave(arr, cid) {
+try {
+const cs = csFor(cid);
+if (arr && arr.length) cs.set(HOLD_KEY, JSON.stringify(arr));
+else cs.remove(HOLD_KEY);
+} catch (e) {}
+}
+function mailHoldLoad(cid) {
+try {
+const v = csFor(cid).get(HOLD_KEY);
+if (!v) return null;
+const a = JSON.parse(v);
+return Array.isArray(a) && a.length ? a : null;
+} catch (e) { return null; }
+}
+function mailHoldReconcile(cid, written) {
+try {
+const cs = csFor(cid);
+if (cs.awaitingBigKey && cs.awaitingBigKey(HOLD_KEY)) return;
+mailHoldSave(null, cid);
+if (!cid) mailPending = null;
+void written;
+if (!cid) mailLocalAuthored = true; // 这一场已经权威落过一次整包＝本地这份就是答案，库里那份只许补字段
+} catch (e) {}
+}
+function mailWriteBlockedNow(what) {
+let blocked = false;
+try { blocked = !mailWriteOpen() || mailReadIncomplete() || mailBlindRead(); } catch (e) { blocked = false; }
+if (!blocked) return false;
+try { window.xyBigWriteBlocked(csFor(), KEY, what, true); } catch (e2) {} // 同一句提示＋顺手请一次库
+try {
+const ask1469 = window.idbEnsureBigKey ? window.idbEnsureBigKey(KEY) : null;
+if (ask1469 && ask1469.then) ask1469.then(function (st) {
+if (st !== 'absent') return; // #1469r 只有健康连接的「确认没有」才作废残缺证据
+mailBlindCleared = true;
+mailSyncCold = false;
+try { render(); updateBadge(); } catch (e5) {}
+}, function () {});
+} catch (e6) {}
+return true;
+}
 function save(list, cid) {
-if (!cid && !mailDbReady) { try { mailPending = (list || []).slice(); } catch (e) {} writeSnap(list, cid); return; }
+if (!cid && !mailWriteOpen()) { try { mailPending = (list || []).slice(); } catch (e) {} mailHoldSave(mailPending, cid); // #1469a 未就绪那一支也落账
+return; }
+if (mailReadIncomplete(cid) || mailBlindRead(cid)) {
+try { mailPending = mergeLists(mailPending || [], list || []); } catch (e) {}
+mailHoldSave(mailPending, cid); // #1469b 残缺读数那一支：暂存当场落盘，页面被回收也带得走
+mailRescueArm(cid);
+return;
+}
 csFor(cid).set(KEY, JSON.stringify(list));
+mailLocalAuthored = true; // #1469：本会话已权威落盘＝屏上这一本就是答案（回灌那三条路关掉）
+if (!cid && !list.length) mailClearedThisSession = true; // #1469o 落的是空整包＝用户亲手清空，稍后任何一趟库读都不许把那本带回来
+mailHoldReconcile(cid, list); // #1469c 权威整包落盘后销账（读不到那一格才不动）
+if (!cid) mailPending = null; // #1469q 内存这一份照旧作废——销账被「那一格读不到」挡住时也一样，屏上不许还攥着刚写进库（或刚清空掉）的那些
 writeSnap(list, cid);
 }
+function mailIsUnread(l) { return l.type === 'received' && !l.read && !l.myReply; }
 function updateBadge() {
 const badge = document.getElementById('mail-badge');
 if (!badge && !window.setDeskBadge) return;
 try {
-const unread = load().filter(l => l.type === 'received' && !l.read && !l.myReply).length;
+const unread = load().filter(mailIsUnread).length;
 if (window.setDeskBadge) { window.setDeskBadge('mail', unread); return; }
 if (!badge) return;
 if (unread > 0) {
@@ -157,21 +363,21 @@ const seg = (t) => {
 t = String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 return (fit && window.taFit) ? window.taFit(t) : t;
 };
-const RE = /((?:sticker|image):)?(https?:\/\/[^\s"'<>]+|data:image\/[a-zA-Z0-9.+-]+(?:;[a-zA-Z0-9.+-]*(?:=[^;,]*)?)*,[^\s"'<>]+|@@m:[0-9a-f]{32})/g;
+const RE = /((?:sticker|image):)?(https?:\/\/[^\s"'<>]+|[Dd][Aa][Tt][Aa]:[a-zA-Z0-9.+-]*(?:\/[a-zA-Z0-9.+-]+)?(?:;[^,]*)?,[^\s"'<>]+|@@m:[0-9a-f]{32})/g;
 return s.replace(RE, function (all, pre, src) {
 if (src.indexOf('http') === 0 && pre !== 'sticker:' && pre !== 'image:') {
 return seg(all); // 普通网址（无附图前缀）按文本保留
 }
-const attrs = String(src).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+if (!mailIsImgRef(src)) return seg(window.chatIsDataAudioSrc && window.chatIsDataAudioSrc(src) ? '[语音]' : '[附件]');
+const real = (window.chatFixNoMimeImg && window.chatFixNoMimeImg(src)) || src; // 无 MIME 图片补正 MIME（引擎嗅探不可依赖）
+const attrs = String(real).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 return '<img class="mail-body-img" decoding="async" src="' + attrs + '" alt="表情"> ';
 });
 }
 function shortDesc(s, fit) {
 const str = mailCleanDisplay(String(s || ''));
 const cleaned = str
-.replace(/(?:sticker|image):data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '')
-.replace(/data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '')
-.replace(/@@m:[0-9a-f]{32}/g, '')
+.replace(MAIL_DESC_SLICE_RE, '')
 .replace(/\s+/g, ' ').trim();
 let out = escHtml((cleaned || '（图片）').slice(0, 30));
 if (fit && window.taFit) out = window.taFit(out);
@@ -249,7 +455,7 @@ tcb.innerHTML = html + footer;
 }
 } catch (e) {}
 if (!panelOpened && window.openModal) {
-const stripImg = (s) => String(s == null ? '' : s).replace(/(?:sticker|image:)?data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '［图片］');
+const stripImg = (s) => mailPlainDesc(s); // FIX #1235 统一走 mailPlainDesc（旧写法只认小写 image/ 前缀）
 let txt = (l.tt ? '【' + l.tt + '】\n' : '') + stripImg(l.content);
 if (l.myReply && l.type !== 'sent') txt += '\n\n—— 我的回信 ——\n' + stripImg(l.myReply.content);
 if (l.partnerReply) txt += '\n\n—— 对方的回信 ——\n' + stripImg(l.partnerReply.content);
@@ -300,7 +506,7 @@ showPage('page-mail-reply');
 function submitReply() {
 const l = viewLetter;
 if (!l) return;
-const val = readMailVal(document.getElementById('mail-reply-input')).trim();
+const val = mailCanonPayload(readMailVal(document.getElementById('mail-reply-input')).trim());
 if (!val) { toast('回信内容不能为空'); return; }
 const name = partnerName();
 const list = load();
@@ -358,6 +564,7 @@ function checkPendingReplyFor(cid) {
 try {
 if (cid === (window.__activeCid || 'default') && !mailDbReady) return;
 const now = Date.now();
+if (mailBlindRead(cid)) return; // #1442b 回信让路
 const pending = replyPendingLoad(cid);
 if (!pending.length) return;
 const name = partnerNameFor(cid);
@@ -375,7 +582,7 @@ list[idx].partnerReply = { content: p.content, tm: now };
 landed = true;
 notifyMailToChat(cid, name + ' 给你回了信', { mailNotice: true });
 if (cid === (window.__activeCid || 'default') && window.showDeskPopup && !mailPageVisible()) {
-window.showDeskPopup({ name: '信箱', text: '给你回了一封信：' + String(p.content || '').replace(/@@m:[0-9a-f]{32}/g, '[图片]').replace(/data:[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '[附件]'), onClick: openMailPage, isHidden: document.visibilityState === 'hidden' });
+window.showDeskPopup({ name: '信箱', notifyKind: 'mail', text: mailPlainDesc('给你回了一封信：' + String(p.content || '')), onClick: openMailPage, isHidden: document.visibilityState === 'hidden' });
 }
 changed = true;
 });
@@ -398,6 +605,55 @@ return '<div class="mail-item" data-id="' + escHtml(l.id) + '">' +
 '<div class="mail-item-desc">' + shortDesc(l.content, dir === 'in') + '</div></div>' +
 '<div class="mail-item-time">' + fmtDT(l.tm) + '</div></div>';
 }
+const mailFoldOpen = {};
+function weekStartTs(now) {
+const d = new Date(now);
+const dow = (d.getDay() + 6) % 7; // 周一＝0（getDay 的「周日 0」归到上一周末尾）
+d.setHours(0, 0, 0, 0);
+d.setDate(d.getDate() - dow);
+return d.getTime();
+}
+function monthKeyOf(ts) {
+const d = new Date(ts);
+return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
+}
+function monthLabelOf(key) {
+if (key === 'none') return '更早'; // #1416：缺 tm 的老信不猜日期（原来算成 0 ⇒ 组标题印「1970 年 1 月」）
+const p = key.split('-');
+return p[0] + ' 年 ' + Number(p[1]) + ' 月';
+}
+function mailFoldHtml(dir, key, rows, name, unreadN) {
+const foldKey = dir + '|' + key; // 收到/寄出各自独立折叠，同一个月不能互相顶掉开合态
+const open = (foldKey in mailFoldOpen) ? !!mailFoldOpen[foldKey] : (unreadN > 0);
+return '<div class="mail-fold' + (open ? ' open' : '') + '" data-mail-fold="' + foldKey + '">' +
+'<div class="mail-fold-head" role="button" tabindex="0" aria-expanded="' + (open ? 'true' : 'false') + '">' +
+'<span class="mail-fold-title">' + monthLabelOf(key) + '</span>' +
+'<span class="mail-fold-right">' + (unreadN > 0 ? '<span class="mail-fold-unread">' + unreadN + ' 封未读</span>' : '') +
+'<span class="mail-fold-count">' + rows.length + ' 封</span>' +
+'<span class="mail-fold-caret">▾</span></span></div>' +
+'<div class="mail-fold-body">' + rows.map(l => mailItemHtml(l, dir, name)).join('') + '</div></div>';
+}
+function mailGroupedHtml(list, dir, name) {
+const wkStart = weekStartTs(Date.now());
+const week = [], months = {}, keys = [], unreadOf = {};
+list.forEach(l => {
+const tm = Number(l.tm) || 0;
+const un = (dir === 'in' && mailIsUnread(l)) ? 1 : 0;
+if (tm && tm >= wkStart) { week.push(l); return; }
+const k = tm ? monthKeyOf(tm) : 'none';
+if (!months[k]) { months[k] = []; keys.push(k); unreadOf[k] = 0; }
+months[k].push(l);
+unreadOf[k] += un;
+});
+let html = '';
+if (week.length) {
+if (keys.length) html += '<div class="mail-sec-label">本周</div>';
+html += week.map(l => mailItemHtml(l, dir, name)).join('');
+}
+keys.sort((a, b) => (a === 'none' ? 1 : b === 'none' ? -1 : (a < b ? 1 : -1))); // 最近的月份在前，「更早」（缺 tm 的老信）永远排最后
+keys.forEach(k => { html += mailFoldHtml(dir, k, months[k], name, unreadOf[k]); });
+return html;
+}
 function render() {
 const mpEl = document.getElementById('page-mail');
 if (mpEl && mpEl.hidden) return;
@@ -407,16 +663,16 @@ const inEl = document.getElementById('mail-in-list');
 const outEl = document.getElementById('mail-out-list');
 const inList = list.filter(l => l.type === 'received');
 if (inEl) {
-const inHtml = inList.map(l => mailItemHtml(l, 'in', name)).join('');
-inEl.innerHTML = inHtml || ((window.mochiDataPending && window.mochiDataPending())
+const inHtml = mailGroupedHtml(inList, 'in', name);
+inEl.innerHTML = mailRescueStrip() + (inHtml || (mailEmptyIsLie() && window.mochiLoadingHtml
 ? window.mochiLoadingHtml('收到的信')
-: '<div class="ta-empty">' + (window.taFit ? window.taFit('还没有收到信，等等 TA 吧') : '还没有收到信，等等 TA 吧') + '</div>');
-if (inList.length && inEl.querySelectorAll('.mail-item').length < inList.length) inEl.innerHTML = inHtml;
+: '<div class="ta-empty">' + (window.taFit ? window.taFit('还没有收到信，等等 TA 吧') : '还没有收到信，等等 TA 吧') + '</div>'));
+if (inList.length && inEl.querySelectorAll('.mail-item').length < inList.length) inEl.innerHTML = mailRescueStrip() + inHtml;
 }
 const outList = list.filter(l => l.type === 'sent');
 if (outEl) {
-const outHtml = outList.map(l => mailItemHtml(l, 'out', name)).join('');
-outEl.innerHTML = outHtml || ((window.mochiDataPending && window.mochiDataPending())
+const outHtml = mailGroupedHtml(outList, 'out', name);
+outEl.innerHTML = outHtml || (mailEmptyIsLie() && window.mochiLoadingHtml
 ? window.mochiLoadingHtml('寄出的信')
 : '<div class="ta-empty">还没有寄出任何信，提笔写一封吧</div>');
 if (outList.length && outEl.querySelectorAll('.mail-item').length < outList.length) outEl.innerHTML = outHtml;
@@ -424,18 +680,41 @@ if (outList.length && outEl.querySelectorAll('.mail-item').length < outList.leng
 }
 if (window.mochiOnDataReady) window.mochiOnDataReady(function () { try { render(); } catch (e) {} });
 function mailListItemClick(e) {
-const it = e.target && e.target.closest ? e.target.closest('.mail-item') : null;
+const t = e.target && e.target.closest ? e.target : null;
+if (!t) return;
+if (t.closest('#mail-rescue')) { mailRescueClick(); return; }
+const foldHead = t.closest('.mail-fold-head');
+if (foldHead) { mailFoldToggle(foldHead.parentNode); return; }
+const it = t.closest('.mail-item');
 if (!it) return;
 const l = load().find(x => x.id === it.dataset.id);
 if (l) openLetter(l);
 }
+function mailFoldToggle(sec) {
+if (!sec || !sec.getAttribute) return;
+const key = sec.getAttribute('data-mail-fold');
+if (!key) return;
+const head = sec.querySelector('.mail-fold-head');
+const open = !sec.classList.contains('open');
+mailFoldOpen[key] = open;
+sec.classList.toggle('open', open);
+if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
 ['mail-in-list', 'mail-out-list'].forEach((lid) => {
 const el = document.getElementById(lid);
 if (el) el.addEventListener('click', mailListItemClick);
+if (!el) return;
+el.addEventListener('keydown', function (e) {
+if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+const head = e.target && e.target.closest ? e.target.closest('.mail-fold-head') : null;
+if (!head) return;
+e.preventDefault();
+mailFoldToggle(head.parentNode);
+});
 });
 function sendLetter() {
 const input = document.getElementById('mail-input');
-const content = input ? readMailVal(input).trim() : '';
+const content = input ? mailCanonPayload(readMailVal(input)).trim() : '';
 if (!content) { toast('信件内容不能为空'); return; }
 const name = partnerName();
 const title = TITLES[Math.floor(Math.random() * TITLES.length)];
@@ -523,13 +802,23 @@ if (c.indexOf('data:') === 0) return false;
 if (c.indexOf('|||') >= 0) return false;
 if (c.indexOf('@@m:') >= 0) return false;
 if (/^https?:\/\//i.test(c)) return false;
+if (window.chatHasMediaPayload && window.chatHasMediaPayload(c)) return false;
+if (c.search(MAIL_PAYLOAD_RE) >= 0) return false;
 return true;
 }
 function mailCleanDisplay(s) {
 if (typeof s !== 'string') return s;
-return s.replace(/[^\s|]{0,40}\|\|\|/g, '')
-.replace(/(data:)?audio\/?[a-zA-Z0-9.+-]*;base64,[A-Za-z0-9+/=]+/g, '[附件]')
-.replace(/data:(?!image\/)[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '[附件]');
+let t = s.replace(/[^\s|][^|\n]{0,59}?\.[a-z0-9]{1,5}\|\|\|/gi, '')
+.replace(/[^\s|]{0,40}\|\|\|/g, '')
+.replace(/(data:)?audio\/?[a-zA-Z0-9.+-]*;base64,[A-Za-z0-9+/=]+/g, '[附件]');
+return t.replace(MAIL_PAYLOAD_RE, function (m) {
+if (!mailIsImgRef(m)) return '[附件]';
+const fixed = window.chatFixNoMimeImg ? window.chatFixNoMimeImg(m) : '';
+return fixed || m;
+});
+}
+function mailPlainDesc(s) {
+return mailCleanDisplay(String(s == null ? '' : s)).replace(MAIL_DESC_SLICE_RE, '[图片]');
 }
 function mailCardPool(cid) {
 const custom = cid ? (window.getCustomCardsFor ? window.getCustomCardsFor(cid) : []) : ((window.getCustomCards && window.getCustomCards()) || []);
@@ -664,13 +953,13 @@ const kp = pool.kaomoji.length ? pool.kaomoji : pool.defKaomoji;
 const ep = pool.emoji.length ? pool.emoji : pool.defEmoji;
 if (cfg.kaomojiEn && kp.length && Math.random() * 100 < 30) t += ' ' + kp[Math.floor(Math.random() * kp.length)];
 if (cfg.emojiEn && ep.length && Math.random() * 100 < 15) t += ' ' + ep[Math.floor(Math.random() * ep.length)];
-const st = pool.sticker.concat(pool.image).filter(s => typeof s === 'string' && (s.indexOf('data:') === 0 || (window.mochiMediaIsToken && window.mochiMediaIsToken(s))));
+const st = pool.sticker.concat(pool.image).filter(s => typeof s === 'string' && s.indexOf('http') !== 0 && mailIsImgRef(s));
 if (cfg.stickerEn && st.length && Math.random() * 100 < 20) {
 const orig = st[Math.floor(Math.random() * st.length)];
 const small = (window._shrunkStickerCache && window._shrunkStickerCache[orig]) || orig;
 t += ' ' + small;
 }
-return t;
+return mailCanonPayload(t);
 }
 function letterLast(cid) { const v = parseInt(csFor(cid).get('mail-letter-last'), 10); return isNaN(v) ? 0 : v; }
 function letterNext(cid) { const v = parseFloat(csFor(cid).get('mail-letter-next')); return isNaN(v) ? 0 : v; }
@@ -695,6 +984,7 @@ if (cid === (window.__activeCid || 'default') && !mailDbReady) return;
 const cs = csFor(cid);
 const now = Date.now();
 const cfg = mailCfgFor(cid);
+if (mailBlindRead(cid)) return; // #1442a 来信让路
 if (!cfg.writeEn) return;
 let last = letterLast(cid), next = letterNext(cid);
 if (last > now || last < 0 || isNaN(last)) { last = 0; next = 0; }
@@ -720,7 +1010,7 @@ if (cid === (window.__activeCid || 'default')) {
 updateBadge();
 render();
 if (window.showDeskPopup && !mailPageVisible()) {
-window.showDeskPopup({ name: '信箱', text: '给你寄来了一封信：' + String(content || '').replace(/@@m:[0-9a-f]{32}/g, '[图片]').replace(/data:[a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+/g, '[附件]'), onClick: openMailPage, isHidden: document.visibilityState === 'hidden' });
+window.showDeskPopup({ name: '信箱', notifyKind: 'mail', text: mailPlainDesc('给你寄来了一封信：' + String(content || '')), onClick: openMailPage, isHidden: document.visibilityState === 'hidden' });
 }
 }
 } catch (e) {}
@@ -731,6 +1021,7 @@ list.forEach(c => maybeIncomingLetterFor(c.id));
 }
 function fishWeekReportFor(cid) {
 if (cid === (window.__activeCid || 'default') && !mailDbReady) return;
+if (mailBlindRead(cid)) return; // #1442c 小结让路
 if (!mailCfgFor(cid).fishWeekEn) return;
 const cs = csFor(cid);
 const now = window.__fishWeekNowOverride ? window.__fishWeekNowOverride() : new Date(); // 测试钩子：生产为 null
@@ -796,7 +1087,7 @@ if (cid === (window.__activeCid || 'default')) {
 updateBadge();
 render();
 if (window.showDeskPopup && !mailPageVisible()) {
-window.showDeskPopup({ name: '信箱', text: '寄来了一份本周摸鱼小结', onClick: openMailPage, isHidden: document.visibilityState === 'hidden' });
+window.showDeskPopup({ name: '信箱', notifyKind: 'mail', text: '寄来了一份本周摸鱼小结', onClick: openMailPage, isHidden: document.visibilityState === 'hidden' });
 }
 }
 }
@@ -934,28 +1225,16 @@ window.mochiFilePick({
 id: 'mochi-mail-img-pick', accept: 'image/*', multiple: true,
 onFiles: (files) => {
 if (!files.length) { toast('没有取到图片，请再选一次'); return; }
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+let mailImgMiss = 0;
+let mailImgChain = Promise.resolve();
 files.forEach(f => {
-const reader = new FileReader();
-reader.onload = () => {
-const img = new Image();
-img.onload = () => {
-try {
-const c = document.createElement('canvas');
-const scale = Math.min(1, 720 / Math.max(img.width, img.height));
-c.width = Math.max(1, Math.round(img.width * scale));
-c.height = Math.max(1, Math.round(img.height * scale));
-c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-mailInsertInto(textarea, 'image:' + c.toDataURL('image/png'));
-} catch (err) {
-mailInsertInto(textarea, 'image:' + reader.result);
-}
-};
-img.onerror = () => toast('图片读取失败');
-img.src = reader.result;
-};
-reader.onerror = () => toast('图片读取失败');
-reader.readAsDataURL(f);
+mailImgChain = mailImgChain.then(() => window.mochiImgIngest(f, { maxSide: 720, mime: 'image/png', tag: 'mail-img' }).then((r) => {
+if (!r || r.st !== 'ok' || !r.data) { mailImgMiss++; return; }
+mailInsertInto(textarea, 'image:' + r.data);
+}));
 });
+mailImgChain.then(() => { if (mailImgMiss) toast('有 ' + mailImgMiss + ' 张图片没能插入，请换一张小图或用系统相机重拍'); });
 }
 });
 }
@@ -968,8 +1247,8 @@ if (stickerBtn) stickerBtn.addEventListener('click', (e) => {
 e.stopPropagation();
 if (window.openEmojiPanelForInsert) window.openEmojiPanelForInsert((src, kind) => {
 if (kind === 'text') { mailInsertInto(textarea, src); return; }
-try { if (window.shrinkMediaUrl) { window.shrinkMediaUrl(src, (small) => { mailInsertInto(textarea, 'sticker:' + (small || src)); }); return; } } catch (e) {}
-mailInsertInto(textarea, 'sticker:' + src);
+try { if (window.shrinkMediaUrl) { window.shrinkMediaUrl(src, (small) => { mailInsertInto(textarea, 'sticker:' + (mailCanonPayload(small) || mailCanonPayload(src))); }); return; } } catch (e) {}
+mailInsertInto(textarea, 'sticker:' + mailCanonPayload(src));
 }, { allowUrl: true });
 });
 const upImg = root.querySelector('.mail-tb-image');
@@ -980,6 +1259,7 @@ bindMailToolbar('#page-mail-reply', 'mail-reply-input');
 function mailExportData() {
 const list = load();
 const json = JSON.stringify({ version: '1.0', app: 'mochi-mail', exportTime: new Date().toISOString(), letters: list }, null, 2);
+if (window.mochiExportFile) { window.mochiExportFile(json, '信箱数据_' + new Date().toISOString().slice(0, 10) + '.json', '信箱数据'); return; }
 try {
 const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
 const a = document.createElement('a');
@@ -1032,6 +1312,7 @@ toast('已导入 ' + valid.length + ' 封信（共 ' + merged.length + ' 封）'
 });
 }
 function mailClearAll() {
+if (mailWriteBlockedNow('信箱')) return; // #1469h 清空按住并提示（残缺读数当「答案」清空＝既删不准也盖掉库里那本）
 const n = load().length;
 if (window.openModal) {
 window.openModal('清空所有信件？', '', () => {
@@ -1046,6 +1327,7 @@ toast('信箱已清空');
 }
 function deleteLetter(l) {
 if (!l || !l.id) return;
+if (mailWriteBlockedNow('这封信')) return; // #1469g 删除按住并提示
 if (window.openModal) {
 window.openModal('删除这封信？', '', () => {
 const list = load();
@@ -1067,7 +1349,7 @@ const mailImportBtn = document.getElementById('mail-import');
 if (mailImportBtn) {
 mailImportBtn.addEventListener('click', () => {
 window.mochiFilePick({
-id: 'mochi-mail-import-pick', accept: '.json,application/json',
+id: 'mochi-mail-import-pick', accept: window.mochiDataPickAccept, // #1413：与整机导入同一份并集（窄串会让转存后改了类型的备份灰显）
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -1078,9 +1360,12 @@ mailImportFile(f);
 }
 const mailClearBtn = document.getElementById('mail-clear');
 if (mailClearBtn) mailClearBtn.addEventListener('click', mailClearAll);
+const mailRescueBtn = document.getElementById('mail-rescue-data');
+if (mailRescueBtn) mailRescueBtn.addEventListener('click', mailRescueClick);
 render();
 updateBadge();
 function mailMergeFromIdb(v, cid) {
+if (mailClearedThisSession && !cid) return; // #1469o 只挡「本场亲手清空」那一型；写过非空整包照旧并库（#1417 的战果不许反过来弄没）
 try {
 const pending = mailPending || [];
 mailPending = null;
@@ -1092,78 +1377,89 @@ if (Array.isArray(idbArr)) base = idbArr;
 let cur = [];
 try { cur = JSON.parse(csFor(cid).get(KEY) || '[]'); } catch (e) { cur = []; }
 if (!cur.length) { try { cur = loadSnap(cid); } catch (e) {} }
-const merged = mergeLists(base, mergeLists(cur, pending));
-if (merged.length) { csFor(cid).set(KEY, JSON.stringify(merged)); writeSnap(merged, cid); }
+const merged = mergeLists(mergeLists(base, cur), mergeLists(pending, mailHoldLoad(cid) || []));
+if (merged.length) { csFor(cid).set(KEY, JSON.stringify(merged)); try { mailHoldReconcile(cid, merged); } catch (e0) {} /* #1469h 库里那份合回来之后对账 */ writeSnap(merged, cid); }
 } catch (e) { /* 解析失败：仍置就绪，避免下次启动重复合并 */ }
 }
+try { mailPending = mailHoldLoad(); } catch (e0) {} // #1469d 开机先把上一场没落地的暂存灌回内存
+document.addEventListener('mochi-restore-done', function () {
 try {
-if (window.idbGet) {
-const myPrefix = window.activePrefix();
-window.idbGet(myPrefix + ':' + KEY).then(v => {
-if (window.activePrefix() !== myPrefix) return;
-mailMergeFromIdb(v);
-mailDbReady = true;
+if (mailLocalAuthored) return; // #1469p 本场已经权威落盘＝回填完成这一发不再回灌旁路账（清空之后不许复活）
+if (mailPending && mailPending.length) return;
+const h = mailHoldLoad();
+if (!h) return;
+mailPending = h;
+render();
+updateBadge();
+} catch (e1) {}
+});
+if (window.mochiOnDataReady) window.mochiOnDataReady(function () {
+try {
+if (mailLocalAuthored) return; // #1469p 同上一条：本场已权威落盘就不再回灌
+if (mailPending && mailPending.length) return;
+const h = mailHoldLoad();
+if (!h) return;
+mailPending = h;
+render();
+updateBadge();
+} catch (e2) {}
+});
+try {
+mailAuthAsk(undefined, null, function () {
 checkPendingReply(); // v3.9.x：权威就绪立即补查到期回信（启动即到的回信不再等 20~60s）
 render();
 updateBadge();
 });
-} else {
-mailDbReady = true;
-}
-} catch (e) { mailDbReady = true; }
+} catch (e) { mailAuthOk = true; mailDbReady = true; }
 setTimeout(function () {
-if (mailDbReady) return;
+if (mailWriteOpen()) return;
+mailFuseFlush(function () {
 try {
 const all = load();
-if (all.length) store.set(KEY, JSON.stringify(all));
+if (all.length) { store.set(KEY, JSON.stringify(all)); try { mailHoldReconcile(undefined, all); } catch (e0) {} } // #1469f 保险丝放行＝这一包已落盘，暂存销账
 } catch (e) {}
+mailAuthOk = true;
 mailDbReady = true;
 checkPendingReply(); // v3.9.x：保险丝就绪同样补查（权威加载挂起场景）
 render();
 updateBadge();
+});
 }, 15000);
 document.addEventListener('contact-switched', function () {
 try {
 const switchedCid = window.__activeCid || 'default';
 mailDbReady = false;
-mailPending = null;
+mailAuthOk = false;
+mailAuthTries = 0; // #1309b：新桌面另给一份重试预算（与 mailPending 一样按桌面重置）
+mailBlindCleared = false; // #1469r 这一问的结论属于刚才那个桌面，换桌面重问
+mailPending = mailHoldLoad(switchedCid); // #1469e 换桌面＝换那本暂存账（账按联系人分键，不会串桌面）
+mailLibMerged = false; // #1417：合过的账按桌面重置——新桌面这一格是不是旧账要重新问一次
 let fuseFired = false;
 const fuse = setTimeout(function () {
-if (fuseFired || mailDbReady) return;
+if (fuseFired || mailWriteOpen()) return;
 if ((window.__activeCid || 'default') !== switchedCid) return; // 已切走：本保险丝作废
+mailFuseFlush(function () {
 fuseFired = true;
 try {
 const all = load(switchedCid);
-if (all.length) csFor(switchedCid).set(KEY, JSON.stringify(all));
+if (all.length) { csFor(switchedCid).set(KEY, JSON.stringify(all)); try { mailHoldReconcile(switchedCid, all); } catch (e0) {} } // #1469f 保险丝放行那一发同样销账
 } catch (e) {}
+mailAuthOk = true;
 mailDbReady = true;
 checkPendingReply(); // v3.9.x：切桌面权威就绪补查（新桌面到期的回信立即落地）
 render();
 updateBadge();
+});
 }, 15000);
-if (window.idbGet) {
-window.idbGet(window.activePrefix() + ':' + KEY).then(v => {
-if (fuseFired) return; // 保险丝已先就绪，idbGet 迟到则跳过（load 已含暂存）
-if ((window.__activeCid || 'default') !== switchedCid) return; // 已切走：作废，不合并不置就绪
+mailAuthAsk(switchedCid, function () {
+return !fuseFired && (window.__activeCid || 'default') === switchedCid;
+}, function () {
 clearTimeout(fuse);
-mailMergeFromIdb(v, switchedCid);
-mailDbReady = true;
 checkPendingReply(); // v3.9.x：切桌面权威就绪补查
 render();
 updateBadge();
-}).catch(() => {
-if (fuseFired) return;
-if ((window.__activeCid || 'default') !== switchedCid) return;
-clearTimeout(fuse);
-mailDbReady = true; render(); updateBadge();
 });
-} else {
-clearTimeout(fuse);
-mailDbReady = true;
-render();
-updateBadge();
-}
-} catch (e) { mailDbReady = true; }
+} catch (e) { mailAuthOk = true; mailDbReady = true; }
 });
 })();
 if (window.__mochiLoaded) window.__mochiLoaded.push("mail.js");

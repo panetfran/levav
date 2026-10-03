@@ -78,6 +78,47 @@ if (Array.isArray(v)) return v.map(x => typeof x === 'string' ? { t: x } : (x &&
 } catch (e) {}
 return [];
 }
+let qcQueue = [], qcBusy = false, qcTry = 0, qcAuth = false;
+function qcFullKey() { return (window.activePrefix ? window.activePrefix() : 'xy-home-v2:default') + ':' + KEY; }
+function qcRun() {
+const ops = qcQueue; qcQueue = [];
+let out = getCustom();
+try { ops.forEach(op => { const r = op(out); if (Array.isArray(r)) out = r; }); } catch (e) { return false; }
+store.set(KEY, JSON.stringify(out));
+try { renderMineList(); updateEntryCount(); } catch (e) {}
+return true;
+}
+function qcFlush() {
+if (qcBusy || !qcQueue.length) return;
+if (!window.xyPackageEmptyRead || !window.xyPackageEmptyRead(store, KEY) || qcAuth) { qcRun(); return; }
+if (!window.idbHydrateKey) { qcRun(); return; } // 没有 IDB 这一层＝同步层就是全部真相
+qcBusy = true;
+window.idbHydrateKey(qcFullKey()).then(ok => {
+qcBusy = false;
+if (ok === false) {
+if (qcTry < 4) {
+qcTry++;
+try { window.__qcBlindHold = (window.__qcBlindHold || 0) + 1; } catch (e) {}
+setTimeout(qcFlush, 1500 * qcTry);
+} else { qcQueue = []; try { window.__qcBlindDrop = (window.__qcBlindDrop || 0) + 1; } catch (e2) {} }
+return;
+}
+qcAuth = true; // true＝库里那一本已灌回同步层；null＝健康连接确认没有——两者之后「空」才是答案
+qcTry = 0; qcFlush();
+}, () => {
+qcBusy = false;
+if (qcTry < 4) {
+qcTry++;
+try { window.__qcBlindHold = (window.__qcBlindHold || 0) + 1; } catch (e) {}
+setTimeout(qcFlush, 1500 * qcTry);
+} else { qcQueue = []; try { window.__qcBlindDrop = (window.__qcBlindDrop || 0) + 1; } catch (e2) {} }
+});
+}
+function qcWrite(op) {
+qcQueue.push(op);
+qcFlush();
+return !qcQueue.length;
+}
 window.getQuoteOfDay = function () {
 const useDefault = getUseDefault();
 const custom = getCustom();
@@ -167,12 +208,16 @@ html += '</div>';
 el.innerHTML = html;
 el.querySelectorAll('.ta-del').forEach(b => {
 b.addEventListener('click', () => {
-const list = getCustom();
-list.splice(Number(b.dataset.idx), 1);
-store.set(KEY, JSON.stringify(list));
-renderMineList();
-updateEntryCount();
-toast('已删除');
+const target = getCustom()[Number(b.dataset.idx)];
+if (!target) return;
+const landed = qcWrite(function (arr) {
+let gone = false;
+return arr.filter(x => {
+if (!gone && x.t === target.t && String(x.grp || '') === String(target.grp || '')) { gone = true; return false; }
+return true;
+});
+});
+toast(landed ? '已删除' : '正在取回本地库存，稍等会自动删除');
 });
 });
 bindCqGroupOps();
@@ -217,11 +262,13 @@ toast('分组已重命名');
 } else if (b.dataset.op === 'rm') {
 window.cardGroups.removeFlow(g.name, ok => {
 if (!ok) return;
-const list = getCustom();
-list.forEach(x => { if (x.grp === gid) x.grp = ''; });
-store.set(KEY, JSON.stringify(list));
+const landed = qcWrite(function (arr) {
+arr.forEach(x => { if (x.grp === gid) x.grp = ''; });
+return arr;
+});
 saveGroups(groups.filter(x => x.id !== gid));
 refreshGrpSelect();
+if (!landed) toast('正在取回本地库存，稍等会自动清除该组内容');
 renderMineList();
 toast('已删除分组「' + g.name + '」');
 });
@@ -259,17 +306,18 @@ if (!items.length) { toast('请输入内容，每行一句'); return; }
 const grpSel = document.getElementById('cq-batch-grp');
 const parsed = window.cardGroups.parseCatVal(grpSel ? grpSel.value : '');
 if (!parsed) { toast('请先选择分组'); return; }
-const list = getCustom();
+const landed = qcWrite(function (arr) {
 items.forEach(it => {
 const x = { t: it };
 if (parsed.grp) x.grp = parsed.grp;
-list.push(x);
+arr.push(x);
 });
-store.set(KEY, JSON.stringify(list));
+return arr;
+});
 if (ta) ta.value = '';
 renderMineList();
 updateEntryCount();
-toast('已添加 ' + items.length + ' 句今日情话');
+toast(landed ? '已添加 ' + items.length + ' 句今日情话' : '正在取回本地库存，稍等会自动添加 ' + items.length + ' 句');
 });
 }
 const cqNewGrp = document.getElementById('cq-new-grp');

@@ -232,13 +232,7 @@ toast(wasLoop ? '自定义铃声无法播放，已改用内置铃声' : '自定�
 }
 if (wasLoop) playBuiltin(ringBuiltinFallbackId(), true); // 来电兜底：保证不无声
 }
-window.playSfx = function (type, opts) {
-try {
-const loop = !(opts && opts.loop === false);
-const custom = store.get(KEYS[type]);
-if (custom && typeof custom === 'string' && custom.length > 10) {
-if (type === 'ring') {
-const playRingWith = function (src) {
+function playRingSrc(src, loop) {
 if (ringAudio) { try { ringAudio.pause(); } catch (e) {} try { ringAudio.removeAttribute('src'); ringAudio.load(); } catch (e) {} }
 ringAudio = new Audio(src);
 ringAudio.loop = loop;
@@ -247,25 +241,39 @@ let failed = false;
 const fail = function () { if (!failed) { failed = true; ringCustomFail(loop); } };
 ringAudio.addEventListener('error', fail);
 ringAudio.play().catch(fail);
-};
-if (custom.indexOf('data:') === 0) {
-dataUrlToBlob(custom, function (b) {
+}
+function playRingCustom(v, loop) {
+if (v.indexOf('data:') === 0) {
+dataUrlToBlob(v, function (b) {
 if (b) {
 try {
 const newUrl = URL.createObjectURL(b);
 revokeRingObjUrl(); // 先回收旧 URL，再挂新 URL（顺序不可反：先 revoke 会把新 URL 也一起回收）
 ringObjUrl = newUrl;
-playRingWith(newUrl);
+playRingSrc(newUrl, loop);
 return;
 } catch (e) { revokeRingObjUrl(); }
 }
 revokeRingObjUrl();
-playRingWith(custom); // Blob 不可用（fetch 受限）→ dataURL 直播
+playRingSrc(v, loop); // Blob 不可用（fetch 受限）→ dataURL 直播
 });
 } else {
 revokeRingObjUrl();
-playRingWith(custom);
+playRingSrc(v, loop);
 }
+}
+let ringReadGen = 0;
+function siteMusicAudible() {
+try { const m = window.__mochiMusic; return !!(m && m.el && m.el.paused === false); } catch (e) { return false; }
+}
+window.playSfx = function (type, opts) {
+try {
+if (type !== 'ring' && siteMusicAudible()) return;
+const loop = !(opts && opts.loop === false);
+const custom = store.get(KEYS[type]);
+if (custom && typeof custom === 'string' && custom.length > 10) {
+if (type === 'ring') {
+playRingCustom(custom, loop);
 return;
 }
 const a = new Audio(custom);
@@ -273,6 +281,33 @@ a.volume = 0.9;
 releaseWhenDone(a);
 a.play().catch(() => {});
 return;
+}
+if (type === 'ring') {
+const sst = sfxUnified() ? gStore : rawStore;
+let needsAsk = false;
+try { needsAsk = !!(sst && sst.awaitingBigKey && sst.awaitingBigKey(KEYS.ring)); } catch (e) {}
+if (needsAsk) {
+const gen = ++ringReadGen;
+let settled = false;
+const tryCustom = function () {
+if (settled || gen !== ringReadGen) return;
+let v = null;
+try { v = sst.get(KEYS.ring); } catch (e) {}
+if (v && typeof v === 'string' && v.length > 10) { settled = true; playRingCustom(v, loop); }
+};
+const builtinSeg = function () {
+if (settled || gen !== ringReadGen) return;
+settled = true;
+const bid = store.get(BKEYS.ring);
+if (bid !== 'none' && bid && SYNTHS[bid]) playBuiltin(bid, true);
+};
+tryCustom(); // 回读可能在问证人期间已落地（竞速窗口）
+if (!settled) {
+try { sst.whenBigKeyBack(KEYS.ring, tryCustom); } catch (e) {}
+setTimeout(builtinSeg, 1600); // 确无此键（'absent' 不回调）或问不出结果时按时收场
+}
+return;
+}
 }
 const bid = store.get(BKEYS[type]);
 if (bid !== 'none' && bid && SYNTHS[bid]) playBuiltin(bid, type === 'ring' && loop);
@@ -288,6 +323,7 @@ window.playSfx(touched ? gcType : singleType, { loop: false });
 };
 window.stopSfx = function (type) {
 if (type === 'ring') {
+ringReadGen++; // #1485b：接听/挂断＝在飞的补读与超时兜底全部作废，不许迟响/双响
 if (ringAudio) { try { ringAudio.pause(); } catch (e) {} ringAudio = null; }
 revokeRingObjUrl();
 if (ringSrc) { try { ringSrc.stop(); } catch (e) {} ringSrc = null; }

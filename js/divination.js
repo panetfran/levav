@@ -378,25 +378,9 @@ try { gStore.remove(fullKey(m, n)); } catch (e) {}
 try { gStore.remove(thbKey(m, n)); } catch (e) {}
 faceThb.delete(m + '|' + n);
 }
-function compressImg(dataUrl, maxSide, quality) {
-return new Promise((resolve) => {
-if (typeof dataUrl === 'string' && dataUrl.length > 8 * 1024 * 1024) { resolve(null); return; }
-const img = new Image();
-img.onload = () => {
-try {
-if (img.width * img.height > 26000000) { resolve(null); return; }
-const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-const w = Math.max(1, Math.round(img.width * scale));
-const h = Math.max(1, Math.round(img.height * scale));
-const cv = document.createElement('canvas');
-cv.width = w; cv.height = h;
-cv.getContext('2d').drawImage(img, 0, 0, w, h);
-resolve(cv.toDataURL('image/jpeg', quality));
-} catch (e) { resolve(null); }
-};
-img.onerror = () => resolve(null);
-img.src = dataUrl;
-});
+function compressImg(src, maxSide, quality) {
+if (!window.mochiImgCompressTo) return Promise.resolve(null);
+return window.mochiImgCompressTo(src, { maxSide: maxSide, quality: quality, tag: 'div-face' });
 }
 try { leno36 = gStore.get(LENO36_KEY) === '1'; } catch (e) { leno36 = false; }
 function lenoDeck() { return leno36 ? LENO.slice(0, 36) : LENO; }
@@ -788,6 +772,7 @@ const hcard = el.closest ? el.closest('.div-card') : null;
 if (hcard) hcard.hidden = !list.length;
 histShown = Math.min(histShown, HIST_PAGE);   // 重渲（开页/新抽牌/删除）回到第一页，新记录在最上
 if (!list.length) { el.innerHTML = ''; return; }
+if (histShown > list.length) histShown = list.length;
 let html = '<div class="div-label">占卜记录</div>';
 for (let i = 0; i < histShown; i++) html += histRowHtml(list[i], i);
 if (histMoreRest(list) > 0) html += '<button type="button" class="div-h-more" id="div-h-more">显示更早的记录（还有 ' + histMoreRest(list) + ' 条）</button>';
@@ -1197,20 +1182,16 @@ const f = files && files[0];
 if (!f || !pendingUpload) { pendingUpload = null; return; }
 const target = pendingUpload;
 pendingUpload = null;
-const rd = new FileReader();
-rd.onload = () => {
-compressImg(rd.result, 720, 0.85).then((full) => {
-if (!full) { toast('图片过大或无法读取，请换一张'); return; }
-compressImg(rd.result, 200, 0.82).then((thb) => {
+if (!window.mochiImgCompressTo) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+compressImg(f, 720, 0.85).then((full) => {
+if (!full) { toast('这张图本机浏览器处理不了，请换一张小图或用系统相机重拍'); return; }
+compressImg(full, 200, 0.82).then((thb) => {
 if (!thb) { toast('图片处理失败，请换一张'); return; }
 storeFaceFromDataUrls(target.m, target.n, full, thb);
 renderFaceList(); renderFaceGallery();
 toast('已设为「' + target.n + '」的牌面');
 });
 });
-};
-rd.onerror = () => toast('图片读取失败');
-rd.readAsDataURL(f);
 }
 });
 }
@@ -1322,6 +1303,7 @@ toast('已导入 ' + ok + ' 张牌面');
 function handleBatchFiles(files) {
 const list = Array.prototype.slice.call(files || []);
 if (!list.length) return;
+if (!window.mochiImgCompressTo) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
 const defaultMode = facePanelCid || 'tarot';
 const oneBased = faceOneBased;
 const skipped = [];
@@ -1345,11 +1327,9 @@ return;
 const f = list[i];
 const hit = matchFaceFile(f.name, defaultMode, oneBased);
 if (!hit) { skipped.push(f.name); step(i + 1); return; }
-const rd = new FileReader();
-rd.onload = () => {
-compressImg(rd.result, 720, 0.85).then((full) => {
+compressImg(f, 720, 0.85).then((full) => {
 if (!full) { skipped.push(f.name); step(i + 1); return; }
-compressImg(rd.result, 200, 0.82).then((thb) => {
+compressImg(full, 200, 0.82).then((thb) => {
 if (!thb) { skipped.push(f.name); step(i + 1); return; }
 storeFaceFromDataUrls(hit.m, hit.n, full, thb);
 const key = hit.m + '|' + hit.n;
@@ -1358,9 +1338,6 @@ doneSet.add(key);
 step(i + 1);
 });
 });
-};
-rd.onerror = () => { skipped.push(f.name); step(i + 1); };
-rd.readAsDataURL(f);
 };
 step(0);
 }
@@ -1403,8 +1380,7 @@ if (ex) ex.addEventListener('click', exportFacesData);
 const imp = pg.querySelector('#divf-import');
 if (imp) imp.addEventListener('click', () => {
 window.mochiFilePick({
-id: 'dev-divf-json-pick',
-accept: '.json,application/json',
+id: 'dev-divf-json-pick', accept: window.mochiDataPickAccept, // #1413：与整机导入同一份并集（窄串会让转存后改了类型的备份灰显）
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) return;

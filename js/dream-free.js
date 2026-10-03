@@ -182,8 +182,20 @@ return out !== str ? out : null;
 }
 const END_PUNCT_OK = /[。．！？!?~～…，、,.;；:：）)”’"]/;
 const END_PUNCT_DEFAULT = ['。', '。', '。', '~', '！', '……'];
+function poolFromSet(rawSet) {
+let arr = null;
+try { arr = JSON.parse(String(rawSet)); } catch (e) { return null; }
+if (!Array.isArray(arr)) return null;
+const out = arr.filter(it => it && typeof it.s === 'string' && it.s && it.s.length <= 6 && it.on === 1)
+.map(it => it.s).slice(0, 20);
+return out.length ? out : null;
+}
 function endPunctPool(c) {
 if (c && Number(c['mjf-punct']) === 0) return null; // 关＝不补标点
+if (c && c['mjf-punct-set']) {
+const sel = poolFromSet(c['mjf-punct-set']);
+if (sel) return sel;
+}
 const raw = c && c['mjf-punct-pool'] != null ? String(c['mjf-punct-pool']).trim() : '';
 if (!raw) return END_PUNCT_DEFAULT;
 let arr = raw.split(/[\s|]+/).filter(Boolean);
@@ -243,6 +255,7 @@ return !!window.ccAppendCards('mjfree', '梦角自由造句', [v], usePublic ? '
 };
 window.dreamFreeSegment = segment;
 window.dreamFreeRebuild = rebuild;
+window.dreamFreePunctPool = endPunctPool;
 })();
 if (window.__mochiLoaded) window.__mochiLoaded.push("dream-free.js");
 } catch (__e) { if (window.__mochiErrLoaded) window.__mochiErrLoaded.push("dream-free.js"); try { console.error("[JS] dream-free.js", __e && __e.message || __e); } catch (x) {} if (window.__jsErrors) window.__jsErrors.push("[dream-free.js] " + String(__e && __e.message || __e)); } })();

@@ -161,7 +161,16 @@ applyFsCss(true);
 showFsFallbackTip();
 forcePortrait(5, showRotateTip);
 }
+let _fsFlight = null, _fsFlightTimer = 0;
+function closeFsFlight() { clearTimeout(_fsFlightTimer); _fsFlight = null; }
+function openFsFlight(p) {
+_fsFlight = p || true;
+clearTimeout(_fsFlightTimer);
+_fsFlightTimer = setTimeout(closeFsFlight, 1500);
+if (p && p.then) p.then(closeFsFlight, closeFsFlight);
+}
 function enterFs() {
+if (_fsFlight || isFullscreen()) return _fsFlight; // #1282 在途/已全屏＝不再另开一次切换事务
 try {
 const el = document.documentElement;
 let p;
@@ -169,12 +178,14 @@ const fsOpts = { navigationUI: 'hide' };
 if (el.requestFullscreen) p = el.requestFullscreen(fsOpts);
 else if (el.webkitRequestFullscreen) p = el.webkitRequestFullscreen();
 const tryLock = () => { lockFsOrient(); startFsMonitorSafe(); };
-if (p && p.then) { p.then(tryLock, tryLock); return p; }
+if (p && p.then) { openFsFlight(p); p.then(tryLock, tryLock); return p; } // #1282 请求落定前挂闸
+openFsFlight(null);
 setTimeout(tryLock, 300);
 } catch (e) {}
 return null;
 }
 function exitFs() {
+closeFsFlight(); // #1282 主动退出＝撤闸，别让在途的进入请求挡住随后的恢复
 try {
 unlockFsOrient();
 stopFsMonitor();
@@ -416,8 +427,15 @@ _retryArmed = false;
 document.removeEventListener('click', retryClick, true);
 document.removeEventListener('touchstart', retryTouch, true);
 }
-function retryClick(e) { if (!e.isTrusted) return; doRetry(); }
-function retryTouch(e) { if (!e.isTrusted) return; doRetry(); }
+function onFsSwitch(t) {
+if (!t || typeof t.closest !== 'function') return false;
+if (t.closest('#sf-fullscreen, #cs-fullscreen')) return true;
+const lb = t.closest('label');
+return !!(lb && (lb.htmlFor === 'sf-fullscreen' || lb.htmlFor === 'cs-fullscreen' ||
+lb.querySelector('#sf-fullscreen, #cs-fullscreen')));
+}
+function retryClick(e) { if (!e.isTrusted || onFsSwitch(e.target)) return; doRetry(); }
+function retryTouch(e) { if (!e.isTrusted || onFsSwitch(e.target)) return; doRetry(); }
 function doRetry() {
 disarmRetry();
 if (store.get(FS_KEY) !== '1' || isFullscreen()) return; // 用户已关闭/已全屏 → 放弃
@@ -542,7 +560,23 @@ function _gfsSchedule() {
 if (_gfsRaf) return;
 _gfsRaf = requestAnimationFrame(function () { _gfsRaf = 0; applyGameFsElevate(); });
 }
-var _gfsObs = new MutationObserver(_gfsSchedule);
+function _gfsHitOne(n, deep) {
+if (!n || n.nodeType !== 1) return false;
+if (n.classList && n.classList.contains('poke-card')) return true;
+if (!deep) return false;
+try { return !!n.querySelector('.poke-card'); } catch (e) { return false; }
+}
+function _gfsHit(muts) {
+for (var i = 0; i < muts.length; i++) {
+var m = muts[i];
+if (m.type === 'attributes') { if (_gfsHitOne(m.target, false)) return true; continue; }
+var a = m.addedNodes, r = m.removedNodes, k;
+for (k = 0; k < a.length; k++) if (_gfsHitOne(a[k], true)) return true;
+for (k = 0; k < r.length; k++) if (_gfsHitOne(r[k], true)) return true;
+}
+return false;
+}
+var _gfsObs = new MutationObserver(function (muts) { if (_gfsHit(muts)) _gfsSchedule(); });
 _gfsObs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class', 'hidden'], childList: true });
 applyGameFsElevate();
 })();

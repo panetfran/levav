@@ -546,6 +546,21 @@ const MIGRATE_KEY = 'market-migrated';
 const GIFTS_KEY = 'market-gifts'; // 旧各桌面商品库键（仅迁移读取用）
 function customLoad() { try { const a = JSON.parse((GSTORE && GSTORE.get(CUSTOM_KEY)) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
 function customSave(a) { if (GSTORE) GSTORE.set(CUSTOM_KEY, JSON.stringify(a)); }
+function customReadUnconfirmed() {
+try { return !!(GSTORE && typeof GSTORE.awaitingBigKey === 'function' && GSTORE.awaitingBigKey(CUSTOM_KEY)); } catch (e) { return false; }
+}
+function customWriteBlocked() {
+try { if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(GSTORE, CUSTOM_KEY, '心意集市商品库')) return true; } catch (e) {}
+return false;
+}
+function customAwaitBack(cb) {
+try { if (GSTORE && GSTORE.requestBigKey) GSTORE.requestBigKey(CUSTOM_KEY); } catch (e) {}
+try { if (GSTORE && GSTORE.whenBigKeyBack) GSTORE.whenBigKeyBack(CUSTOM_KEY, function () { try { cb(); } catch (e0) {} }); } catch (e1) {}
+}
+function marketRerenderBoth() {
+try { if (marketPage && !marketPage.hidden) renderMarket(); } catch (e0) {}
+try { const gp = document.getElementById('chat-gift-panel'); if (gp && !gp.hidden) giftPanelRerender(); } catch (e1) {}
+}
 function giftsLoad() {
 const dead = {}, ov = {}, customs = [];
 customLoad().forEach(function (c) {
@@ -562,7 +577,7 @@ else out.push(g);
 });
 return out.concat(customs);
 }
-function deleteGift(id) {
+function deleteGift(id) { if (customWriteBlocked()) return;
 const customs = customLoad();
 const idx = customs.findIndex(function (x) { return x && x.id === id; });
 if (DEF_IDS[id]) {
@@ -647,7 +662,7 @@ else { list[hit] = item; bySig[sig] = hit; updated++; }
 return { list: list, added: added, updated: updated, skipped: skipped, bad: bad, over: over };
 }
 function migrateMarketGlobal(setMark) {
-if (!GSTORE || GSTORE.get(MIGRATE_KEY)) return;
+if (!GSTORE || GSTORE.get(MIGRATE_KEY)) return; if (customReadUnconfirmed()) return; // #1488 读不全＝这一跑既不并也不落标记，restore-done 再来一趟
 const customs = customLoad();
 const seen = {};
 customs.forEach(function (c) { if (c && c.id) { seen[c.id] = 1; if (c.del) seen['del:' + c.id] = 1; } });
@@ -680,7 +695,7 @@ if (changed || setMark) customSave(customs);
 if (setMark) GSTORE.set(MIGRATE_KEY, '1');
 }
 function rescueBatch(ids, mark) {
-if (!GSTORE || GSTORE.get(mark)) return;
+if (!GSTORE || GSTORE.get(mark)) return; if (customReadUnconfirmed()) return; // #1488 同款：空读不清标不发号
 const customs = customLoad();
 let changed = false;
 for (let i = customs.length - 1; i >= 0; i--) {
@@ -737,6 +752,7 @@ const WL_TA_KEY = 'gift-wishlist-ta';
 const WL_SETTINGS_KEY = 'market-wl-settings';
 const WL_MAX = 30;
 function clampPct(v, def) { const n = Math.round(Number(v)); return (n >= 0 && n <= 100) ? n : def; }
+function clampCount(v, def, max) { const n = Math.floor(Number(v)); return (n >= 0 && n <= max) ? n : def; }
 function clampMode(v, def) { const n = Math.round(Number(v)); return (n === 0 || n === 1 || n === 2) ? n : def; }
 const GIFT_REPLY_MODES = [{ label: '系统预设话术', value: 0 }, { label: '像正常聊天一样回复', value: 1 }, { label: '混合', value: 2 }];
 function giftReplyModeLabel(v) {
@@ -750,7 +766,7 @@ try { return JSON.parse((GSTORE && GSTORE.get(WL_SETTINGS_KEY)) || '') || null; 
 }
 function wlSettings() {
 const s = wlSettingsRaw() || {};
-return { wlVer: WL_VER, giftInOn: s.giftInOn === 0 ? 0 : 1, giftInPct: clampPct(s.giftInPct, 5), wlOn: s.wlOn === 0 ? 0 : 1, wlBuyPct: clampPct(s.wlBuyPct, 20), wlAddPct: clampPct(s.wlAddPct, 15), wishChatOn: s.wishChatOn === 0 ? 0 : 1, wishChatPct: clampPct(s.wishChatPct, 60), selfOn: s.selfOn === 0 ? 0 : 1, selfPct: clampPct(s.selfPct, 10), selfChatOn: s.selfChatOn === 0 ? 0 : 1, giftReplyOn: s.giftReplyOn === 0 ? 0 : 1, giftReplyPct: clampPct(s.giftReplyPct, 60), giftReplyMode: clampMode(s.giftReplyMode, 1) };
+return { wlVer: WL_VER, giftInOn: s.giftInOn === 0 ? 0 : 1, giftInPct: clampPct(s.giftInPct, 5), wlOn: s.wlOn === 0 ? 0 : 1, wlBuyPct: clampPct(s.wlBuyPct, 20), wlAddPct: clampPct(s.wlAddPct, 15), wishChatOn: s.wishChatOn === 0 ? 0 : 1, wishChatPct: clampPct(s.wishChatPct, 60), wishChatDayMax: clampCount(s.wishChatDayMax, 3, 20), selfOn: s.selfOn === 0 ? 0 : 1, selfPct: clampPct(s.selfPct, 10), selfChatOn: s.selfChatOn === 0 ? 0 : 1, giftReplyOn: s.giftReplyOn === 0 ? 0 : 1, giftReplyPct: clampPct(s.giftReplyPct, 60), giftReplyMode: clampMode(s.giftReplyMode, 1) };
 }
 function wlSettingsSave(st) { if (GSTORE) GSTORE.set(WL_SETTINGS_KEY, JSON.stringify(st)); }
 function wlSettingsUpgrade() {
@@ -797,7 +813,7 @@ a.unshift(wishSnap(g));
 wishSave(WL_MY_KEY, a.slice(0, WL_MAX));
 return true;
 }
-function wishTaRemove(id) { wishSave(WL_TA_KEY, wishLoad(WL_TA_KEY).filter(function (x) { return x.giftId !== id; })); }
+function wishTaRemove(id) { wishSave(WL_TA_KEY, wishLoad(WL_TA_KEY).filter(function (x) { return x.giftId !== id; })); try { if (window.chatWishSettled) window.chatWishSettled(id); } catch (e) {} }
 const WL_TA_SEEN_KEY = 'gift-wishlist-ta-seen';
 function taWishUnread() {
 const list = wishLoad(WL_TA_KEY);
@@ -814,6 +830,7 @@ function taWishMarkSeen() { try { const s = store(); if (s) s.set(WL_TA_SEEN_KEY
 function wishChatPush(gift) {
 try {
 if (!gift || !gift.id || !window.chatAddGift) return false;
+if (window.chatRateLimitFull && window.chatRateLimitFull()) return false;
 const wishText = '想要「' + (gift.name || '这个') + '」';
 window.chatAddGift({
 side: 'in', special: 'wish',
@@ -825,7 +842,7 @@ wishGiftWish: gift.wish || '送给你', wishTs: Date.now()
 try {
 if (window.bgLateCatchup && window.bgLateCatchup() && window.bgNotifyCheck) {
 const cp = document.getElementById('page-chat');
-if (!(cp && !cp.hidden)) window.bgNotifyCheck(wishText, Date.now(), { name: partnerName() + '的心愿', late: true });
+if (!(cp && !cp.hidden)) window.bgNotifyCheck(wishText, Date.now(), { name: partnerName() + '的心愿', late: true, kind: 'wish' });
 }
 } catch (e) {}
 return true;
@@ -842,7 +859,20 @@ wish: rec.wishGiftWish || '送给你'
 }, { fromTaWish: true, onDone: done });
 return true;
 };
-function cardPool() { const pool = []; try { const d = window.DEFAULT_CARD_DATA; if (d && d.main) { d.main.forEach(function (c) { if (c && c[1]) c[1].forEach(function (x) { if (x) pool.push(x); }); }); } } catch (e) {} return pool; }
+function cardPool() {
+const pool = [];
+try {
+const d = window.DEFAULT_CARD_DATA;
+const off = window.isDefaultCardOff;
+if (d && d.main) {
+d.main.forEach(function (c) {
+if (c && c[1]) c[1].forEach(function (x) { if (x && !(off && off('main', x))) pool.push(x); });
+});
+}
+} catch (e) {}
+return pool;
+}
+window.__giftCardPool = function () { try { return cardPool(); } catch (e) { return []; } };
 function taWish(gift) {
 let wish = (gift && gift.wish) || '送给你';
 const pool = cardPool();
@@ -1013,7 +1043,7 @@ const w = walletGet();
 if (side === 'out') { w.myBalance -= priceFen; }
 else { w.systemBalance -= priceFen; }
 walletSet(w);
-const rec = { side: side, special: 'gift', giftId: gift.id, giftName: gift.name, giftEmoji: gift.emoji, giftImg: gift.img || '', giftPrice: gift.price, giftWish: wish, giftCat: gift.cat, ts: Date.now() };
+const rec = { side: side, special: 'gift', rateAllow: true, giftId: gift.id, giftName: gift.name, giftEmoji: gift.emoji, giftImg: gift.img || '', giftPrice: gift.price, giftWish: wish, giftCat: gift.cat, ts: Date.now() };
 const entry = recordBox(gift, side, wish);
 if (entry && entry.id) rec.giftBoxId = entry.id;
 if (window.chatAddGift) window.chatAddGift(rec); else if (window.chatAddIn) window.chatAddIn('', { special: 'gift' });
@@ -1023,12 +1053,13 @@ return true;
 }
 const AUTO_DAILY_PREFIX = 'ml2_gift_daily_';
 const SELF_DAILY_PREFIX = 'ml2_selfbuy_daily_';
+const WISHCHAT_DAILY_PREFIX = 'ml2_wishchat_daily_';
 function dayCount(prefix) { const s = store(); return Number(s && s.get(prefix + todayKey())) || 0; }
 function dayIncr(prefix) { const s = store(); if (s) s.set(prefix + todayKey(), String(dayCount(prefix) + 1)); }
 function deliverInGift(cid, gift, wish, delayMs) {
 setTimeout(function () {
 try {
-const rec = { side: 'in', special: 'gift', giftId: gift.id, giftName: gift.name, giftEmoji: gift.emoji, giftImg: gift.img || '', giftPrice: gift.price, giftWish: wish, giftCat: gift.cat, ts: Date.now() };
+const rec = { side: 'in', special: 'gift', rateAllow: true, giftId: gift.id, giftName: gift.name, giftEmoji: gift.emoji, giftImg: gift.img || '', giftPrice: gift.price, giftWish: wish, giftCat: gift.cat, ts: Date.now() };
 if ((window.__activeCid || 'default') === cid) {
 const entry = recordBox(gift, 'in', wish);
 if (entry && entry.id) rec.giftBoxId = entry.id;
@@ -1049,6 +1080,7 @@ const myCid = window.__activeCid || 'default';
 const giftCapped = dayCount(AUTO_DAILY_PREFIX) >= 3;
 const selfCapped = dayCount(SELF_DAILY_PREFIX) >= 3;
 const gifts = giftsLoad(); if (!gifts.length) return;
+if (window.chatRateLimitFull && window.chatRateLimitFull()) return;
 if (st.wlOn && st.giftInOn && !giftCapped) {
 const myWl = wishLoad(WL_MY_KEY);
 if (myWl.length && Math.random() * 100 < st.wlBuyPct) {
@@ -1069,7 +1101,7 @@ const wish0 = gift0.wish || '送给自己';
 w0.systemBalance -= Math.round((gift0.price || 0) * 100); walletSet(w0);
 dayIncr(SELF_DAILY_PREFIX);
 setTimeout(function () {
-const chatRec = { side: 'in', special: 'gift', giftId: gift0.id, giftName: gift0.name, giftEmoji: gift0.emoji, giftImg: gift0.img || '', giftPrice: gift0.price, giftWish: wish0, giftCat: gift0.cat, giftSelf: 1, ts: Date.now() };
+const chatRec = { side: 'in', special: 'gift', rateAllow: true, giftId: gift0.id, giftName: gift0.name, giftEmoji: gift0.emoji, giftImg: gift0.img || '', giftPrice: gift0.price, giftWish: wish0, giftCat: gift0.cat, giftSelf: 1, ts: Date.now() };
 if ((window.__activeCid || 'default') === myCid) {
 const entrySelf = recordBox(gift0, 'self', wish0);
 if (entrySelf && entrySelf.id) chatRec.giftBoxId = entrySelf.id; // #985：卡片与心意柜互指（同 buyAndSend）
@@ -1092,8 +1124,10 @@ if (poolW.length) {
 const giftW = pick(poolW);
 taWl.unshift(wishSnap(giftW));
 wishSave(WL_TA_KEY, taWl.slice(0, WL_MAX));
-const pushed = !!(st.wishChatOn && Math.random() * 100 < st.wishChatPct && wishChatPush(giftW));
-if (!pushed) toast(partnerName() + ' 把「' + giftW.name + '」加进了 TA 的心愿单\n市集下方「☆ 心愿单」可查看');
+const quotaLeft = dayCount(WISHCHAT_DAILY_PREFIX) < st.wishChatDayMax;
+const pushed = !!(quotaLeft && st.wishChatOn && Math.random() * 100 < st.wishChatPct && wishChatPush(giftW));
+if (pushed) dayIncr(WISHCHAT_DAILY_PREFIX);
+else if (quotaLeft) toast(partnerName() + ' 把「' + giftW.name + '」加进了 TA 的心愿单\n市集下方「☆ 心愿单」可查看');
 try { syncWishBadge(); } catch (e) {}
 return;
 }
@@ -1230,13 +1264,14 @@ const html =
 '<div class="gs-row"><div class="gs-lab">TA 加进自己心愿单概率</div><div class="gs-numwrap"><input class="gs-num" data-gsn="wlAddPct" type="number" min="0" max="100" inputmode="numeric" value="' + st.wlAddPct + '"><span class="gs-pct">%</span></div></div>' +
 '<div class="gs-row"><div class="gs-lab">TA 的心愿发到聊天<span class="gs-sub">TA 把商品加进自己心愿单时，按概率把这份心愿发一张卡片到聊天，你点【送 TA】即可买下送出；默认开启</span></div><div class="gs-switch' + (st.wishChatOn ? ' on' : '') + '" data-gsw="wishChatOn"></div></div>' +
 '<div class="gs-row"><div class="gs-lab">TA 心愿发到聊天概率</div><div class="gs-numwrap"><input class="gs-num" data-gsn="wishChatPct" type="number" min="0" max="100" inputmode="numeric" value="' + st.wishChatPct + '"><span class="gs-pct">%</span></div></div>' +
+'<div class="gs-row"><div class="gs-lab">TA 心愿卡每天最多<span class="gs-sub">只数发进聊天的张数，0~20、默认 3；TA 往自己心愿单里攒多少不受限。用完当天不再发卡、也不弹提示</span></div><div class="gs-numwrap"><input class="gs-num" data-gsn="wishChatDayMax" type="number" min="0" max="20" inputmode="numeric" value="' + st.wishChatDayMax + '"><span class="gs-pct">张</span></div></div>' +
 '<div class="gs-row"><div class="gs-lab">我送礼后 TA 回一句<span class="gs-sub">总开关：我送出的每一份礼物（市集、心意柜、TA 心愿卡上点【送 TA】都算）都有概率换 TA 回一句；默认开启</span></div><div class="gs-switch' + (st.giftReplyOn ? ' on' : '') + '" data-gsw="giftReplyOn"></div></div>' +
 '<div class="gs-row"><div class="gs-lab">TA 回一句概率</div><div class="gs-numwrap"><input class="gs-num" data-gsn="giftReplyPct" type="number" min="0" max="100" inputmode="numeric" value="' + st.giftReplyPct + '"><span class="gs-pct">%</span></div></div>' +
 '<div class="gs-row"><div class="gs-lab">TA 回什么<span class="gs-sub">点一下切换</span></div><div class="gs-pick" id="gs-gift-reply-mode" data-v="' + st.giftReplyMode + '">' + giftReplyModeLabel(st.giftReplyMode) + '</div></div>' +
 '<div class="gs-row"><div class="gs-lab">TA 自己买礼物<span class="gs-sub">买给自己的礼物收进「心意柜-TA 自己买的」</span></div><div class="gs-switch' + (st.selfOn ? ' on' : '') + '" data-gsw="selfOn"></div></div>' +
 '<div class="gs-row"><div class="gs-lab">TA 自买礼物发到聊天<span class="gs-sub">TA 给自己买的礼物同时发一张礼物卡到聊天，方便你查看；默认开启</span></div><div class="gs-switch' + (st.selfChatOn ? ' on' : '') + '" data-gsw="selfChatOn"></div></div>' +
 '<div class="gs-row"><div class="gs-lab">TA 自己买概率</div><div class="gs-numwrap"><input class="gs-num" data-gsn="selfPct" type="number" min="0" max="100" inputmode="numeric" value="' + st.selfPct + '"><span class="gs-pct">%</span></div></div>' +
-'<div class="gs-help">【使用说明】<br>· TA 送我礼物：总开关，默认开启；关闭后 TA 不会买礼物送你（心愿单兑现与随机送礼都不触发）；TA 给自己买礼物、加自己的心愿单不受影响，我送礼给 TA 也不受影响。<br>· TA 送我礼物概率：TA 每次心动时主动从市集挑一份送你的概率（进聊天 +「心意柜-收到的」），0~100 自定义。<br>· 我的心愿单：市集点开商品选「加入心愿单」许愿（不花钱）；TA 按概率直接买下送你，礼物进「心意柜-收到的」，心愿单自动移除。<br>· TA 的心愿单：TA 会把想要的加进来；点「送 TA」买下送出，礼物进 TA 的心意柜-收到的并自动移除该心愿。市集里 TA 正许愿的商品会标出「☆ TA许愿的」，从这里进也行。<br>· TA 的心愿发到聊天：TA 把商品加进自己心愿单的那一刻，按概率把这份心愿发一张卡片到聊天（默认开启、默认 60%），卡片上点【送 TA】就能买下送出，送完卡片自动变「已送出」；关掉开关或概率调 0，TA 就只默默加进心愿单、不再发卡片（聊天仍可在心意柜「看看 TA 的心愿单」里看到）。<br>· 我送礼后 TA 回一句：我送出的每一份礼物都有概率让 TA 回一句（默认开启、默认 60%），市集、心意柜、TA 心愿卡上点【送 TA】都算；这份礼物正好是 TA 心愿单里许着的，话术走「心愿兑现」那一套。「TA 回什么」三档＝只用系统预设话术 / 和正常聊天一样回复（走字卡与词典管线，带「正在输入…」）/ 混合（约六成预设、四成聊天式）；关掉开关或概率调 0，TA 就只默默收下礼物、不再回话（礼物照常进 TA 的心意柜）。<br>· TA 自己买：TA 按概率给自己买礼物，收进「心意柜-TA 自己买的」，不发聊天消息。<br>· 概率=每次触发（我发消息后）TA 采取该行动的概率，0~100 自定义；「TA 送我礼物」（心愿单兑现＋随机送礼）每天最多 3 次，「TA 自己买礼物」另有独立额度、两者互不挤占；关掉开关即完全关闭对应行为。</div>';
+'<div class="gs-help">【使用说明】<br>· TA 送我礼物：总开关，默认开启；关闭后 TA 不会买礼物送你（心愿单兑现与随机送礼都不触发）；TA 给自己买礼物、加自己的心愿单不受影响，我送礼给 TA 也不受影响。<br>· TA 送我礼物概率：TA 每次心动时主动从市集挑一份送你的概率（进聊天 +「心意柜-收到的」），0~100 自定义。<br>· 我的心愿单：市集点开商品选「加入心愿单」许愿（不花钱）；TA 按概率直接买下送你，礼物进「心意柜-收到的」，心愿单自动移除。<br>· TA 的心愿单：TA 会把想要的加进来；点「送 TA」买下送出，礼物进 TA 的心意柜-收到的并自动移除该心愿。市集里 TA 正许愿的商品会标出「☆ TA许愿的」，从这里进也行。<br>· TA 的心愿发到聊天：TA 把商品加进自己心愿单的那一刻，按概率把这份心愿发一张卡片到聊天（默认开启、默认 60%，另外每天最多 3 张——上面「TA 心愿卡每天最多」可调）。卡片上点【送 TA】就能买下送出，送完卡片自动变「已送出」；关掉开关、概率调 0，或当天张数用完，TA 就只默默加进心愿单、不再发卡片也不弹提示（心愿仍可在心意柜「看看 TA 的心愿单」里看到）。<br>· 我送礼后 TA 回一句：我送出的每一份礼物都有概率让 TA 回一句（默认开启、默认 60%），市集、心意柜、TA 心愿卡上点【送 TA】都算；这份礼物正好是 TA 心愿单里许着的，话术走「心愿兑现」那一套。「TA 回什么」三档＝只用系统预设话术 / 和正常聊天一样回复（走字卡与词典管线，带「正在输入…」）/ 混合（约六成预设、四成聊天式）；关掉开关或概率调 0，TA 就只默默收下礼物、不再回话（礼物照常进 TA 的心意柜）。<br>· TA 自己买：TA 按概率给自己买礼物，收进「心意柜-TA 自己买的」；「TA 自买礼物发到聊天」默认开着，买完会同时发一张礼物卡到聊天（关掉那枚开关就只进柜子、聊天里看不到）。<br>· 概率=每次触发（我发消息后）TA 采取该行动的概率，0~100 自定义；每日三本账各记各的、互不挤占＝「TA 送我礼物」（心愿单兑现＋随机送礼）最多 3 次、「TA 自己买礼物」最多 3 次、「TA 心愿卡发到聊天」最多 3 张（这枚在上面可调）；关掉开关即完全关闭对应行为。</div>';
 window.openTCPanel('心意集市和心意柜设置', html);
 document.querySelectorAll('#tc-body [data-gsw]').forEach(function (sw) {
 sw.addEventListener('click', function () {
@@ -1252,9 +1287,10 @@ inp.addEventListener('change', function () {
 const cur = wlSettings();
 const key = inp.dataset.gsn;
 const n = Math.round(Number(inp.value));
-if (String(inp.value).trim() === '' || !isFinite(n) || n < 0 || n > 100) {
+const hi = Number(inp.max) || 100;
+if (String(inp.value).trim() === '' || !isFinite(n) || n < 0 || n > hi) {
 inp.value = String(cur[key]);
-toast('请填 0~100 的整数');
+toast('请填 0~' + hi + ' 的整数');
 return;
 }
 cur[key] = n;
@@ -1355,8 +1391,9 @@ function renderGiftGrid(containerId, gifts, onPick, manage) {
 const el = document.getElementById(containerId); if (!el) return;
 const list = filterGifts(gifts);
 const q = normTxt(searchText).trim();
-if (!list.length && !q && window.mochiDataPending && window.mochiDataPending()) {
+if (!list.length && !q && (customReadUnconfirmed() || (window.mochiDataPending && window.mochiDataPending()))) {
 el.innerHTML = window.mochiLoadingHtml('礼物商品');
+if (customReadUnconfirmed()) customAwaitBack(marketRerenderBoth);
 return;
 }
 const emptyTxt = q ? ('没找到「' + q + '」相关商品') : '还没有商品，点下方添加';
@@ -1436,6 +1473,7 @@ try { if (marketPage && !marketPage.hidden) renderMarket(); } catch (e) {}
 function renderMineCard() {
 const el = document.getElementById('market-mine');
 if (!el) return;
+const pend = customReadUnconfirmed(); // #1488：读取中不许谎报「还没上传过商品」（诱导重传＝重复）
 const n = customMine().length;
 el.innerHTML =
 '<button class="market-mine-add" id="market-mine-add" type="button">' +
@@ -1443,7 +1481,7 @@ el.innerHTML =
 '<span class="market-mine-txt">上传我的商品<em>用自己的照片当礼物，放进市集就能送</em></span>' +
 '</button>' +
 '<div class="market-mine-foot">' +
-'<span class="market-mine-cnt" id="market-mine-cnt">' + (n ? '已上传 ' + n + ' 件自定义商品' : '还没上传过商品（默认商品不用上传）') + '</span>' +
+'<span class="market-mine-cnt" id="market-mine-cnt">' + (pend ? '商品库读取中…（存储正忙，马上回来）' : (n ? '已上传 ' + n + ' 件自定义商品' : '还没上传过商品（默认商品不用上传）')) + '</span>' +
 '<button class="market-mine-mini" id="market-mine-export" type="button">导出商品数据</button>' +
 '<button class="market-mine-mini" id="market-mine-import" type="button">导入商品数据</button>' +
 '</div>';
@@ -1466,6 +1504,7 @@ return parts.join('');
 }
 function exportMarketGoods() {
 const items = customMine();
+if (!items.length && customReadUnconfirmed()) { toast('商品库还没读全（存储正忙）：等几秒再导出'); customAwaitBack(marketRerenderBoth); return; } // #1488
 if (!items.length) { toast('还没有自定义商品，点上面「上传我的商品」先加一件'); return; }
 const json = marketGoodsJson(items);
 const bytes = packBytes(json);
@@ -1498,7 +1537,7 @@ r.readAsText(file, 'utf-8');
 function importMarketGoods() {
 if (!window.mochiFilePick) { toast('导入功能暂不可用，请稍后再试'); return; }
 window.mochiFilePick({
-id: 'market-goods-import-pick', accept: '.json,application/json',
+id: 'market-goods-import-pick', accept: window.mochiDataPickAccept, // #1413：与整机导入同一份并集（窄串会让转存后改了类型的备份灰显）
 onFiles: function (files) {
 const f = files && files[0];
 if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -1507,6 +1546,7 @@ let data = null;
 try { data = JSON.parse(text || 'null'); } catch (e) {}
 const raw = goodsFromPack(data);
 if (!raw) { toast('这个文件里没有商品数据'); return; }
+if (customWriteBlocked()) return; // #1488 读不全先按住：这一发读出来的计划必是错的
 const plan = mergeGoods(customLoad(), raw);
 if (!plan.added && !plan.updated) {
 toast(plan.skipped ? ('这 ' + plan.skipped + ' 件商品都已在你的商品库里，没有新增') : '文件里没有可导入的商品');
@@ -1546,39 +1586,13 @@ const f = gmImgInput.files && gmImgInput.files[0];
 gmImgInput.value = '';
 if (!f) return;
 if (!/^image\//.test(f.type || '')) { toast('请选择图片文件'); return; }
-const reader = new FileReader();
-reader.onload = function () {
-compressGiftImg(String(reader.result || '')).then(function (data) {
-if (!data) { toast('图片处理失败，换一张试试'); return; }
-gmImg = data;
+if (!window.mochiImgIngest) { toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'); return; }
+window.mochiImgIngest(f, { maxSide: 480, quality: 0.85, mime: 'image/jpeg', opaque: true, tag: 'gm-img' }).then((r) => {
+if (!r || r.st !== 'ok' || !r.data) { toast(window.mochiImgIngestMiss(r, '礼物图片')); return; }
+gmImg = r.data;
 renderGmImgRow();
 });
 };
-reader.onerror = function () { toast('图片读取失败'); };
-reader.readAsDataURL(f);
-};
-function compressGiftImg(dataUrl) {
-return new Promise(function (resolve) {
-if (typeof dataUrl !== 'string' || dataUrl.length > 8 * 1024 * 1024) { resolve(null); return; }
-const img = new Image();
-img.onload = function () {
-try {
-if (img.width * img.height > 26000000) { resolve(null); return; }
-const scale = Math.min(1, 480 / Math.max(img.width, img.height));
-const w = Math.max(1, Math.round(img.width * scale));
-const h = Math.max(1, Math.round(img.height * scale));
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-const ctx = c.getContext('2d');
-ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
-ctx.drawImage(img, 0, 0, w, h);
-resolve(c.toDataURL('image/jpeg', 0.85));
-} catch (e) { resolve(null); }
-};
-img.onerror = function () { resolve(null); };
-img.src = dataUrl;
-});
-}
 function gmImgRowHtml() {
 return '<div class="gm-img-row">' +
 '<div class="gm-img-prev" id="gm-img-prev">' + (gmImg ? '<img src="' + esc(gmImg) + '" alt="">' : '🖼️') + '</div>' +
@@ -1594,6 +1608,7 @@ bindGmImgRow();
 function bindGmImgRow() {
 const pick = document.getElementById('gm-img-pick');
 if (pick) pick.addEventListener('click', function () { window.mochiFilePickFire(gmImgInput, { onFail: function () { toast('无法打开相册，请重试'); } }); });
+if (pick && window.mochiFilePickDoor) window.mochiFilePickDoor(pick, { owner: gmImgInput });
 const clr = document.getElementById('gm-img-clear');
 if (clr) clr.addEventListener('click', function () { gmImg = ''; renderGmImgRow(); });
 }
@@ -1638,7 +1653,7 @@ if (idx >= 0) customs[idx] = item; else customs.push(item);
 } else {
 customs.push(item);
 }
-customSave(customs); closeTc(); renderMarket(); toast('已保存');
+if (customWriteBlocked()) { customAwaitBack(marketRerenderBoth); return; } customSave(customs); closeTc(); marketRerenderBoth(); toast('已保存'); // #1540：marketRerenderBoth＝市集页＋开着的聊天送礼面板都重画（面板里新加的商品立刻可见）
 });
 if (cancelBtn) cancelBtn.addEventListener('click', closeTc);
 }
@@ -1681,10 +1696,21 @@ t.textContent = bt === 'in' ? (partnerName() + ' 送我的') : bt === 'out' ? ('
 });
 const show = (boxTab === 'in' ? inList : boxTab === 'out' ? outList : selfList).slice().sort(function (a, b) { return b.tm - a.tm; });
 const el = document.getElementById('giftbox-list'); if (!el) return;
-el.innerHTML = show.map(function (it) {
+window.mochiHistDelBind(el, {
+title: '删除这件心意？',
+onDel: function (id) {
+const left = boxLoad().filter(function (x) { return String(x.id) !== String(id); });
+boxSave(left);
+boxMetaInvalidate();
+renderBox();
+if (typeof window.toast === 'function') window.toast('已从心意柜删除这一件');
+}
+});
+const rows = show.map(function (it) { return { ts: Number(it.tm) || 0, html: (function () {
 const from = it.side === 'in' ? esc(partnerName()) + ' 送我' : it.side === 'self' ? esc(partnerName()) + ' 自己买的' : '我 送 ' + esc(partnerName());
 return '<div class="giftbox-card" data-id="' + esc(it.id) + '">' +
 '<div class="giftbox-card-top">' +
+window.mochiHistDel(it.id, it.name) +
 '<div class="giftbox-emoji">' + giftMedia(it, 'giftbox-emoji-img') + '</div>' +
 '</div>' +
 '<div class="giftbox-card-body">' +
@@ -1696,7 +1722,12 @@ return '<div class="giftbox-card" data-id="' + esc(it.id) + '">' +
 '<div class="giftbox-meta">' + esc(from) + ' · ' + esc(fmtTime(it.tm)) + '</div>' +
 '</div>' +
 '</div>';
-}).join('') || '<div class="gift-empty">' + (boxTab === 'in' ? (esc(partnerName()) + ' 还没送你礼物<br>' + (window.taFit ? window.taFit('他偶尔会主动从市集挑一份给你，耐心等等') : '他偶尔会主动从市集挑一份给你，耐心等等')) : boxTab === 'self' ? (esc(partnerName()) + ' 还没给自己买过礼物<br>TA 偶尔会按概率给自己挑一件，收进自己的心意柜') : ('你还没送出礼物<br>去心意市集挑一份送给 ' + esc(partnerName()) + ' 吧')) + '</div>';
+})() }; });
+el.innerHTML = window.mochiHistFold(rows, {
+key: 'gift-' + boxTab,
+empty: '<div class="gift-empty">' + (boxTab === 'in' ? (esc(partnerName()) + ' 还没送你礼物<br>' + (window.taFit ? window.taFit('他偶尔会主动从市集挑一份给你，耐心等等') : '他偶尔会主动从市集挑一份给你，耐心等等')) : boxTab === 'self' ? (esc(partnerName()) + ' 还没给自己买过礼物<br>TA 偶尔会按概率给自己挑一件，收进自己的心意柜') : ('你还没送出礼物<br>去心意市集挑一份送给 ' + esc(partnerName()) + ' 吧')) + '</div>',
+todayEmpty: '<div class="dc-h-day-empty">今天没有新的心意</div>'
+});
 el.querySelectorAll('.giftbox-card').forEach(function (c) {
 c.addEventListener('click', function () {
 const it = list.find(function (x) { return x.id === c.dataset.id; });
@@ -1713,8 +1744,27 @@ const html =
 (boxReplies(it).length
 ? '<div class="gb-detail-repl-title">这件礼物上的回复</div><div class="gb-detail-repls">' + boxReplyRows(it) + '</div>'
 : '') +
+(boxPending(it) ? '<div class="gb-detail-claim"><button class="msg-gift-claim" type="button" data-gb-claim="' + esc(it.id) + '">领取</button></div>' : '') +
 '</div>';
 window.openTCPanel('心意柜', html);
+const claimBtn = (function () {
+const b = document.querySelector('#tc-body button[data-gb-claim]');
+return (b && b.dataset.gbClaim === String(it.id)) ? b : null;
+})();
+if (claimBtn) claimBtn.addEventListener('click', function () {
+if (!boxPending(it)) return; // 已领取＝幂等（旧面板残留按钮也不重复记账）
+if (!window.giftBoxMarkClaimed || !window.giftBoxMarkClaimed(it.id)) {
+if (typeof window.toast === 'function') window.toast('暂时领不了，稍后再试');
+return;
+}
+renderBox(); // 柜列表就地转已领取（待领取徽标消失、统计不变）
+const done = document.createElement('span');
+done.className = 'msg-gift-got';
+done.textContent = '✓ 已领取';
+claimBtn.replaceWith(done);
+if (typeof window.toast === 'function') window.toast('已领取');
+try { if (window.chatGiftClaimSync) window.chatGiftClaimSync(it.id, it.name); } catch (eCS) {}
+});
 });
 });
 }
@@ -1818,7 +1868,7 @@ document.getElementById('market-manage').addEventListener('click', function () {
 document.getElementById('market-reset').addEventListener('click', function () {
 if (!window.openModal) return;
 window.openModal('恢复默认商品？（清除对默认商品的修改/删除记录，自定义商品保留）', '', function () {
-customSave(customLoad().filter(function (c) { return c && !c.del && !c.base; }));
+if (customWriteBlocked()) return; customSave(customLoad().filter(function (c) { return c && !c.del && !c.base; }));
 renderMarket(); toast('已恢复默认');
 }, { noInput: true });
 });
@@ -1902,6 +1952,12 @@ if (!document.getElementById('gift-wish-entry')) {
 const catsNode2 = document.getElementById('gift-cats');
 if (catsNode2) catsNode2.insertAdjacentHTML('beforebegin', '<div class="gift-wish-row" id="gift-wish-entry"><button id="gift-wish-ta" type="button">☆ 看看 ' + esc(partnerName()) + ' 的心愿单</button></div>');
 }
+if (!document.getElementById('gift-mine-entry')) {
+const catsNode3 = document.getElementById('gift-cats');
+if (catsNode3) catsNode3.insertAdjacentHTML('beforebegin', '<div class="gift-mine-row" id="gift-mine-entry"><button id="gift-mine-add" type="button">＋ 上传我的商品</button></div>');
+}
+const mineAddBtn = document.getElementById('gift-mine-add');
+if (mineAddBtn) mineAddBtn.addEventListener('click', function () { openAddGiftForm(null); });
 const gwBtn = document.getElementById('gift-wish-ta');
 if (gwBtn) gwBtn.addEventListener('click', function () {
 closeGiftPanel();

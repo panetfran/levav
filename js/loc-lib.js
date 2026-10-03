@@ -21,7 +21,7 @@ function getUseDefault() {
 const v = store.get(DEF_KEY);
 return v === null ? true : v === '1';
 }
-function isOff(cat, text) { return store.get('loc-off-' + cat + ':' + text) === '1'; }
+function isOff(cat, text) { return store.get('loc-off-' + cat + ':' + text) === '1' || !!(window.presetGroup && window.presetGroup.isOff('loc', cat)); }
 function setOff(cat, text, off) { store.set('loc-off-' + cat + ':' + text, off ? '1' : '0'); }
 function getGroups() {
 try {
@@ -48,8 +48,10 @@ return [];
 }
 function saveCustom(list) {
 const arr = (list || []).map(x => typeof x === 'string' ? { t: x } : x).filter(x => x && x.t != null);
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, CUSTOM_KEY, '位置卡库')) return false;
 store.set(CUSTOM_KEY, JSON.stringify(arr));
 try { if (window.idbSet) window.idbSet(window.activePrefix() + ':' + CUSTOM_KEY, JSON.stringify(arr)); } catch (e) {}
+return true;
 }
 function sysCards(cat) {
 if (!getUseDefault()) return [];
@@ -102,6 +104,12 @@ window.locLibLabel = function (t) { return LABEL[t] || t || ''; };
 window.locLibEggText = eggText;
 window.locLibEggEnabled = eggEnabled;
 window.locLibIsOff = isOff;
+window.locLibTextOff = function (text) {
+for (let i = 0; i < CATS.length; i++) {
+if ((LIB[CATS[i]] || []).indexOf(text) >= 0 && isOff(CATS[i], text)) return true;
+}
+return false;
+};
 window.locLibSetOff = setOff;
 window.locLibGetUseDefault = getUseDefault;
 window.locLibSenseGroup = senseGroup;
@@ -137,6 +145,15 @@ tip.className = 'ta-empty';
 tip.textContent = '系统预设位置卡已关闭（位置面板只显示「我的添加」）。开启上方开关即可恢复使用。';
 listEl.appendChild(tip);
 return;
+}
+if (window.presetGroup) {
+const barBox = document.createElement('div');
+barBox.innerHTML = window.presetGroup.catBar('loc', cat, LABEL[cat] || cat);
+const bar = barBox.firstElementChild;
+if (bar) {
+listEl.appendChild(bar);
+window.presetGroup.bindBar(bar, 'loc', cat, function () { renderSysList(); updateEntryCount(); });
+}
 }
 (LIB[cat] || []).forEach(x => {
 const off = isOff(cat, x);
@@ -190,7 +207,7 @@ listEl.querySelectorAll('.ta-del').forEach(b => {
 b.addEventListener('click', () => {
 const list = getCustom();
 list.splice(Number(b.dataset.idx), 1);
-saveCustom(list);
+if (saveCustom(list) === false) return; // #1520：同上
 renderMineList();
 toast('已删除');
 });
@@ -247,7 +264,7 @@ window.cardGroups.removeFlow(g.name, ok => {
 if (!ok) return;
 const list = getCustom();
 list.forEach(x => { if (x.grp === gid) x.grp = ''; });
-saveCustom(list);
+if (saveCustom(list) === false) return; // #1520：拦下＝这一发没落笔，不动分组账也不报成功
 saveGroups(groups.filter(x => x.id !== gid));
 refreshGrpSelect();
 renderMineList();
@@ -310,7 +327,7 @@ const x = { t: it };
 if (parsed && parsed.grp) x.grp = parsed.grp;
 list.push(x);
 });
-saveCustom(list);
+if (saveCustom(list) === false) return; // #1520：拦下＝输入框原样保留（用户才有料可「再点一次」）
 if (ta) ta.value = '';
 switchTab2('mine');
 toast('已添加 ' + items.length + ' 条位置卡');

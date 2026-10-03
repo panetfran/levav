@@ -44,13 +44,90 @@ const csBgActiveId = () => store.get(CS_BG_ACTIVE) || '';
 function csBgReconcileActive() {
 const list = csBgList();
 const cur = store.get('cs-bg');
-if (!cur) { if (csBgActiveId()) store.remove(CS_BG_ACTIVE); return ''; }
+if (!cur) return '';
 const aid = csBgActiveId();
 if (aid && list.indexOf(aid) >= 0 && store.get('cs-bg-item-' + aid) === cur) return aid;
 for (let i = 0; i < list.length; i++) {
 if (store.get('cs-bg-item-' + list[i]) === cur) { store.set(CS_BG_ACTIVE, list[i]); return list[i]; }
 }
 return '';
+}
+const ensureBigKey = (k) => (window.idbEnsureBigKey ? window.idbEnsureBigKey(k) : Promise.resolve('unknown'));
+const readBigKey = (k) => ensureBigKey(k).then((st) => {
+let v = '';
+try { v = store.get(k) || ''; } catch (e) {}
+return { v: v, st: v ? 'ready' : st };
+});
+const bigKeyMissToast = (st, what) => toast(st === 'absent'
+? what + '的原图库里已经查不到了（可能被浏览器清理），请重新上传'
+: what + '的原图这次没读出来（存储正忙），稍后再点一次即可，不需要重新上传');
+const confirmBigKeys = (keys, what) => {
+const landed = window.idbBigKeyLanded;
+if (typeof landed !== 'function') return;
+try {
+Promise.all(keys.map((k) => landed(k))).then((sts) => {
+if (sts.indexOf('missing') < 0) return;
+toast(what + '没能存进本机存储（存储空间可能已满）：现在能看见，重开就没了。请先去「设置 → 数据备份」导出备份，删掉一些数据后再传一次');
+}).catch(() => {});
+} catch (e) {}
+};
+function csBgIdxWitness() {
+try {
+const idx = window.idbBigIdxSize;
+return typeof idx === 'function' && idx('cs-bg') !== undefined;
+} catch (e) { return false; }
+}
+const csBgCurNs = () => { try { return String(window.activePrefix() || ''); } catch (e) { return ''; } };
+let csBgHydrating = false;   // 一次只跑一份取回
+let csBgAskedNs = '';        // 已为哪个桌面踢过问库（每桌面每会话一次，不空转；restore-done 重置）
+let csBgGoneNs = '';         // 该桌面「库里确认没有／用户亲手删」⇒ 允许拆层（换桌面自动失效）
+let csBgPaintedNs = '';      // 壁纸层当前画的是哪个桌面的图
+function csBgExpectBg(ns) {
+const cur = ns || csBgCurNs();
+const aid = csBgActiveId();
+if (!!aid && csBgList().indexOf(aid) >= 0) return true;
+if (csBgIdxWitness()) return true;
+return csBgGoneNs !== cur;
+}
+function csBgForgetThisSession() { csBgGoneNs = csBgCurNs(); }
+function csBgRebindPointer() {
+try {
+if (csBgActiveId()) return;
+const rec = csBgReconcileActive();
+if (rec) return;
+store.set(CS_BG_ACTIVE, '__idb');
+} catch (e) {}
+}
+function csBgHydrateOnce(ns) {
+const cur = ns || csBgCurNs();
+if (csBgHydrating || csBgAskedNs === cur || !window.idbEnsureBigKey) return false;
+try { if (store.get('cs-bg')) return false; } catch (e) { return false; }
+csBgHydrating = true;
+csBgAskedNs = cur;
+readBigKey('cs-bg').then((r) => {
+csBgHydrating = false;
+if (csBgGoneNs === cur) return;
+if (r.v) {
+try { csBgRebindPointer(); applySettings(); } catch (e) {}
+return;
+}
+if (r.st === 'absent') {
+csBgGoneNs = cur;
+try {
+if (csBgActiveId() && !csBgIdxWitness()) store.remove(CS_BG_ACTIVE);
+} catch (e) {}
+try { applySettings(); } catch (e) {}
+}
+}).catch(() => { csBgHydrating = false; });
+return true;
+}
+function csBgHoldLayer() {
+const cur = csBgCurNs();
+if (csBgPaintedNs && csBgPaintedNs !== cur) return false;
+if (!csBgExpectBg(cur)) return false;
+if (csBgHydrating) return true;
+if (csBgHydrateOnce(cur)) return true;
+return csBgExpectBg(cur);
 }
 const FONT_SIZES = [
 { label: '小', value: '13px' },
@@ -319,7 +396,7 @@ set('cs-mark-pos-val', fmtOff(markDX, markDY));
 set('cs-time-pos-val', fmtOff(timeDX, timeDY));
 let bg = store.get('cs-bg');
 if (bg && typeof bg === 'string' && bg.length > 6 * 1024 * 1024) {
-try { store.remove('cs-bg'); } catch (e) {}
+if (bg.length > 12 * 1024 * 1024) { try { store.remove('cs-bg'); } catch (e) {} }
 bg = null;
 }
 const bgLayer = csBgLayer();
@@ -337,13 +414,16 @@ if (bgLayer.style.backgroundPosition !== psWanted) bgLayer.style.backgroundPosit
 if (bgLayer.style.display !== 'block') bgLayer.style.display = 'block';
 chatPage.classList.toggle('cs-bg-on', true);
 chatPage.classList.toggle('cs-bg-fill', fit === 'fill');
+csBgPaintedNs = csBgCurNs();   // #1258：记下这层图属于哪个桌面（跨桌面切换时的拆层依据）
 csBgStableLater();
 } else {
-if (bgLayer) {
+const waitBg = !bg && csBgHoldLayer();
+if (bgLayer && !waitBg) {
 if (bgLayer.style.display !== 'none') bgLayer.style.display = 'none';
 if (bgLayer.style.backgroundImage) bgLayer.style.backgroundImage = '';
+csBgPaintedNs = '';   // #1258：当场拆掉了就销账，别让下一位桌面替这张图「留层」
 }
-if (chatPage) {
+if (chatPage && !waitBg) {
 if (chatPage.classList.contains('cs-bg-fill')) chatPage.classList.remove('cs-bg-fill');
 if (chatPage.classList.contains('cs-bg-on')) chatPage.classList.remove('cs-bg-on');
 if (chatPage.style.backgroundImage) {
@@ -379,52 +459,32 @@ try { applyCssEnforce(); } catch (e) {}
 window.applyChatSettings = applySettings;
 window.applyCsCssEnforce = applyCssEnforce; // #732：供抽屉侧滑块即时刷新
 applySettings();
+const csBgFgRecheck = () => {
+try {
+if (chatPage && !chatPage.hidden) csBgHoldLayer();
+} catch (e) {}
+};
+try {
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') csBgFgRecheck(); });
+document.addEventListener('mochi-fg-resume', csBgFgRecheck);
+} catch (e) {}
 try {
 new MutationObserver(() => { try { applySettings(); } catch (e) {} })
 .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 } catch (e) {}
 const row = (id) => document.getElementById(id);
+const csIngestTo = (src, opts) => (window.mochiImgCompressTo ? window.mochiImgCompressTo(src, opts)
+: (toast('图片处理组件没加载上（缓存过旧或离线），请重新打开页面再试'), Promise.resolve(null)));
 function csBgMakeThumb(dataUrl, maxSide) {
-return new Promise((resolve) => {
-if (typeof dataUrl !== 'string' || dataUrl.length > 50 * 1024 * 1024) { resolve(null); return; }
-const img = new Image();
-img.onload = () => {
-try {
-const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-const w = Math.max(1, Math.round(img.width * scale));
-const h = Math.max(1, Math.round(img.height * scale));
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-c.getContext('2d').drawImage(img, 0, 0, w, h);
-resolve(c.toDataURL('image/jpeg', 0.8));
-} catch (e) { resolve(null); }
-};
-img.onerror = () => resolve(null);
-img.src = dataUrl;
-});
+return csIngestTo(dataUrl, { maxSide: maxSide, quality: 0.8, tag: 'cs-thb' });
 }
-function csBgCompress(dataUrl) {
-return new Promise((resolve) => {
-let settled = false;
-const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); resolve(v); };
-const watchdog = setTimeout(function () { once(null); }, 20000);
-const img = new Image();
-img.onload = () => {
-try {
+function csBgMaxSide() {
 const dpr = Math.max(1, window.devicePixelRatio || 1);
 const screenH = (window.screen && window.screen.height) || 1920;
-const maxSide = Math.min(4096, Math.max(2160, Math.round(screenH * dpr)));
-const c = document.createElement('canvas');
-const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-c.width = Math.max(1, Math.round(img.width * scale));
-c.height = Math.max(1, Math.round(img.height * scale));
-c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-once(c.toDataURL('image/jpeg', 0.85));
-} catch (e) { once(null); }
-};
-img.onerror = () => once(null);
-img.src = dataUrl;
-});
+return Math.min(4096, Math.max(2160, Math.round(screenH * dpr)));
+}
+function csBgCompress(src) {
+return csIngestTo(src, { maxSide: csBgMaxSide(), quality: 0.85, tag: 'cs-bg' });
 }
 async function csBgAdd(dataRaw) {
 const data = await csBgCompress(dataRaw);
@@ -439,6 +499,7 @@ csBgMakeThumb(data, 240).then(th => { if (th) store.set('cs-bg-item-thb-' + id, 
 store.set('cs-bg', data);
 store.set(CS_BG_ACTIVE, id);
 applySettings();
+confirmBigKeys(['cs-bg-item-' + id, 'cs-bg'], '这张壁纸');
 return id;
 }
 function csBgPickFiles() {
@@ -452,14 +513,7 @@ let ok = 0, fail = 0;
 toast('正在处理 ' + fs.length + ' 张图片…');
 let chain = Promise.resolve();
 fs.forEach((f) => {
-chain = chain.then(() => new Promise((res) => {
-const reader = new FileReader();
-reader.onload = () => {
-csBgAdd(reader.result).then((id) => { if (id) ok++; else fail++; res(); });
-};
-reader.onerror = () => { fail++; res(); };
-reader.readAsDataURL(f);
-}));
+chain = chain.then(() => csBgAdd(f).then((id) => { if (id) ok++; else fail++; }));
 });
 chain.then(() => {
 if (ok) { toast('已加入 ' + ok + ' 张壁纸' + (fail ? '，' + fail + ' 张失败（太大/格式不支持/读取超时）' : '')); }
@@ -505,29 +559,38 @@ im.alt = '';
 im.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block';
 if (thb) { im.src = thb; }
 else {
-const full = store.get('cs-bg-item-' + id);
 im.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=';
 cell.style.background = 'var(--muted,#888)';
-if (full) csBgMakeThumb(full, 240).then((th) => { if (th) { store.set('cs-bg-item-thb-' + id, th); im.src = th; cell.style.background = ''; } });
+const paint = (full) => {
+if (!full) return;
+csBgMakeThumb(full, 240).then((th) => { if (th) { store.set('cs-bg-item-thb-' + id, th); im.src = th; cell.style.background = ''; } });
+};
+const full0 = store.get('cs-bg-item-' + id);
+if (full0) paint(full0);
+else readBigKey('cs-bg-item-' + id).then((r) => { paint(r.v); });
 }
 cell.appendChild(im);
 cell.addEventListener('click', () => {
+const useFull = (full) => { store.set('cs-bg', full); store.set(CS_BG_ACTIVE, id); applySettings(); toast('已切换壁纸'); m.style.display = 'none'; };
 const full = store.get('cs-bg-item-' + id);
-if (full) { store.set('cs-bg', full); store.set(CS_BG_ACTIVE, id); applySettings(); toast('已切换壁纸'); m.style.display = 'none'; }
-else { toast('这张壁纸原图已丢失（可能被浏览器清理），请重新上传'); }
+if (full) { useFull(full); return; }
+readBigKey('cs-bg-item-' + id).then((r) => {
+if (r.v) { useFull(r.v); return; }
+bigKeyMissToast(r.st, '这张壁纸');
+});
 });
 const del = document.createElement('div');
 del.textContent = '×';
 del.style.cssText = 'position:absolute;top:2px;right:2px;width:20px;height:20px;line-height:18px;text-align:center;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:14px';
 del.addEventListener('click', (e) => {
 e.stopPropagation();
-const full = store.get('cs-bg-item-' + id);
+const doDelete = (full) => {
 const thb2 = store.get('cs-bg-item-thb-' + id);
 const wasActive = id === aid;
 csBgSaveList(csBgList().filter(x => x !== id));
 store.remove('cs-bg-item-' + id);
 store.remove('cs-bg-item-thb-' + id);
-if (wasActive) { store.remove('cs-bg'); applySettings(); }
+if (wasActive) { store.remove('cs-bg'); store.remove(CS_BG_ACTIVE); csBgForgetThisSession(); applySettings(); }
 if (full) {
 m.__undoItem = { id, full, thb: thb2, wasActive };
 if (m.__undoTimer) clearTimeout(m.__undoTimer);
@@ -535,6 +598,10 @@ m.__undoTimer = setTimeout(() => { m.__undoItem = null; if (m.style.display === 
 }
 toast('已删除，5 秒内可撤销');
 openCsBgPanel();
+};
+const has = store.get('cs-bg-item-' + id);
+if (has) { doDelete(has); return; }
+readBigKey('cs-bg-item-' + id).then((r) => { doDelete(r.v); });
 });
 cell.appendChild(del);
 grid.appendChild(cell);
@@ -571,7 +638,7 @@ if (cur) {
 const rmBtn = document.createElement('button');
 rmBtn.textContent = '清除当前壁纸（图库保留）';
 rmBtn.style.cssText = 'width:100%;padding:10px;border:1px solid rgba(163,45,45,.35);border-radius:10px;background:var(--danger-soft,#fff5f5);color:var(--danger-ink,#a32d2d);font-size:13px;margin-bottom:8px';
-rmBtn.addEventListener('click', () => { store.remove('cs-bg'); store.remove(CS_BG_ACTIVE); applySettings(); toast('已清除，图库里的图还在'); openCsBgPanel(); });
+rmBtn.addEventListener('click', () => { store.remove('cs-bg'); store.remove(CS_BG_ACTIVE); csBgForgetThisSession(); applySettings(); toast('已清除，图库里的图还在'); openCsBgPanel(); });
 box.appendChild(rmBtn);
 }
 if (list.length && window.getContacts && window.xyStore && window.openModal) {
@@ -634,6 +701,7 @@ if (csBgRm) {
 csBgRm.addEventListener('click', () => {
 store.remove('cs-bg');
 try { store.remove(CS_BG_ACTIVE); } catch (e) {}
+csBgForgetThisSession();
 applySettings();
 });
 }
@@ -812,27 +880,8 @@ toast(label + '已保存：左右 ' + nx + 'px / 上下 ' + ny + 'px');
 };
 csPosRow('cs-mark-pos', 'cs-mark-pos-val', '主动发送标识位置', 'cs-mark-x', 'cs-mark-y');
 csPosRow('cs-time-pos', 'cs-time-pos-val', '时间轴位置', 'cs-time-x', 'cs-time-y');
-function compressHead(dataUrl, maxSide) {
-return new Promise((resolve) => {
-if (typeof dataUrl === 'string' && dataUrl.length > 50 * 1024 * 1024) { resolve(null); return; }
-let settled = false;
-const once = (v) => { if (settled) return; settled = true; clearTimeout(watchdog); resolve(v); };
-const watchdog = setTimeout(() => once(null), 20000);
-const img = new Image();
-img.onload = () => {
-try {
-const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-const w = Math.max(1, Math.round(img.width * scale));
-const h = Math.max(1, Math.round(img.height * scale));
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-c.getContext('2d').drawImage(img, 0, 0, w, h);
-once(c.toDataURL('image/jpeg', 0.85));
-} catch (e) { once(null); }
-};
-img.onerror = () => once(null);
-img.src = dataUrl;
-});
+function compressHead(src, maxSide) {
+return csIngestTo(src, { maxSide: maxSide, quality: 0.85, tag: 'cs-head' });
 }
 let headCb = null;
 const headInput = document.createElement('input');
@@ -843,15 +892,10 @@ document.body.appendChild(headInput);
 function headPickFile(f) {
 if (!f) return;
 const cb = headCb; headCb = null;
-const reader = new FileReader();
-reader.onload = () => {
-compressHead(reader.result, 256).then(data => {
+compressHead(f, 256).then(data => {
 if (!data) { toast('图片过大、格式不支持或读取超时，请换一张小图'); return; }
 if (cb) cb(data);
 });
-};
-reader.onerror = () => toast('图片读取失败，请重试');
-reader.readAsDataURL(f);
 }
 headInput.onchange = () => {
 const f = headInput.files && headInput.files[0];
@@ -1396,6 +1440,13 @@ document.getElementById('cs-font-sync').addEventListener('click', () => { syncFo
 demoteFontGlobal();
 migrateFontBlobs();
 try { document.addEventListener('mochi-restore-done', () => { _fontHydrateTries = {}; migrateFontBlobs(); applyFont(); }); } catch (e) {}
+try { document.addEventListener('mochi-restore-done', () => {
+try { if (window.idbResetBigKeyProbe) window.idbResetBigKeyProbe(); } catch (e) {}
+csBgHydrating = false;
+csBgAskedNs = '';
+csBgGoneNs = '';
+if (!csBgHydrateOnce()) { try { applySettings(); } catch (e) {} }
+}); } catch (e) {}
 applyFont();
 const csCss = row('cs-css');
 const CSS_KEY = 'cs-bubble-css';
@@ -1499,7 +1550,10 @@ const CHAT_BEAUTY_KEYS = [
 const getChatSchemes = () => {
 try { const a = JSON.parse(gStoreChat.get(CHAT_SCHEMES_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
 };
-const saveChatSchemesList = (arr) => { try { gStoreChat.set(CHAT_SCHEMES_KEY, JSON.stringify(arr)); } catch (e) {} };
+const saveChatSchemesList = (arr) => {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(gStoreChat, CHAT_SCHEMES_KEY, '聊天美化方案')) return false;
+try { gStoreChat.set(CHAT_SCHEMES_KEY, JSON.stringify(arr)); return true; } catch (e) { return false; }
+};
 const CHAT_BEAUTY_KIND = 'mochi-chat-beauty';
 const chatBeautyKindMismatch = (data) => {
 const k = data && data['__kind__'];
@@ -1539,7 +1593,7 @@ const drop = new Set(autos.slice(0, autos.length - 4).map(s => s.time));
 list = list.filter(s => !(s && drop.has(s.time) && typeof s.name === 'string' && s.name.indexOf('导入前备份') === 0));
 }
 list.push({ name, time: Date.now(), data: cur });
-saveChatSchemesList(list);
+if (!saveChatSchemesList(list)) return '';   // #1342j：读空未确认时不写、也不报「已备份」
 const back = getChatSchemes();
 return back.some(s => s && s.name === name) ? name : '';
 } catch (e) { return ''; }
@@ -1575,7 +1629,7 @@ const ctl = window.openModal('删除方案「' + s.name + '」？', '', (v) => {
 if (v !== 'ok') return;
 const list = getChatSchemes();
 list.splice(idx, 1);
-saveChatSchemesList(list);
+if (!saveChatSchemesList(list)) return;   // #1342j
 toast('已删除方案');
 window.openChatBeautySchemes();
 }, { noInput: true, staticText: '删除后不可恢复', pills: [{ label: '删除', value: 'ok' }] });
@@ -1749,7 +1803,7 @@ const name = (inp.value || '').trim();
 if (!name) { inp.style.borderColor = '#e05a5a'; return; }
 const list = getChatSchemes();
 list.push({ name, time: Date.now(), data });
-saveChatSchemesList(list);
+if (!saveChatSchemesList(list)) return;   // #1342j：不写、也不谎报「已保存」
 x.style.display = 'none'; x.hidden = true;
 toast('已保存方案「' + name + '」，所有桌面通用');
 const m = document.getElementById('chat-beauty-scheme-manager');
@@ -1797,7 +1851,8 @@ if (!s || !window.openModal) return;
 const ctl = window.openModal('编辑方案名称', s.name, (name) => {
 name = (name || '').trim();
 if (!name) { ctl.hint('名称不能为空'); ctl.stay(); return; }
-s.name = name; saveChatSchemesList(list); toast('已重命名');
+s.name = name; if (!saveChatSchemesList(list)) { ctl.stay(); return; }   // #1342j
+toast('已重命名');
 window.openChatBeautySchemes();
 }, { maxlength: 20, placeholder: '输入方案名称' });
 }
@@ -1910,6 +1965,7 @@ parts.push(JSON.stringify(arr[i]));
 }
 parts.push(']}');
 const blob = new Blob(parts, { type: 'application/json;charset=utf-8' });
+if (window.mochiExportBlob) { window.mochiExportBlob(blob, '聊天记录_' + new Date().toISOString().slice(0, 10) + '.json', '聊天记录数据'); return; }
 const a = document.createElement('a');
 a.href = URL.createObjectURL(blob);
 a.download = '聊天记录_' + new Date().toISOString().slice(0, 10) + '.json';
@@ -1926,7 +1982,7 @@ const csImport = row('cs-import-msgs');
 if (csImport) {
 csImport.addEventListener('click', () => {
 window.mochiFilePick({
-id: 'mochi-cs-import-pick', accept: '.json,application/json',
+id: 'mochi-cs-import-pick', accept: window.mochiDataPickAccept, // #1413：与整机导入同一份并集（窄串会让转存后改了类型的备份灰显）
 onFiles: (files) => {
 const f = files && files[0];
 if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -2453,6 +2509,7 @@ inputOrderSync();
 closeInputOrderPanel(false);
 });
 document.addEventListener('chat-input-order-changed', inputOrderSync);
+document.addEventListener('mochi-wrj-heal', () => { inputOrderSync(); if (inputOrderPanelOpen()) renderInputOrderPanel(); });
 document.addEventListener('batch-send-changed', () => { if (inputOrderPanelOpen()) renderInputOrderPanel(); });
 document.addEventListener('voice-send-changed', () => { if (inputOrderPanelOpen()) renderInputOrderPanel(); });
 }

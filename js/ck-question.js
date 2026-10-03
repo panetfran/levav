@@ -139,9 +139,12 @@ changed = true;
 if (changed) d.mergedIds = merged;
 return changed;
 }
+function ckAutoHold(k) { try { return !!(window.xyBigWriteHold && window.xyBigWriteHold(store, k)); } catch (e) { return false; } }
+function ckAutoHoldIn(st, k) { try { return !!(window.xyBigWriteHold && window.xyBigWriteHold(st, k)); } catch (e) { return false; } }
 function ckLoad() {
 let d = null;
 try { d = JSON.parse(store.get(KEY) || 'null'); } catch (e) { d = null; }
+if (!d) { try { if (store.awaitingBigKey && store.awaitingBigKey(KEY)) store.requestBigKey(KEY); } catch (e0) {} }
 if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
 if (!d.settings || typeof d.settings !== 'object') d.settings = {};
 if (d.settings.useDefault === undefined) d.settings.useDefault = true;
@@ -153,9 +156,9 @@ nq.isPreset = true;
 return nq;
 });
 d.mergedIds = DEFAULT_QUESTIONS.map(q => q.id);
-if (!isNew) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+if (!isNew && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
 } else {
-if (ckMerge(d)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+if (ckMerge(d) && !ckAutoHold(KEY)) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
 }
 if (!Array.isArray(d.groups)) d.groups = [];
 return d;
@@ -163,6 +166,7 @@ return d;
 function ckLoadFrom(s) {
 let d = null;
 try { d = JSON.parse(s.get(KEY) || 'null'); } catch (e) { d = null; }
+if (!d) { try { if (s.awaitingBigKey && s.awaitingBigKey(KEY)) s.requestBigKey(KEY); } catch (e0) {} }
 if (!d || typeof d !== 'object' || Array.isArray(d)) d = {};
 if (!d.settings || typeof d.settings !== 'object') d.settings = {};
 if (d.settings.useDefault === undefined) d.settings.useDefault = true;
@@ -174,18 +178,23 @@ nq.isPreset = true;
 return nq;
 });
 d.mergedIds = DEFAULT_QUESTIONS.map(q => q.id);
-if (!isNew) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
+if (!isNew && !ckAutoHoldIn(s, KEY)) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
 } else {
-if (ckMerge(d)) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
+if (ckMerge(d) && !ckAutoHoldIn(s, KEY)) { try { s.set(KEY, JSON.stringify(d)); } catch (e) {} }
 }
 if (!Array.isArray(d.groups)) d.groups = [];
 return d;
 }
-function ckSave(d) { try { store.set(KEY, JSON.stringify(d)); } catch (e) {} }
+function ckSave(d) {
+if (window.xyBigWriteBlocked && window.xyBigWriteBlocked(store, KEY, '查岗问题库')) return false;
+try { store.set(KEY, JSON.stringify(d)); } catch (e) {}
+return true;
+}
+function pgCatOff(ns, cat) { return !!(window.presetGroup && window.presetGroup.isOff(ns, cat || 'daily')); }
 function pickQ() {
 const d = ckLoad();
 const useDefault = (d.settings || {}).useDefault !== false;
-const qs = d.questions.filter(q => q && q.enabled !== false && q.text && (useDefault || q.isPreset !== true));
+const qs = d.questions.filter(q => q && q.enabled !== false && q.text && (useDefault || q.isPreset !== true) && !(q.isPreset === true && pgCatOff('ta-checkin', q.cat)));
 if (!qs.length) return null;
 let pool = qs;
 if (qs.length > 1) {
@@ -275,7 +284,7 @@ askType = isSingle ? 'single' : 'text';
 window.chatAddSystem(actionHint, { special: 'ask-msg' });
 const el = window.chatAddSystem(actionText, { special: 'ask-card', askQuestion: actionText, askOptions: actionOpts ? actionOpts : askOpts, askType: askType, deskCk: isDeskCk, deskCkDir: deskCkDir });
 const msgIdx = el ? Number(el.dataset.idx) : -1;
-if (window.bgNotifyCheck) window.bgNotifyCheck(actionHint + actionText, Date.now(), { name: 'TA查岗', late: !!(window.interactLateNotify && window.interactLateNotify()) });
+if (window.bgNotifyCheck) window.bgNotifyCheck(actionHint + actionText, Date.now(), { name: 'TA查岗', late: !!(window.interactLateNotify && window.interactLateNotify()), kind: 'checkin' });
 let popupProb = 70;
 if (cfg && typeof cfg['ckq-popup-prob'] === 'number' && cfg['ckq-popup-prob'] >= 0) popupProb = cfg['ckq-popup-prob'];
 if (Math.random() * 100 < popupProb) {
@@ -368,6 +377,7 @@ hasCats.forEach(([k, label]) => {
 html += '<button class="cc-tab' + (k === ckSysCat ? ' sel' : '') + '" data-cat="' + k + '">' + esc(label) + '<em class="cc-tab-n">' + counts[k] + '</em></button>';
 });
 html += '</div>';
+html += window.presetGroup ? window.presetGroup.catBar('ta-checkin', ckSysCat, esc((CATS_CKQ.find(c => c[0] === ckSysCat) || [])[1] || ckSysCat)) : '';
 d.questions.forEach(q => {
 if (!(hit(q) && q.cat === ckSysCat)) return;
 const idx = d.questions.indexOf(q);
@@ -385,6 +395,7 @@ html += '<div class="tc-qopts">TA对我：' + esc(q.taToMe || q.text) + ' / 我�
 }
 });
 container.innerHTML = html;
+if (window.presetGroup) window.presetGroup.bindBar(container.querySelector('.preset-cat-bar'), 'ta-checkin', ckSysCat, function () { renderCkSysInto(container, search); });
 container.querySelectorAll('.cc-tab[data-cat]').forEach(t => {
 t.addEventListener('click', () => { ckSysCat = t.dataset.cat; renderCkSysInto(container, search); });
 });
@@ -637,7 +648,7 @@ const d2 = ckLoad();
 lines.forEach(t => {
 d2.questions.push({ id: 'k_' + Date.now() + '_' + Math.floor(Math.random() * 9999), cat: 'text', text: t, enabled: true, isPreset: false });
 });
-ckSave(d2);
+if (ckSave(d2) === false) return; // #1520：拦下＝输入框原样保留（用户才有料可「再点一次」）
 batchTextEl.value = '';
 renderCkMineInto(document.getElementById('ckq-mine-cats'), '');
 refreshCkCardCounts();

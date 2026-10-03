@@ -374,6 +374,7 @@ return ccScope === 'public' ? (PUB_PREFIX + ':' + PUB_KEY) : (window.activePrefi
 }
 function saveGroups(groups) {
 if (!groups) { ccDirty = false; return; }
+if (window.xyBigWriteBlocked(curStore(), curKey(), '字卡库')) { ccDirty = true; return; }
 if (!ccAuthSeen[ccScope] && window.idbHasKey) {
 ccDirty = true;
 rescueCcOverwrite();
@@ -435,8 +436,9 @@ function rescueCcOverwrite() {
 if (ccRescueInflight) return;
 const mem = groups; // hydrateCurScope 落定后会用权威库重载 groups，先保住内存增量
 ccRescueInflight = Promise.resolve(window.idbHasKey(curFullKey())).then(exists => {
-if (!exists) { ccAuthMark(); saveGroupsNow(groups); return null; }
+if (exists === false) { ccAuthMark(); saveGroupsNow(groups); return null; }
 return hydrateCurScope().then(() => {
+if (window.xyBigWriteHold(curStore(), curKey())) { ccDirty = true; return null; }
 groups = mergeCcGroupsInto(loadGroups(), mem);
 ccAuthMark();
 saveGroupsNow(groups);
@@ -490,29 +492,11 @@ window.cardLockCustomCount = function () {
 try { return totalCount(ownPoolRaw()) + totalCount(pubGroupsRaw()); }
 catch (e) { return 0; }
 };
-function compressImage(dataUrl, maxSide, format, quality) {
-return new Promise((resolve) => {
-if (typeof dataUrl === 'string' && dataUrl.length > 8 * 1024 * 1024) {
-resolve(null);
-return;
-}
-const img = new Image();
-img.onload = () => {
-try {
-if (img.width * img.height > 26000000) { resolve(null); return; }
-const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
-const w = Math.max(1, Math.round(img.width * scale));
-const h = Math.max(1, Math.round(img.height * scale));
-const c = document.createElement('canvas');
-c.width = w; c.height = h;
-const ctx = c.getContext('2d');
-if (format === 'image/jpeg') { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h); }
-ctx.drawImage(img, 0, 0, w, h);
-resolve(c.toDataURL(format || 'image/png', quality));
-} catch (e) { resolve(null); }
-};
-img.onerror = () => resolve(null);
-img.src = dataUrl;
+function compressImage(src, maxSide, format, quality) {
+if (!window.mochiImgCompressTo) return Promise.resolve(null);
+const mime = format === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+return window.mochiImgCompressTo(src, {
+maxSide: maxSide, mime: mime, quality: quality, opaque: mime === 'image/jpeg', tag: 'cc-img'
 });
 }
 function renderGroupsBar() {
@@ -642,6 +626,25 @@ tog.title = off ? '启用该分组' : '停用该分组';
 tog.innerHTML = off ? ICON_EYE_OFF : ICON_EYE_ON;
 }
 }
+function ccCardSplit(c) {
+const s = typeof c === 'string' ? c : '';
+const bar = s.indexOf('|||');
+return bar > 0 ? { name: s.slice(0, bar), body: s.slice(bar + 3) } : { name: '', body: s };
+}
+function ccCardMedia(c) {
+const sp = ccCardSplit(c), b = sp.body;
+if (!b) return null;
+if (window.mochiMediaIsToken && window.mochiMediaIsToken(b)) return { name: sp.name, src: b, img: true };
+const inline = window.chatIsInlineDataSrc ? window.chatIsInlineDataSrc(b) : b.indexOf('data:') === 0;
+if (inline) {
+if (!(window.chatIsImgSrcLike ? window.chatIsImgSrcLike(b) : b.indexOf('data:image') === 0)) {
+return { name: sp.name, src: b, img: false };
+}
+return { name: sp.name, src: (window.chatFixNoMimeImg && window.chatFixNoMimeImg(b)) || b, img: true };
+}
+if (!sp.name && /^https?:\/\//i.test(b)) return { name: '', src: b, img: true };
+return null;
+}
 function cardItemHtml(c) {
 if (typeof c === 'string' && c.indexOf('|||') > 0) {
 const pIdx = c.indexOf('|||');
@@ -656,22 +659,24 @@ return '<div class="cc-ico" style="background:rgba(0,0,0,.05)"><svg viewBox="0 0
 '<span class="cc-play-bars"><i></i><i></i><i></i></span></button>';
 }
 }
-if (typeof c === 'string' && c.indexOf('@@m:') === 0 && window.mochiMediaIsToken && window.mochiMediaIsToken(c)) {
-if (window.mochiMediaTokenMissing && window.mochiMediaTokenMissing(c)) {
+const m = ccCardMedia(c);
+if (m) {
+if (!m.img) {
+const label = (window.chatIsDataAudioSrc && window.chatIsDataAudioSrc(m.src)) ? '[语音]' : '[附件]';
+return '<div class="cc-txt"><div class="t" style="color:var(--muted)">' + esc(m.name ? m.name + ' ' + label : label) + '</div></div>';
+}
+if (window.mochiMediaIsToken && window.mochiMediaIsToken(m.src) && window.mochiMediaTokenMissing && window.mochiMediaTokenMissing(m.src)) {
 return '<div class="cc-txt"><div class="t" style="color:var(--muted)">[图片丢失]</div></div>';
 }
-return '<div class="cc-ico cc-imgbox"><img class="cc-img" data-src="' + esc(c) + '" alt="图片" decoding="async"></div>' + ccNameBadgeHtml(c);
-}
-if (typeof c === 'string' && (c.indexOf('data:') === 0 || /^https?:\/\//i.test(c))) {
-return '<div class="cc-ico cc-imgbox"><img class="cc-img" data-src="' + esc(c) + '" alt="图片" decoding="async"></div>' + ccNameBadgeHtml(c);
+return '<div class="cc-ico cc-imgbox"><img class="cc-img" data-src="' + esc(m.src) + '" alt="图片" decoding="async"></div>' + ccNameBadgeHtml(c, m.name);
 }
 return '<div class="cc-txt"><div class="t">' + esc(c) + '</div></div>';
 }
-function ccNameBadgeHtml(c) {
+function ccNameBadgeHtml(c, fallback) {
 try {
 if (manageMode) return ''; // 管理模式整格用于勾选，不叠加名称按钮
 if (cur !== 'sticker' && cur !== 'image') return '';
-const nm = ccCardName(c);
+const nm = ccCardName(c) || fallback || '';
 return '<button type="button" class="cc-name-edit" title="' + (nm ? '编辑名称' : '添加名称') + '" style="' + CC_NAME_BTN_CSS + '">' + (nm ? '改' : '＋') + '</button>'
 + (nm ? '<div class="cc-name-cap" style="' + CC_NAME_CAP_CSS + '">' + esc(nm) + '</div>' : '');
 } catch (e) { return ''; }
@@ -811,12 +816,23 @@ refreshLibCounts(true);
 };
 try {
 window.addEventListener('beforeunload', flushCcSave);
-window.addEventListener('pagehide', flushCcSave);
+window.addEventListener('pagehide', function () { flushCcSave(); poolSrcRelease(); });
 document.addEventListener('visibilitychange', function () {
-if (document.visibilityState === 'hidden') flushCcSave();
+if (document.visibilityState === 'hidden') { flushCcSave(); poolSrcRelease(); }
 });
 } catch (e) {}
 const libCounts = { pub: -1, own: -1, fun: -1, pubFun: -1 };
+const NO_SRC = {}; // 初始哨兵：任何真实读数（含 null=键缺失）都不等于它
+let poolSrcPub = NO_SRC, poolSrcOwn = NO_SRC;
+function poolSrcChanged() {
+let rp = NO_SRC, ro = NO_SRC;
+try { rp = pubStore().get(PUB_KEY); } catch (e) {}
+try { ro = store.get('cc-groups'); } catch (e) {}
+const ch = poolSrcPub !== rp || poolSrcOwn !== ro;
+poolSrcPub = rp; poolSrcOwn = ro;
+return ch;
+}
+function poolSrcRelease() { poolSrcPub = NO_SRC; poolSrcOwn = NO_SRC; }
 function countOf(g) {
 let n = 0;
 try { Object.keys(g || {}).forEach(t => (g[t] || []).forEach(grp => { if (Array.isArray(grp) && Array.isArray(grp[1])) n += grp[1].length; })); } catch (e) {}
@@ -828,7 +844,7 @@ try { (keys || []).forEach(t => (g[t] || []).forEach(grp => { if (Array.isArray(
 return n;
 }
 function refreshLibCounts(force) {
-if (force) { libCounts.pub = -1; libCounts.own = -1; libCounts.fun = -1; libCounts.pubFun = -1; pubInvalidate(); }
+if (force) { libCounts.pub = -1; libCounts.own = -1; libCounts.fun = -1; libCounts.pubFun = -1; if (poolSrcChanged()) pubInvalidate(); }
 if (libCounts.pub < 0) {
 const n = countOf(pubGroupsRaw());
 libCounts.pub = n > 0 ? n : -1;
@@ -997,6 +1013,13 @@ viewImage(v || c);
 return;
 }
 if (typeof c === 'string' && (c.indexOf('data:') === 0 || /^https?:\/\//i.test(c))) { viewImage(c); return; }
+const cm = ccCardMedia(c);
+if (cm && cm.img) {
+const v2 = window.mochiMediaExpand ? window.mochiMediaExpand(cm.src) : null;
+viewImage(v2 || cm.src);
+return;
+}
+if (cm) return; // 非图片内联载荷：占位格不给开文字编辑器（打开就是几十万字节的 base64，改一下即毁卡）
 openEditCard(gname, i);
 });
 attachCardDrag(d, gname, i);
@@ -1154,10 +1177,12 @@ if (typeof c !== 'string' || !c) return '';
 if (t === 'sticker' || t === 'image') return ccCardName(c).toLowerCase();
 if (t === 'voice') {
 const bar = c.indexOf('|||');
-if (bar > 0 && c.slice(bar + 3).indexOf('data:audio') === 0) return c.slice(0, bar).toLowerCase();
+const body = bar > 0 ? c.slice(bar + 3) : '';
+if (bar > 0 && (window.chatIsDataAudioSrc ? window.chatIsDataAudioSrc(body) : body.indexOf('data:audio') === 0)) return c.slice(0, bar).toLowerCase();
+if (ccCardMedia(c)) return ''; // 变体音频（大写 MIME/前导空白）按名称前缀匹配，载荷不进正文
 return c.toLowerCase();
 }
-if (c.indexOf('data:') === 0 || c.indexOf('@@m:') === 0 || /^https?:\/\//i.test(c)) return '';
+if (ccCardMedia(c) || c.indexOf('@@m:') >= 0) return '';
 return c.toLowerCase();
 } catch (e) { return ''; }
 }
@@ -1221,12 +1246,20 @@ list.innerHTML = '<div class="cc-empty-wrap" style="grid-column:1/-1">'
 if (list && !list.__ccEmptyActBound) {
 list.__ccEmptyActBound = true;
 list.addEventListener('click', (e) => {
+const _t = e.target;
+if (_t && _t.getAttribute && _t.getAttribute('data-file-pick-surface') === '1') return;
 const b = e.target && e.target.closest ? e.target.closest('[data-cc-empty]') : null;
 if (!b) return;
 e.preventDefault(); e.stopPropagation();
 const el = document.getElementById(b.getAttribute('data-cc-empty') === 'link' ? 'cc-import-link' : 'cc-import');
 if (el) el.click();
 });
+}
+if (IMG_TYPES[cur]) {
+try {
+const _ccEmptyBtn = list.querySelector('[data-cc-empty="import"]');
+if (_ccEmptyBtn) ccLayImportSurface(_ccEmptyBtn, 'cc-empty-import-surf');
+} catch (e2) {}
 }
 return;
 }
@@ -1267,6 +1300,13 @@ if (typeof it.c === 'string' && (it.c.indexOf('data:') === 0 || /^https?:\/\//i.
 viewImage(it.c);
 return;
 }
+const cm = ccCardMedia(it.c);
+if (cm && cm.img) {
+const v2 = window.mochiMediaExpand ? window.mochiMediaExpand(cm.src) : null;
+viewImage(v2 || cm.src);
+return;
+}
+if (cm) return;
 openEditCard(it.gname, it.i);
 });
 attachCardDrag(el, it.gname, it.i);
@@ -2007,7 +2047,8 @@ const EXPORT_CATS = [
 ['sticker', '表情包'], ['image', '图片'], ['poke', '拍一拍'], ['voice', '语音'],
 ['fish', '摸鱼'], ['eat', '吃饭'], ['period', '经期'], ['water', '喝水'], ['garden', '花园'],
 ['sync', '同频'], ['reach', '伸手'], ['cjian', '此间'], ['room', '房间'], ['piggy', '存钱罐'],
-['drift', '漂流瓶'], ['interact', '互动回应'], ['music', '音乐']
+['drift', '漂流瓶'], ['interact', '互动回应'], ['music', '音乐'],
+['mjfree', '梦角自由造句']
 ];
 const ceMask = document.getElementById('cc-export-mask');
 const ceCats = document.getElementById('ce-cats');
@@ -2121,7 +2162,7 @@ ccExportOffer(data,
 }
 const ccImportData = document.getElementById('cc-import-data');
 if (ccImportData) {
-const CAT_NAMES = { text: '主字卡', kaomoji: '颜文字', emoji: 'emoji', sticker: '表情包', image: '图片', poke: '拍一拍', voice: '语音', fish: '摸鱼', eat: '吃饭', period: '经期', water: '喝水', garden: '花园', sync: '同频', reach: '伸手', cjian: '此间', room: '房间', piggy: '存钱罐', drift: '漂流瓶', interact: '互动回应', music: '音乐' };
+const CAT_NAMES = { text: '主字卡', kaomoji: '颜文字', emoji: 'emoji', sticker: '表情包', image: '图片', poke: '拍一拍', voice: '语音', fish: '摸鱼', eat: '吃饭', period: '经期', water: '喝水', garden: '花园', sync: '同频', reach: '伸手', cjian: '此间', room: '房间', piggy: '存钱罐', drift: '漂流瓶', interact: '互动回应', music: '音乐', mjfree: '梦角自由造句' };
 ccImportData.addEventListener('click', () => {
 if (window.openModal) {
 const curName = CAT_NAMES[cur] || '当前分类';
@@ -2131,7 +2172,7 @@ pickImportFile(mode);
 }, {
 noInput: true,
 pickOk: {
-entry: 'cc-import-data', accept: '',
+entry: 'cc-import-data', accept: window.mochiDataPickAccept, // #1410：留空＝不给类型线索，那批内核按自家默认弹相册（作者直派）；改读单一来源的 json 并集
 skipWhen: (m) => m === 'paste',
 onFiles: (files, mode) => {
 const f = files && files[0];
@@ -2139,7 +2180,8 @@ if (!f) { toast('没有取到文件，请再选一次'); return; }
 importFromFile(f, mode);
 }
 },
-staticText: '选择导入方式：\n· 追加字卡：保留现有字卡，按分组并入，重复内容自动去除\n· 导入到「' + curName + '」：文件里全部字卡都并入当前分类\n· 替换字卡：清空当前字卡库，完全使用文件内容\n· 粘贴文本导入：文件选不出来时用这个（按「追加字卡」并入）',
+staticText: '注意：这里导入的是 json 数据文件，不能选图片；正常上传图片请点击**【批量导入】**即可。\n\n选择导入方式：\n· 追加字卡：保留现有字卡，按分组并入，重复内容自动去除\n· 导入到「' + curName + '」：文件里全部字卡都并入当前分类\n· 替换字卡：清空当前字卡库，完全使用文件内容\n· 粘贴文本导入：文件选不出来时用这个（按「追加字卡」并入）',
+staticEmph: true,
 pills: [
 { label: '追加字卡（自动去重）', value: 'merge' },
 { label: '导入到「' + curName + '」', value: 'current' },
@@ -2151,7 +2193,7 @@ pill: 'merge'
 }
 });
 function pickImportFile(mode) {
-pickFiles('', false, (files) => {
+pickFiles(window.mochiDataPickAccept, false, (files) => {
 const f = files && files[0];
 if (!f) return;
 importFromFile(f, mode);
@@ -2384,12 +2426,12 @@ if (!raw) { raw = bag[PUB_PREFIX + ':' + PUB_KEY] || ''; fromPubFallback = !!raw
 try {
 const parsed = JSON.parse(String(raw || ''));
 const hasCards = parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
-CC_TYPES.some(t => Array.isArray(parsed[t]) && parsed[t].length);
+CC_ALL_TYPES.some(t => Array.isArray(parsed[t]) && parsed[t].length);
 if (hasCards) { data = parsed; fromBackup = true; }
 } catch (e) {}
 }
 if (!fmt) {
-['text', 'kaomoji', 'emoji', 'sticker', 'image', 'poke', 'voice'].forEach(k => {
+CC_ALL_TYPES.forEach(k => {
 const arr = data[k];
 if (!Array.isArray(arr)) return;
 arr.forEach(g => {
@@ -2688,7 +2730,7 @@ if (!window.openModal) return;
 window.openModal('导入自定义字卡', '', (mode) => { ccFullPickFile(mode); }, {
 noInput: true,
 pickOk: {
-entry: 'li-cc-full-import', accept: '',
+entry: 'li-cc-full-import', accept: window.mochiDataPickAccept, // #1410：同上
 onFiles: (files, mode) => {
 const f = files && files[0];
 if (!f) { toast('没有取到文件，请再选一次'); return; }
@@ -2704,7 +2746,7 @@ pill: 'merge'
 });
 });
 function ccFullPickFile(mode) {
-pickFiles('', false, (files) => ccFullImportFile(files && files[0], mode));
+pickFiles(window.mochiDataPickAccept, false, (files) => ccFullImportFile(files && files[0], mode));
 }
 function ccFullImportFile(f, mode) {
 if (!f) return;
@@ -2997,25 +3039,31 @@ if (!msgs.length) msgs.push('没有可上传的文件');
 toast(msgs.join('，'));
 }
 }
-function syncCcImportSurface() {
-try {
-if (!impBtn) return;
-const media = !!IMG_TYPES[cur];
-const inp = impBtn.querySelector('input[data-file-pick-surface]');
-if (!media) { if (inp) try { inp.remove(); } catch (e) {} return; }
+function ccLayImportSurface(hostEl, surfId) {
+if (!hostEl || !window.mochiFilePickSurface) return null;
+const inp = hostEl.querySelector('input[data-file-pick-surface]');
 if (inp) {
 try { inp.accept = cur === 'voice' ? '' : 'image/*'; inp.multiple = true; } catch (e) {}
-return; // 已铺，复用（幂等，不随 render 堆积节点）
+return inp; // 已铺，复用（幂等，不随 render 堆积节点）
 }
-if (window.mochiFilePickSurface) {
-var _ccSurf = window.mochiFilePickSurface(impBtn, {
-id: 'cc-import-media-surf',
+const _ccSurf = window.mochiFilePickSurface(hostEl, {
+id: surfId,
 accept: cur === 'voice' ? '' : 'image/*',
 multiple: true,
 onFiles: ccImportMedia
 });
 try { if (_ccSurf) _ccSurf.accept = cur === 'voice' ? '' : 'image/*'; } catch (e) {}
+return _ccSurf;
 }
+function ccDropImportSurface(hostEl) {
+const inp = hostEl && hostEl.querySelector ? hostEl.querySelector('input[data-file-pick-surface]') : null;
+if (inp) { try { inp.remove(); } catch (e) {} }
+}
+function syncCcImportSurface() {
+try {
+if (!impBtn) return;
+if (!IMG_TYPES[cur]) { ccDropImportSurface(impBtn); return; }
+ccLayImportSurface(impBtn, 'cc-import-media-surf');
 } catch (e) {}
 }
 impBtn.__ccSyncSurface = syncCcImportSurface;
@@ -3319,7 +3367,7 @@ ccFuncOwnSrc = raw;
 return map;
 }
 window.getCustomFuncCards = function (cat) {
-if (CC_FUNC_KEYS.indexOf(cat) < 0) return [];
+maybeHydrateReplyPool(); if (CC_FUNC_KEYS.indexOf(cat) < 0) return []; // 取回钩与功能池守卫同行（哨兵锚）
 const out = ownFuncMap()[cat].slice();
 try {
 const pg = filterGroupsByOff(pubGroupsRaw(), 'public');
@@ -3427,13 +3475,29 @@ if (body.length >= CC_MEDIA_TOKEN_THRESHOLD && body.indexOf('data:image/') === 0
 return card.length > 120 ? (card.slice(0, 60) + '~' + card.length) : card;
 } catch (e) { return String(card); }
 };
-window.ccAppendCards = function (type, group, cards, scope) {
+window.ccAppendCards = function (type, group, cards, scope, _retry) {
 try {
 if (CC_ALL_TYPES.indexOf(type) < 0 || type === 'sticker' || type === 'image' || type === 'voice') return false;
 const arr = (Array.isArray(cards) ? cards : [cards]).filter(c => typeof c === 'string' && c && c.indexOf('data:') !== 0 && c.indexOf('|||') < 0);
 if (!arr.length || !group) return false;
 const isPub = scope === 'public';
+const authorized = _retry === 'asked';
+const retry = authorized ? 0 : (_retry || 0);
+const again = function (n) { setTimeout(function () { try { window.ccAppendCards(type, group, cards, scope, n); } catch (e0) {} }, 1200 * n); };
+const ccHold = function (st, k, full) {
+if (authorized) return false;
+if (st.get(k) !== null && !window.xyBigWriteHold(st, k)) return false;
+if (st.get(k) === null) { try { if (st.requestBigKey) st.requestBigKey(k); } catch (e5) {} }
+let asked = 'unknown';
+try { if (retry < 4 && window.idbEnsureBigKey) asked = window.idbEnsureBigKey(full); } catch (e3) { asked = 'unknown'; }
+Promise.resolve(asked).then(function (state) {
+if (state === 'ok' || state === 'absent') { try { window.ccAppendCards(type, group, cards, scope, 'asked'); } catch (e4) {} return; }
+if (retry < 4) again(retry + 1);
+}, function () { if (retry < 4) again(retry + 1); });
+return true;
+};
 if (isPub) {
+if (ccHold(pubStore(), PUB_KEY, PUB_PREFIX + ':' + PUB_KEY)) return false;
 const g = buildGroupsFrom(pubStore().get(PUB_KEY));
 if (!g[type]) g[type] = [];
 let grp = g[type].find(p => p[0] === group);
@@ -3449,6 +3513,7 @@ if (cur === type && !document.getElementById('page-custom-cards').hidden) { try 
 return added > 0;
 }
 if (!groups) {
+if (ccHold(store, 'cc-groups', window.activePrefix() + ':cc-groups')) return false;
 const g0 = buildGroupsFrom(store.get('cc-groups'));
 if (!g0[type]) g0[type] = [];
 let grp0 = g0[type].find(p => p[0] === group);
@@ -3534,6 +3599,7 @@ let started = false;
 function run() {
 if (started) return;
 started = true;
+const hold = () => { try { window.__ccMigHold = (window.__ccMigHold || 0) + 1; } catch (e0) {} };
 try {
 if (gRoot.get('cc-scope-migrated') === '1') return;
 const cs = (window.getContacts && window.getContacts()) || [{ id: 'default', name: '默认' }];
@@ -3546,35 +3612,47 @@ try { local = buildGroupsFrom(st.get('cc-groups')); } catch (e) {}
 if (isDefault && !countOf(local)) {
 try { local = buildGroupsFrom(gRoot.get('cc-groups')); } catch (e) {}
 }
-const pick = function (data) {
+const pick = function (data, auth) {
+if (!auth) { hold(); return; }
+if (!countOf(data)) { try { gRoot.set('cc-scope-migrated', '1'); } catch (e0) {} return; }
 try {
-if (!countOf(data)) { try { gRoot.set('cc-scope-migrated', '1'); } catch (e2) {} return; }
-gRoot.set(PUB_KEY, JSON.stringify(data));
-pubInvalidate();
+const json = JSON.stringify(data);
+gRoot.set(PUB_KEY, json);
+const done = () => {
 try { st.remove('cc-groups'); } catch (e2) {} // 迁走即清，防回复池公用+专属重复
 if (isDefault) { try { gRoot.remove('cc-groups'); } catch (e2) {} }
+pubInvalidate();
 libCounts.pub = -1; libCounts.own = -1; libCounts.fun = -1; libCounts.pubFun = -1;
 if (cid === (window.__activeCid || 'default')) {
 if (ccScope === 'own' && ccPageOpen()) { groups = loadGroups(); try { renderGroupsBar(); render(); } catch (e2) {} }
 else refreshLibCounts(false);
 } else refreshLibCounts(false);
 try { gRoot.set('cc-scope-migrated', '1'); } catch (e2) {}
-} catch (e) { try { gRoot.set('cc-scope-migrated', '1'); } catch (e3) {} }
+};
+if (!window.idbSet) { done(); return; }
+let p = null;
+try { p = window.idbSet(PUB_PREFIX + ':' + PUB_KEY, json); } catch (e4) { p = null; }
+if (p && p.then) p.then(ok => { if (ok === true) done(); else hold(); }, hold);
+else done();
+} catch (e) { hold(); }
 };
 if (window.idbGet) {
 const reads = [PUB_PREFIX + ':' + cid + ':cc-groups'];
 if (isDefault) reads.push(PUB_PREFIX + ':cc-groups');
-Promise.all(reads.map(k => window.idbGet(k).catch(() => null))).then(vals => {
-vals.forEach(v => {
+const amb = reads.map(() => ({}));
+Promise.all(reads.map((k, i) => window.idbGet(k, amb[i]).catch(() => { amb[i].ambiguous = true; return undefined; }))).then(vals => {
+let unread = 0;
+vals.forEach((v, i) => {
+if (amb[i] && amb[i].ambiguous) { unread++; return; }
 try {
 const d = typeof v === 'string' ? JSON.parse(v) : v;
 if (d && d.text && countOf(d) > countOf(local)) local = d;
 } catch (e) {}
 });
-pick(local);
+pick(local, unread === 0);
 });
-} else pick(local);
-} catch (e) { try { gRoot.set('cc-scope-migrated', '1'); } catch (e2) {} }
+} else pick(local, true);
+} catch (e) { hold(); }
 }
 let restoreReady = !!window.__mochiDataReady;
 if (restoreReady) ownRestoreP.then(run);
@@ -3870,7 +3948,7 @@ function openCcPage(scope, startTab) {
 try { if (window.__mochiPhase) window.__mochiPhase('cc-open'); } catch (e0) {}
 flushCcSave();
 ccScope = scope === 'public' ? 'public' : 'own';
-pubInvalidate();
+if (poolSrcChanged()) pubInvalidate(); // #1222：原文串没变＝池视图仍新鲜，不重建
 namesInvalidate(); // #680：名称缓存分作用域，切作用域必须重读
 cur = (startTab && CC_ALL_TYPES.indexOf(startTab) >= 0) ? startTab : 'text';
 q = ''; curGroup = '';
@@ -3891,6 +3969,7 @@ syncLinkImportVis();
 document.querySelectorAll('.page').forEach(p => p.hidden = true);
 const ccPage = document.getElementById('page-custom-cards');
 if (ccPage) ccPage.hidden = false;
+try { groups = loadGroups(); } catch (eCcTree) {}
 maybeAutoSlimLib().then(function () {
 maybeLowCardsRemind(); // v3.32.x：自建聊天字卡很少时提醒默认字卡 30% 概率
 try { if (!curStore().get(curKey())) showLibLoadingSoon(); } catch (eL) {}
@@ -4035,7 +4114,8 @@ fullKey = cid ? ('xy-home-v2:' + cid + ':cc-groups') : hydFullKey(scope);
 deferred = Array.isArray(window.__xyIdbDeferredKeys) && window.__xyIdbDeferredKeys.indexOf(fullKey) >= 0;
 } catch (e) {}
 if (!deferred && hydAbsent[fullKey]) return Promise.resolve(false);
-if (!deferred) {
+var HYDRATE_TRUSTS_MEMORY = true;
+if (HYDRATE_TRUSTS_MEMORY) {
 let hasData = false;
 try {
 hasData = cid
